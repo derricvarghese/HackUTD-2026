@@ -52,6 +52,7 @@ Silence detection (your “response detection”).
 After an SOS, the system sends check-ins through the app or Photon.
 If someone stops responding, their priority goes up, not down.
 Also flag dead zones on the map where nobody has checked in at all. Those areas are where people get overlooked.
+Disaster-wide heartbeat: when the server opens a disaster event, every phone running the app starts sending a small periodic heartbeat (coarse location, battery, a signed timestamp), over the mesh when offline and straight to the backend when online. This means silence itself is a distress signal, even for people who never pressed SOS. If a phone that was heartbeating goes quiet, especially in an area where its neighbours are still reporting, the backend flags it as possibly in distress and raises its priority. Heartbeats are tiny, low priority and short-lived (few hops, short expiry) so they don't crowd out real SOS traffic, and they stop when the event closes.
 Deduplication. Merge reports about the same incident: nearby GPS, similar text, arriving through several relay paths.
 Responder dashboard.
 Map heat layer plus a ranked queue.
