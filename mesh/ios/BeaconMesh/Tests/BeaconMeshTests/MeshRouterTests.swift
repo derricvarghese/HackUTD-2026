@@ -216,10 +216,11 @@ private final class FakeNetwork {
 @Suite struct TestVectorTests {
     @Test func testSharedEnvelopeVectorVerifies() throws {
         let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // BeaconMeshTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // BeaconMesh
-            .deletingLastPathComponent() // ios
+            .deletingLastPathComponent() // -> Tests/BeaconMeshTests
+            .deletingLastPathComponent() // -> Tests
+            .deletingLastPathComponent() // -> BeaconMesh
+            .deletingLastPathComponent() // -> ios
+            .deletingLastPathComponent() // -> mesh
             .appendingPathComponent("test-vectors/envelope_v1.json")
         let root = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let envData = try JSONSerialization.data(withJSONObject: try #require(root["envelope"]))

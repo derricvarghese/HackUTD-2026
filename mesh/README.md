@@ -45,14 +45,15 @@ expired messages. Resetting `hop` therefore can't keep a message alive forever.
 
 ### iOS (needs real iPhones; the Simulator has no Bluetooth)
 
-1. In Xcode: **File → New → Project → iOS App** (SwiftUI), e.g. `BeaconDemo`.
-2. **File → Add Package Dependencies → Add Local…** → choose `mesh/ios/BeaconMesh`. Add both
-   `BeaconMesh` and `BeaconMeshUI` to the app target.
-3. Replace the generated `App` file with [`ios/BeaconDemoApp/BeaconDemoApp.swift`](ios/BeaconDemoApp/BeaconDemoApp.swift).
-4. Add the keys from [`ios/BeaconDemoApp/Info-additions.plist`](ios/BeaconDemoApp/Info-additions.plist)
-   to the target's Info tab (Bluetooth and location usage strings, plus background modes).
-5. Set your team under Signing and run on a device.
-6. Tests: `swift test` in `mesh/ios/BeaconMesh` (needs full Xcode, not just Command Line Tools).
+1. Open `mesh/ios/BeaconDemo.xcodeproj` in Xcode. It already links the local `BeaconMesh` package
+   and merges `BeaconDemoApp/Info.plist` (Bluetooth and location usage strings, plus background modes).
+2. Target **BeaconDemo → Signing & Capabilities**: pick your team. If the bundle ID
+   `com.beacon.mesh.demo` is taken, change it.
+3. Plug in an iPhone, select it as the run destination, and press Run. The first time, trust the
+   developer certificate on the phone under Settings → General → VPN & Device Management.
+4. Tests: `swift test` in `mesh/ios/BeaconMesh`. On an exFAT/external drive, codesigning the test
+   bundle fails because of AppleDouble files, so build on the internal disk:
+   `swift test --scratch-path /tmp/beacon-spm`.
 
 ### Demo script (hop limit live)
 
