@@ -12,6 +12,13 @@ info:
     for any non-`/v1` path). The dashboard is therefore same-origin: it calls relative `/v1/...` URLs and `wss://<same-host>/v1/ws`, no CORS needed.
     The Android app uses the same public base URL. CORS is only required for local dev (frontend dev server on another port).
 
+    ## Heartbeats (silence is a distress signal)
+    While an event is `active`, every phone sends a tiny signed heartbeat every `heartbeat_interval_seconds` (from `/server-info`): directly via
+    `POST /heartbeats` when online, otherwise as a `kind=heartbeat` mesh envelope (tier `heartbeat`, 2 hops, 30 min TTL) that gateways upload through
+    `POST /sos/batch`. The server tracks the last heartbeat per device. A device that misses `silence_threshold_seconds` becomes `quiet`; if its
+    neighbours are still reporting (or it has an open SOS) it becomes `distress`, appears in `GET /heartbeats/silent`, and any open SOS of that
+    device is marked `silent` and boosted. Responders can promote a silent device to a case. Heartbeats stop when the event closes and are purged with it.
+
     ## Delivery to victims (app-only)
     There are no non-app channels. Check-ins and status updates ("Help is on the way, ETA 40 min") reach the phone by push token when online,
     by polling `GET /checkins/pending` and `GET /sos/{id}/status`, and over the mesh as small signed backend messages when the phone is offline
@@ -46,12 +53,13 @@ info:
       | high (water/meds) | 7 | 12 h |
       | normal (check-in reply) | 5 | 6 h |
       | safe | 3 | 3 h |
+      | heartbeat (disaster-wide liveness ping) | 2 | 30 min |
 
     ## WebSocket (live updates)
     Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
     Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones","offers"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
     Events (payload schemas under `components/schemas/WsEvent*`):
-    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (silence detector flagged), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `deadzones.updated`, `mesh.stats`.
+    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (silence detector flagged), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `heartbeat.silent` (a phone that was heartbeating went quiet), `heartbeat.resumed`, `deadzones.updated`, `mesh.stats`.
     After reconnect, clients should refetch via REST (`GET /sos?updated_since=`) to close gaps; events are not replayed.
   license:
     name: MIT
@@ -72,6 +80,7 @@ tags:
   - name: Offers
   - name: Mesh
   - name: Events
+  - name: Heartbeats
   - name: Map
   - name: System
 
@@ -392,7 +401,7 @@ paths:
       summary: Gateway upload of held mesh messages
       description: |
         A phone with signal uploads everything it holds. Each envelope is verified independently (signature, expiry, hop sanity, per-device rate limit).
-        Per-item results are returned; the call itself is `200` even if some items are rejected. Server then emits `DELIVERED` receipts (see `GET /mesh/receipts`).
+        Envelopes of `kind=heartbeat` are accepted here too (result `status=created`, no `sos_id`). Per-item results are returned; the call itself is `200` even if some items are rejected. Server then emits `DELIVERED` receipts (see `GET /mesh/receipts`).
       operationId: uploadSosBatch
       security:
         - deviceSignature: []
@@ -1195,6 +1204,142 @@ paths:
       responses:
         "204": { description: Cleared }
 
+  /heartbeats:
+    post:
+      tags: [Heartbeats]
+      summary: Send a heartbeat directly (phone is online)
+      description: Mesh-relayed heartbeats arrive via `POST /sos/batch` instead. `sent_at` is the phone's own time; the server also records `received_at`. Returns `404` if no event is active.
+      operationId: sendHeartbeat
+      security:
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HeartbeatCreate" }
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_heartbeat_in_seconds: { type: integer }
+                  event_active: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      tags: [Heartbeats]
+      summary: List heartbeats (history; coarse locations only)
+      operationId: listHeartbeats
+      security:
+        - responderJwt: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Heartbeats
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Heartbeat" }
+  /heartbeats/silent:
+    get:
+      tags: [Heartbeats]
+      summary: Devices that stopped heartbeating (quiet or in distress)
+      operationId: listSilentDevices
+      security:
+        - responderJwt: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [quiet, distress] }
+          style: form
+          explode: false
+        - name: bbox
+          in: query
+          schema: { type: string }
+        - name: include_acknowledged
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Silent devices, most urgent first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/SilentDevice" }
+  /heartbeats/silent/{deviceId}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [Heartbeats]
+      summary: One silent device
+      operationId: getSilentDevice
+      responses:
+        "200":
+          description: Silent device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SilentDevice" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Heartbeats]
+      summary: Acknowledge or dismiss a silent-device flag (e.g. contacted, false alarm)
+      operationId: updateSilentDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledged: { type: boolean }
+                note: { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SilentDevice" }
+  /heartbeats/silent/{deviceId}/promote:
+    post:
+      tags: [Heartbeats]
+      summary: Turn a silent device into an SOS case so it enters the ranked queue and can be claimed
+      operationId: promoteSilentDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "201":
+          description: Case created (category `other`, `silent=true`, location = last known cell)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /mesh/outbox:
     get:
       tags: [Mesh]
@@ -1540,7 +1685,7 @@ components:
       enum: [injured, trapped, need_water_meds, safe, other]
     Tier:
       type: string
-      enum: [critical, high, normal, safe]
+      enum: [critical, high, normal, safe, heartbeat]
     SosStatus:
       type: string
       enum: [reported, assigned, en_route, on_scene, resolved, merged, closed]
@@ -1603,6 +1748,8 @@ components:
               max_hops: { type: integer }
               ttl_seconds: { type: integer }
         checkin_interval_seconds: { type: integer, example: 900 }
+        heartbeat_interval_seconds: { type: integer, example: 300, description: Phones send a heartbeat this often while an event is active }
+        silence_threshold_seconds: { type: integer, example: 1200, description: Missed-heartbeat window before a device is considered quiet }
         gateway_upload_max_batch: { type: integer, example: 500 }
 
     AuthTokens:
@@ -1645,6 +1792,8 @@ components:
         flagged: { type: boolean }
         flag_reason: { type: [string, "null"] }
         sos_count: { type: integer }
+        heartbeat_status: { $ref: "#/components/schemas/HeartbeatStatus" }
+        last_heartbeat_at: { type: [string, "null"], format: date-time }
         last_seen_at: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
 
@@ -1662,7 +1811,7 @@ components:
         sender_public_key: { type: string, description: Include if device not yet registered }
         kind:
           type: string
-          enum: [sos, checkin_reply, safe, offer]
+          enum: [sos, checkin_reply, safe, offer, heartbeat]
         tier: { $ref: "#/components/schemas/Tier" }
         max_hops: { type: integer, minimum: 1, maximum: 10 }
         hop_count: { type: integer, minimum: 0, maximum: 10 }
@@ -1712,6 +1861,7 @@ components:
         water_rising: { type: boolean }
         injured: { type: boolean }
         checkin_id: { type: string, format: uuid, description: For kind=checkin_reply }
+        heartbeat: { $ref: "#/components/schemas/HeartbeatCreate", description: For kind=heartbeat }
         offer: { $ref: "#/components/schemas/OfferCreate", description: For kind=offer }
     DeliveredReceipt:
       type: object
@@ -1728,7 +1878,7 @@ components:
       type: object
       required: [source, text]
       properties:
-        source: { type: string, enum: [rule, llm, silence, manual] }
+        source: { type: string, enum: [rule, llm, silence, heartbeat, manual] }
         text: { type: string, example: 2 people trapped with rising water }
         weight: { type: integer, description: Score contribution }
     Triage:
@@ -1913,7 +2063,7 @@ components:
         id: { type: string, format: uuid }
         type:
           type: string
-          enum: [reported, received_via_gateway, triaged, merged, silent_flagged, checkin_sent, checkin_responded, assigned, en_route, on_scene, resolved, released, note, edited, closed]
+          enum: [reported, received_via_gateway, triaged, merged, silent_flagged, heartbeat_silent, checkin_sent, checkin_responded, assigned, en_route, on_scene, resolved, released, note, edited, closed]
         actor:
           type: object
           properties:
@@ -2086,6 +2236,59 @@ components:
         score: { type: number, description: Match quality 0-1 }
         created_at: { type: string, format: date-time }
 
+    # ---- heartbeats
+    HeartbeatStatus:
+      type: string
+      enum: [active, quiet, distress, stopped, unknown]
+      description: "`active` heard recently; `quiet` missed the threshold; `distress` quiet while neighbours report or with an open SOS; `stopped` event closed or user opted out; `unknown` never heartbeated"
+    HeartbeatCreate:
+      type: object
+      required: [sent_at, approx]
+      properties:
+        sent_at: { type: string, format: date-time }
+        approx: { $ref: "#/components/schemas/ApproxLocation" }
+        battery_pct: { type: integer, minimum: 0, maximum: 100 }
+        charging: { type: boolean }
+        moving: { type: boolean, description: Device appears to be moving }
+        seq: { type: integer, description: Monotonic counter so the server can spot gaps }
+      example:
+        sent_at: "2026-11-07T16:25:00Z"
+        approx: { lat: 32.99, lng: -96.75, radius_m: 1000 }
+        battery_pct: 41
+        charging: false
+        moving: false
+        seq: 17
+    Heartbeat:
+      allOf:
+        - $ref: "#/components/schemas/HeartbeatCreate"
+        - type: object
+          required: [id, device_id, received_at]
+          properties:
+            id: { type: string, format: uuid }
+            device_id: { type: string, format: uuid }
+            sender_hash: { type: string }
+            received_at: { type: string, format: date-time }
+            hop_count: { type: integer }
+            hop_path: { type: array, items: { type: string } }
+    SilentDevice:
+      type: object
+      required: [device_id, sender_hash, status, last_heartbeat_at, last_approx]
+      properties:
+        device_id: { type: string, format: uuid }
+        sender_hash: { type: string }
+        status: { type: string, enum: [quiet, distress] }
+        last_heartbeat_at: { type: string, format: date-time }
+        silent_for_seconds: { type: integer }
+        last_approx: { $ref: "#/components/schemas/ApproxLocation" }
+        last_battery_pct: { type: [integer, "null"] }
+        was_moving: { type: boolean }
+        neighbors_active: { type: integer, description: Active devices in the same or adjacent cells (high = this one going quiet is suspicious) }
+        open_sos_id: { type: [string, "null"], format: uuid }
+        priority_score: { type: integer, minimum: 0, maximum: 100 }
+        reason: { type: string, example: "No heartbeat for 35 min; 12 neighbours in the area still reporting; battery was 9%" }
+        acknowledged: { type: boolean }
+        flagged_at: { type: string, format: date-time }
+
     # ---- backend messages + events
     BackendMessage:
       type: object
@@ -2140,6 +2343,8 @@ components:
             max_lat: { type: number }
             max_lng: { type: number }
         retention_days: { type: integer, default: 7, minimum: 0 }
+        heartbeat_interval_seconds: { type: integer, default: 300, minimum: 30 }
+        silence_threshold_seconds: { type: integer, default: 1200, minimum: 60 }
         synthetic: { type: boolean, description: Demo event; all data is synthetic }
     EventUpdate:
       type: object
@@ -2147,6 +2352,8 @@ components:
         name: { type: string }
         region: { type: object, additionalProperties: true }
         retention_days: { type: integer, minimum: 0 }
+        heartbeat_interval_seconds: { type: integer, minimum: 30 }
+        silence_threshold_seconds: { type: integer, minimum: 60 }
     Event:
       type: object
       required: [id, name, status, created_at]
@@ -2156,6 +2363,8 @@ components:
         status: { type: string, enum: [active, closed, purged] }
         region: { type: [object, "null"], additionalProperties: true }
         retention_days: { type: integer }
+        heartbeat_interval_seconds: { type: integer }
+        silence_threshold_seconds: { type: integer }
         synthetic: { type: boolean }
         case_count: { type: integer }
         open_case_count: { type: integer }
@@ -2187,6 +2396,13 @@ components:
           type: object
           additionalProperties: { type: integer }
         median_delivery_delay_seconds: { type: number, description: created_at -> received_at }
+        heartbeats:
+          type: object
+          properties:
+            active: { type: integer, description: Devices heard from within the threshold }
+            quiet: { type: integer }
+            distress: { type: integer }
+            stopped: { type: integer }
         rejected:
           type: object
           properties:
@@ -2214,7 +2430,7 @@ components:
       properties:
         event:
           type: string
-          enum: [sos.created, sos.updated, sos.merged, sos.silent, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
+          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
         ts: { type: string, format: date-time }
         data: {}
       discriminator:
@@ -2227,6 +2443,10 @@ components:
       description: "Payload for `sos.created`, `sos.updated`, `sos.silent` (data is a full `Sos`; location redacted per the receiving responder)"
       allOf:
         - $ref: "#/components/schemas/Sos"
+    WsEventSilentDevice:
+      description: Payload for `heartbeat.silent` and `heartbeat.resumed` (`SilentDevice`; on resume `status` is omitted semantics = back to active)
+      allOf:
+        - $ref: "#/components/schemas/SilentDevice"
     WsEventSosMerged:
       description: Payload for `sos.merged`
       type: object
