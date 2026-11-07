@@ -8,9 +8,6 @@ Identify the most urgent needs: AI triage scoring
 Coordinate assistance: a responder dashboard
 Make sure no one is overlooked: silence detection plus the offline mesh
 
-How it hits Photon: Photon is an open-source framework that connects AI agents to iMessage, Telegram, WhatsApp, X, Discord, Instagram, and other interfaces people use every day. That solves the biggest weakness of a disaster app: most victims won’t have installed it. With Photon, people can still reach Beacon by texting or calling on apps they already use. Photon also has a separate Voice Call prize, so make sure voice is in the demo. 
-mcpbundles
-
 1. Users
 Victims: Android app users, plus people who never installed it and reach the agent through Photon.
 Responders: State Farm catastrophe teams and volunteers, working from a web dashboard.
