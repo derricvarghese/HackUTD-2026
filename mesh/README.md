@@ -39,9 +39,12 @@ expired messages. Resetting `hop` therefore can't keep a message alive forever.
 
 ### Android (needs real phones; BLE doesn't work on the emulator)
 
-1. Open `mesh/android` in Android Studio and let it sync. If it asks, let it create the Gradle wrapper.
+1. Open `mesh/android` in Android Studio and let it sync (JDK 17, Android SDK 35).
 2. Run on 2+ phones (Android 8.0+). Grant Bluetooth and location permissions at launch.
+   From the command line: `./gradlew :app:installDebug` with the phone connected over USB debugging.
 3. Unit tests: `./gradlew :app:testDebugUnitTest` (router, framing, and the cross-platform vector).
+4. On an exFAT/external drive, add `-Pbeacon.buildRoot=/tmp/beacon-gradle` to every Gradle command.
+   macOS writes `._` AppleDouble files there, and Gradle then can't clean its own build folders.
 
 ### iOS (needs real iPhones; the Simulator has no Bluetooth)
 
