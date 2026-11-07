@@ -152,6 +152,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthTokens" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /auth/refresh:
     post:
@@ -175,6 +176,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthTokens" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /auth/logout:
     post:
       tags: [Auth]
@@ -189,6 +191,7 @@ paths:
                 refresh_token: { type: string }
       responses:
         "204": { description: Logged out }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /auth/me:
     get:
       tags: [Auth]
@@ -253,6 +256,7 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/Device" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /devices/{deviceId}:
     parameters:
       - $ref: "#/components/parameters/DeviceId"
@@ -269,7 +273,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Device" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Devices]
       summary: Update device (push token, display name) or flag/unflag (admin)
@@ -288,7 +294,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Device" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Devices]
       summary: Delete device and its personal data (right to erasure)
@@ -298,7 +306,9 @@ paths:
         - deviceSignature: []
       responses:
         "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- SOS
   /sos:
@@ -395,6 +405,7 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/Sos" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/batch:
     post:
       tags: [SOS, Mesh]
@@ -449,6 +460,7 @@ paths:
                     description: Other pending backend-to-phone messages (same as `/mesh/outbox`)
                     items: { $ref: "#/components/schemas/BackendMessage" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /sos/{sosId}:
     parameters:
@@ -464,6 +476,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SosDetail" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [SOS]
       summary: Update case (responder edits, manual score override, status change, add note)
@@ -479,8 +492,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [SOS]
       summary: Delete case and its personal data (admin)
@@ -489,6 +504,7 @@ paths:
         "204": { description: Deleted }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/{sosId}/retriage:
     parameters:
       - $ref: "#/components/parameters/SosId"
@@ -502,6 +518,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/{sosId}/events:
     get:
       tags: [SOS]
@@ -521,6 +540,8 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/SosEvent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/{sosId}/merge:
     post:
       tags: [SOS]
@@ -546,6 +567,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/{sosId}/unmerge:
     post:
       tags: [SOS]
@@ -568,6 +592,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /sos/{sosId}/status:
     get:
       tags: [SOS]
@@ -585,6 +612,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SosPublicStatus" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /sos/{sosId}/voice-note:
     parameters:
@@ -607,8 +635,11 @@ paths:
           audio/webm: { schema: { type: string, format: binary } }
       responses:
         "204": { description: Stored }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "413": { description: File too large, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "415": { description: "Unsupported audio type (only audio/ogg, audio/mp4, audio/webm)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
     get:
       tags: [SOS]
       summary: Download the voice note (assigned responder or admin)
@@ -620,14 +651,18 @@ paths:
             audio/ogg: { schema: { type: string, format: binary } }
             audio/mp4: { schema: { type: string, format: binary } }
             audio/webm: { schema: { type: string, format: binary } }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [SOS]
       summary: Delete the voice note
       operationId: deleteVoiceNote
       responses:
         "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Check-ins
   /sos/{sosId}/checkins:
@@ -649,6 +684,8 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/Checkin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     post:
       tags: [Check-ins]
       summary: Send a check-in now (responder-triggered; the silence detector also creates these automatically)
@@ -668,6 +705,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Checkin" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /checkins/pending:
     get:
       tags: [Check-ins]
@@ -704,6 +744,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Checkin" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Check-ins]
       summary: Respond to a check-in ("I'm OK" / needs help / free text).
@@ -732,13 +773,17 @@ paths:
               schema: { $ref: "#/components/schemas/Checkin" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Check-ins]
       summary: Cancel a pending check-in
       operationId: deleteCheckin
       responses:
         "204": { description: Cancelled }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Assignments
   /assignments:
@@ -758,8 +803,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Assignment" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     get:
       tags: [Assignments]
       summary: List assignments
@@ -794,6 +841,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/Assignment" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /assignments/{assignmentId}:
     parameters:
       - $ref: "#/components/parameters/AssignmentId"
@@ -808,6 +856,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Assignment" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Assignments]
       summary: Advance status (assigned -> en_route -> on_scene -> resolved), set ETA, or reassign
@@ -826,6 +875,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Assignment" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
@@ -834,7 +885,9 @@ paths:
       operationId: deleteAssignment
       responses:
         "204": { description: Released }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Responders
   /responders:
@@ -864,6 +917,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/Responder" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     post:
       tags: [Responders]
       summary: Create a responder (admin)
@@ -881,6 +935,7 @@ paths:
               schema: { $ref: "#/components/schemas/Responder" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /responders/{responderId}:
     parameters:
       - $ref: "#/components/parameters/ResponderId"
@@ -895,6 +950,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Responder" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Responders]
       summary: "Update responder (self: availability/location/skills; admin: anything)"
@@ -910,6 +966,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Responder" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Responders]
       summary: Deactivate responder (admin)
@@ -917,6 +976,8 @@ paths:
       responses:
         "204": { description: Deleted }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Offers (neighbor assist)
   /offers:
@@ -978,6 +1039,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/Offer" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /offers/{offerId}:
     parameters:
       - $ref: "#/components/parameters/OfferId"
@@ -995,6 +1057,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Offer" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Offers]
       summary: Edit/withdraw offer
@@ -1013,6 +1076,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Offer" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Offers]
       summary: Delete offer
@@ -1022,6 +1088,9 @@ paths:
         - deviceSignature: []
       responses:
         "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /offers/{offerId}/matches:
     parameters:
       - $ref: "#/components/parameters/OfferId"
@@ -1044,6 +1113,9 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/OfferMatch" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     post:
       tags: [Offers]
       summary: Manually match this offer to a case (responder)
@@ -1063,6 +1135,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OfferMatch" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /offers/{offerId}/matches/{matchId}:
     parameters:
       - $ref: "#/components/parameters/OfferId"
@@ -1094,12 +1170,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OfferMatch" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Offers]
       summary: Remove a match
       operationId: deleteOfferMatch
       responses:
         "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Mesh
   /mesh/stats:
@@ -1117,6 +1199,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MeshStats" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /mesh/receipts:
     get:
       tags: [Mesh]
@@ -1142,6 +1225,7 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/DeliveredReceipt" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /mesh/simulate:
     post:
       tags: [Mesh]
@@ -1168,7 +1252,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /mesh/seed:
     post:
       tags: [Mesh]
@@ -1196,13 +1282,16 @@ paths:
                 type: object
                 properties:
                   created: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Mesh]
       summary: Delete all synthetic data
       operationId: clearSyntheticData
       responses:
         "204": { description: Cleared }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /heartbeats:
     post:
@@ -1228,6 +1317,7 @@ paths:
                   next_heartbeat_in_seconds: { type: integer }
                   event_active: { type: boolean }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
     get:
       tags: [Heartbeats]
@@ -1257,6 +1347,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/Heartbeat" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /heartbeats/silent:
     get:
       tags: [Heartbeats]
@@ -1293,6 +1384,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/SilentDevice" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /heartbeats/silent/{deviceId}:
     parameters:
       - $ref: "#/components/parameters/DeviceId"
@@ -1307,6 +1399,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SilentDevice" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Heartbeats]
       summary: Acknowledge or dismiss a silent-device flag (e.g. contacted, false alarm)
@@ -1326,6 +1419,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SilentDevice" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /heartbeats/silent/{deviceId}/promote:
     post:
       tags: [Heartbeats]
@@ -1339,7 +1435,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /mesh/outbox:
     get:
       tags: [Mesh]
@@ -1368,6 +1467,7 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/BackendMessage" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /events:
     get:
       tags: [Events]
@@ -1392,6 +1492,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: "#/components/schemas/Event" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     post:
       tags: [Events]
       summary: Open a disaster event (admin). New SOS cases attach to the single active event.
@@ -1407,7 +1508,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Event" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /events/{eventId}:
     parameters:
       - $ref: "#/components/parameters/EventId"
@@ -1422,6 +1525,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Event" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     patch:
       tags: [Events]
       summary: Edit event (name, region, retention) (admin)
@@ -1437,6 +1541,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Event" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [Events]
       summary: Delete event and all its data immediately (admin)
@@ -1444,6 +1551,8 @@ paths:
       responses:
         "204": { description: Deleted }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /events/{eventId}/close:
     post:
       tags: [Events]
@@ -1458,6 +1567,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Event" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /events/{eventId}/purge:
     post:
       tags: [Events]
@@ -1476,7 +1588,10 @@ paths:
                   purged_cases: { type: integer }
                   purged_voice_notes: { type: integer }
                   purged_at: { type: string, format: date-time }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   # ---------------------------------------------------------------- Map
   /map/heat:
     get:
@@ -1510,6 +1625,7 @@ paths:
                         lng: { type: number }
                         count: { type: integer }
                         max_score: { type: integer }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /map/deadzones:
     get:
       tags: [Map]
@@ -1531,6 +1647,7 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/Deadzone" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /map/deadzones/{deadzoneId}:
     parameters:
       - name: deadzoneId
@@ -1556,6 +1673,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Deadzone" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
 components:
   securitySchemes:
@@ -1734,10 +1854,10 @@ components:
           description: Current active event, if any
         encryption_public_key:
           type: string
-          description: Base64 Tink HPKE/ECIES public keyset phones use to encrypt `payload`
+          description: Base64 X.509 SubjectPublicKeyInfo DER of the backend's P-256 (secp256r1) ECDH public key. Phones encrypt `payload` to it with the ECIES scheme in server/docs/crypto.md (ephemeral ECDH + HKDF-SHA256 + AES-256-GCM); this is a plain SPKI key, not a Tink keyset.
         signing_public_key:
           type: string
-          description: Base64 public key for verifying DELIVERED receipts
+          description: Base64 X.509 SPKI DER of the backend's ECDSA P-256 signing key. Phones verify DELIVERED receipts and `BackendMessage` signatures with it (see server/docs/crypto.md).
         hop_limits:
           type: array
           items:
@@ -2294,7 +2414,7 @@ components:
       type: object
       description: |
         Backend-signed message carried over the mesh to a specific phone. Relays forward it until `max_hops`/`expires_at`, then drop it.
-        Phones verify `signature` with `signing_public_key` from `/server-info`. Signature covers everything except `hop_count`/`hop_path`.
+        Phones verify `signature` with `signing_public_key` from `/server-info`. Signature: ECDSA P-256/SHA-256 (DER, base64) over the canonical JSON of `{id, kind, sos_id, checkin_id (null when absent), body, max_hops, expires_at, created_at}`, i.e. everything except `hop_count`/`hop_path`.
         The addressed phone matches on `sos_id` (or `checkin_id`) against what it sent; `body` contains no personal data beyond what that phone already knows.
       required: [id, kind, sos_id, max_hops, hop_count, expires_at, created_at, signature]
       properties:
