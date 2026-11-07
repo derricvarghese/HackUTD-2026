@@ -1,0 +1,2263 @@
+openapi: 3.1.0
+info:
+  title: Beacon API
+  version: 1.0.0
+  summary: "Disaster-response backend for offline mesh SOS and the responder dashboard. App-only, every victim uses the Android app."
+  description: |
+    Contract between the Android app, responder dashboard, and the Express + Postgres backend.
+    Treat this as final: clients can be built and mocked (e.g. `prism mock openapi.yaml`) before the server exists.
+
+    ## Deployment
+    One server process hosts both the API and the responder dashboard (React build served as static files at `/`, SPA fallback to `index.html`
+    for any non-`/v1` path). The dashboard is therefore same-origin: it calls relative `/v1/...` URLs and `wss://<same-host>/v1/ws`, no CORS needed.
+    The Android app uses the same public base URL. CORS is only required for local dev (frontend dev server on another port).
+
+    ## Delivery to victims (app-only)
+    There are no non-app channels. Check-ins and status updates ("Help is on the way, ETA 40 min") reach the phone by push token when online,
+    by polling `GET /checkins/pending` and `GET /sos/{id}/status`, and over the mesh as small signed backend messages when the phone is offline
+    (same mechanism as DELIVERED receipts). The app should poll whenever it regains signal.
+
+    ## AI triage
+    Rules score first; free text is then sent to a Nemotron model (NVIDIA NIM, OpenAI-compatible endpoint hosted on Brev) which extracts
+    entities and adds reasons. The LLM endpoint is internal to the server and not part of this API.
+
+    ## Conventions
+    - Base URL: `/v1`. JSON only (`application/json`), UTF-8. All timestamps are RFC 3339 UTC.
+    - IDs: `sos.id` is a client-generated UUIDv7 (mesh message id, enables idempotent upload). All other ids are server-generated UUIDs.
+    - **Idempotency:** uploading an SOS whose `id` already exists returns the existing record (`200`, not `201`) and merges any new `hop_path` info. Gateways may safely retry.
+    - **Pagination:** cursor based. `?limit=` (default 50, max 200) and `?cursor=`. Responses are `{ "data": [...], "next_cursor": string|null }`.
+    - **Errors:** every non-2xx response is `Error` (`code`, `message`, optional `details`).
+    - **Rate limits:** per device key and per IP; `429` with `Retry-After`.
+
+    ## Auth
+    | Caller | Mechanism |
+    |---|---|
+    | Responder dashboard | `Authorization: Bearer <JWT>` from `POST /auth/login`. Short-lived access token + refresh token. |
+    | Android app (gateway/direct) | Device registers its public key once (`POST /devices`). Authenticated calls carry `X-Device-Id` and `X-Device-Signature` (base64 ECDSA-P256 signature over `METHOD\nPATH\nSHA256(body)\nX-Timestamp`) plus `X-Timestamp` (reject if skew > 5 min). |
+    | Mesh envelope | Independently signed by the original sender (see `MeshEnvelope`); backend verifies regardless of which gateway uploaded it. |
+
+    ## Privacy rules enforced by the server
+    - Exact `lat/lng` is returned only to the **assigned responder** (or `admin`). Everyone else gets `approx_location` (~1 km grid cell centre).
+    - `sender_hash` is a salted hash of the device key / phone number; raw identifiers are never returned.
+    - Hop limits by priority (clients set `max_hops`/`expires_at`; server validates them against this table):
+      | Tier | max_hops | TTL |
+      |---|---|---|
+      | critical (trapped, injured, medical) | 10 | 24 h |
+      | high (water/meds) | 7 | 12 h |
+      | normal (check-in reply) | 5 | 6 h |
+      | safe | 3 | 3 h |
+
+    ## WebSocket (live updates)
+    Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
+    Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones","offers"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
+    Events (payload schemas under `components/schemas/WsEvent*`):
+    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (silence detector flagged), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `deadzones.updated`, `mesh.stats`.
+    After reconnect, clients should refetch via REST (`GET /sos?updated_since=`) to close gaps; events are not replayed.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:3000/v1
+    description: Local dev
+  - url: https://api.beacon.example/v1
+    description: Deployed
+
+tags:
+  - name: Auth
+  - name: Devices
+  - name: SOS
+  - name: Check-ins
+  - name: Assignments
+  - name: Responders
+  - name: Offers
+  - name: Mesh
+  - name: Events
+  - name: Map
+  - name: System
+
+security:
+  - responderJwt: []
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness check
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, time]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  time: { type: string, format: date-time }
+                  version: { type: string }
+                  triage:
+                    type: object
+                    description: Nemotron triage backend (NVIDIA NIM served from Brev). When unreachable, scoring falls back to rules-only (`Triage.llm_used=false`, lower confidence).
+                    properties:
+                      status: { type: string, enum: [ok, degraded, down] }
+                      model: { type: string, example: nvidia/nemotron }
+                      latency_ms: { type: integer }
+
+  /server-info:
+    get:
+      tags: [System]
+      summary: Public config the phone needs offline-first (backend encryption key, hop table, current event)
+      description: Phones should fetch and cache this while online (e.g. at onboarding) so they can encrypt payloads for the backend and set hop limits while offline.
+      security: []
+      operationId: getServerInfo
+      responses:
+        "200":
+          description: Server info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServerInfo" }
+
+  # ---------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Responder login
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Tokens issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthTokens" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange refresh token for new access token
+      security: []
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthTokens" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke refresh token
+      operationId: logout
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "204": { description: Logged out }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current responder
+      operationId: getMe
+      responses:
+        "200":
+          description: Current responder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Responder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------- Devices
+  /devices:
+    post:
+      tags: [Devices]
+      summary: Register a phone's public key
+      description: Called once, when online (onboarding or first gateway moment). Idempotent on `public_key`; returns the existing device.
+      security: []
+      operationId: registerDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceRegister" }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "200":
+          description: Already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      tags: [Devices]
+      summary: List devices (responder/admin)
+      operationId: listDevices
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: flagged
+          in: query
+          description: Only devices flagged for abuse
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Devices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Device" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /devices/{deviceId}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [Devices]
+      summary: Get device
+      operationId: getDevice
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Devices]
+      summary: Update device (push token, display name) or flag/unflag (admin)
+      operationId: updateDevice
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Devices]
+      summary: Delete device and its personal data (right to erasure)
+      operationId: deleteDevice
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- SOS
+  /sos:
+    post:
+      tags: [SOS]
+      summary: Create a single SOS (direct from a connected phone; mesh-relayed messages use `/sos/batch`)
+      description: |
+        Idempotent on `id`. Server runs rules triage -> Nemotron triage -> dedupe, then broadcasts `sos.created`.
+        For mesh-relayed messages use `POST /sos/batch` with envelopes instead.
+      operationId: createSos
+      security:
+        - deviceSignature: []
+        - responderJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SosCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+        "200":
+          description: Already existed (idempotent replay)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      tags: [SOS]
+      summary: List/rank SOS cases (the dashboard queue)
+      operationId: listSos
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/SosStatus" }
+          style: form
+          explode: false
+        - name: channel
+          in: query
+          schema: { $ref: "#/components/schemas/Channel" }
+        - name: category
+          in: query
+          schema: { $ref: "#/components/schemas/Category" }
+        - name: min_score
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+        - name: silent
+          in: query
+          description: Only cases flagged silent
+          schema: { type: boolean }
+        - name: assigned_to
+          in: query
+          description: Responder id, or `me`, or `none` for unclaimed
+          schema: { type: string }
+        - name: bbox
+          in: query
+          description: "min_lng,min_lat,max_lng,max_lat"
+          schema: { type: string, examples: ["-97.1,32.9,-96.6,33.1"] }
+        - name: updated_since
+          in: query
+          description: Only records changed after this time (reconnect catch-up)
+          schema: { type: string, format: date-time }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [priority, -created_at, -last_heard_at, -score]
+            default: priority
+          description: "`priority` = score desc, silent first, then oldest unresolved"
+        - name: q
+          in: query
+          description: Free-text search over note text
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cases
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Sos" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /sos/batch:
+    post:
+      tags: [SOS, Mesh]
+      summary: Gateway upload of held mesh messages
+      description: |
+        A phone with signal uploads everything it holds. Each envelope is verified independently (signature, expiry, hop sanity, per-device rate limit).
+        Per-item results are returned; the call itself is `200` even if some items are rejected. Server then emits `DELIVERED` receipts (see `GET /mesh/receipts`).
+      operationId: uploadSosBatch
+      security:
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [envelopes]
+              properties:
+                envelopes:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: "#/components/schemas/MeshEnvelope" }
+      responses:
+        "200":
+          description: Per-item results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, status]
+                      properties:
+                        id: { type: string, format: uuid }
+                        status:
+                          type: string
+                          enum: [created, duplicate, rejected]
+                        reason:
+                          type: string
+                          enum: [bad_signature, expired, hop_limit_exceeded, invalid_limits, rate_limited, undecryptable, malformed]
+                        sos_id: { type: string, format: uuid }
+                  receipts:
+                    type: array
+                    description: Receipts the gateway should relay back into the mesh
+                    items: { $ref: "#/components/schemas/DeliveredReceipt" }
+                  messages:
+                    type: array
+                    description: Other pending backend-to-phone messages (same as `/mesh/outbox`)
+                    items: { $ref: "#/components/schemas/BackendMessage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /sos/{sosId}:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    get:
+      tags: [SOS]
+      summary: Get one case with triage reasoning, hop trail, check-ins and assignment
+      operationId: getSos
+      responses:
+        "200":
+          description: Case detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SosDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [SOS]
+      summary: Update case (responder edits, manual score override, status change, add note)
+      operationId: updateSos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SosUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [SOS]
+      summary: Delete case and its personal data (admin)
+      operationId: deleteSos
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /sos/{sosId}/retriage:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    post:
+      tags: [SOS]
+      summary: Re-run rules + Nemotron triage
+      operationId: retriageSos
+      responses:
+        "200":
+          description: Updated case
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+  /sos/{sosId}/events:
+    get:
+      tags: [SOS]
+      summary: Status/audit trail for the case
+      operationId: listSosEvents
+      parameters:
+        - $ref: "#/components/parameters/SosId"
+      responses:
+        "200":
+          description: Chronological events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SosEvent" }
+  /sos/{sosId}/merge:
+    post:
+      tags: [SOS]
+      summary: Manually merge duplicate cases into this one
+      operationId: mergeSos
+      parameters:
+        - $ref: "#/components/parameters/SosId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [duplicate_ids]
+              properties:
+                duplicate_ids:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Merged primary case
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+  /sos/{sosId}/unmerge:
+    post:
+      tags: [SOS]
+      summary: Split a wrongly merged report back out
+      operationId: unmergeSos
+      parameters:
+        - $ref: "#/components/parameters/SosId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_id]
+              properties:
+                report_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Primary case after split
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+  /sos/{sosId}/status:
+    get:
+      tags: [SOS]
+      summary: Victim-facing status of own SOS (app polls this when online)
+      description: Returns only what a victim may see (no exact location of others, no internal reasoning). Caller must be the sender device.
+      operationId: getSosPublicStatus
+      parameters:
+        - $ref: "#/components/parameters/SosId"
+      security:
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Public status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SosPublicStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /sos/{sosId}/voice-note:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    put:
+      tags: [SOS]
+      summary: Upload the voice note for a case (gateway or direct, after the SOS itself arrived)
+      description: |
+        Voice notes are too large for the mesh, so the SOS travels first with `has_voice_note=true` (and the local `voice_note_ref`),
+        and the audio is uploaded here once the phone has signal. Max 2 MB, `audio/ogg` (Opus), `audio/mp4` or `audio/webm`, up to 60 s.
+        Idempotent: re-uploading replaces the file. Transcription (if enabled) is attached to the case as a note.
+      operationId: uploadVoiceNote
+      security:
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          audio/ogg: { schema: { type: string, format: binary } }
+          audio/mp4: { schema: { type: string, format: binary } }
+          audio/webm: { schema: { type: string, format: binary } }
+      responses:
+        "204": { description: Stored }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { description: File too large, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    get:
+      tags: [SOS]
+      summary: Download the voice note (assigned responder or admin)
+      operationId: getVoiceNote
+      responses:
+        "200":
+          description: Audio
+          content:
+            audio/ogg: { schema: { type: string, format: binary } }
+            audio/mp4: { schema: { type: string, format: binary } }
+            audio/webm: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [SOS]
+      summary: Delete the voice note
+      operationId: deleteVoiceNote
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Check-ins
+  /sos/{sosId}/checkins:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    get:
+      tags: [Check-ins]
+      summary: List check-ins for a case
+      operationId: listCheckins
+      responses:
+        "200":
+          description: Check-ins
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Checkin" }
+    post:
+      tags: [Check-ins]
+      summary: Send a check-in now (responder-triggered; the silence detector also creates these automatically)
+      operationId: createCheckin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  $ref: "#/components/schemas/Channel"
+                message: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Check-in sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Checkin" }
+  /checkins/pending:
+    get:
+      tags: [Check-ins]
+      summary: Check-ins awaiting a response for the calling device (app fetches when online)
+      operationId: listPendingCheckins
+      security:
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Pending check-ins
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Checkin" }
+  /checkins/{checkinId}:
+    parameters:
+      - $ref: "#/components/parameters/CheckinId"
+    get:
+      tags: [Check-ins]
+      summary: Get check-in
+      operationId: getCheckin
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Check-in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Checkin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Check-ins]
+      summary: Respond to a check-in ("I'm OK" / needs help / free text).
+      description: Setting `responded_at` resets the silence timer. Mesh-relayed replies arrive as normal-tier envelopes via `/sos/batch` with `kind=checkin_reply`.
+      operationId: respondCheckin
+      security:
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [response]
+              properties:
+                response:
+                  type: string
+                  enum: [ok, need_help, other]
+                text: { type: string, maxLength: 1000 }
+                responded_at: { type: string, format: date-time, description: "Client time; defaults to server time" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Checkin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Check-ins]
+      summary: Cancel a pending check-in
+      operationId: deleteCheckin
+      responses:
+        "204": { description: Cancelled }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Assignments
+  /assignments:
+    post:
+      tags: [Assignments]
+      summary: Claim a case
+      description: One active assignment per case; a second claim returns `409` with the current assignee. `responder_id` defaults to the caller; only admin may assign others.
+      operationId: createAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssignmentCreate" }
+      responses:
+        "201":
+          description: Claimed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    get:
+      tags: [Assignments]
+      summary: List assignments
+      operationId: listAssignments
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: responder_id
+          in: query
+          description: Responder id or `me`
+          schema: { type: string }
+        - name: sos_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/AssignmentStatus" }
+          style: form
+          explode: false
+      responses:
+        "200":
+          description: Assignments
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Assignment" }
+  /assignments/{assignmentId}:
+    parameters:
+      - $ref: "#/components/parameters/AssignmentId"
+    get:
+      tags: [Assignments]
+      summary: Get assignment (includes exact location for the assignee)
+      operationId: getAssignment
+      responses:
+        "200":
+          description: Assignment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Assignments]
+      summary: Advance status (assigned -> en_route -> on_scene -> resolved), set ETA, or reassign
+      description: |
+        Valid transitions: `assigned→en_route→on_scene→resolved`, any→`released` (case returns to queue), any→`cancelled`.
+        Status changes are pushed to the victim via the channel they used ("Help is on the way, ETA 40 min").
+      operationId: updateAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssignmentUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [Assignments]
+      summary: Release a claim (equivalent to status=released)
+      operationId: deleteAssignment
+      responses:
+        "204": { description: Released }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Responders
+  /responders:
+    get:
+      tags: [Responders]
+      summary: List responders
+      operationId: listResponders
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: skill
+          in: query
+          schema: { type: string }
+        - name: available
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Responders
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Responder" }
+    post:
+      tags: [Responders]
+      summary: Create a responder (admin)
+      operationId: createResponder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResponderCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Responder" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /responders/{responderId}:
+    parameters:
+      - $ref: "#/components/parameters/ResponderId"
+    get:
+      tags: [Responders]
+      summary: Get responder
+      operationId: getResponder
+      responses:
+        "200":
+          description: Responder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Responder" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Responders]
+      summary: "Update responder (self: availability/location/skills; admin: anything)"
+      operationId: updateResponder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResponderUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Responder" }
+    delete:
+      tags: [Responders]
+      summary: Deactivate responder (admin)
+      operationId: deleteResponder
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------- Offers (neighbor assist)
+  /offers:
+    post:
+      tags: [Offers]
+      summary: Offer help (user marked Safe offers a boat, water, etc.)
+      operationId: createOffer
+      security:
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OfferCreate" }
+      responses:
+        "201":
+          description: Created; server immediately computes nearby matches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Offer" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    get:
+      tags: [Offers]
+      summary: List offers
+      operationId: listOffers
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: kind
+          in: query
+          schema: { $ref: "#/components/schemas/OfferKind" }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/OfferStatus" }
+        - name: near
+          in: query
+          description: "lat,lng — only offers within `radius_km`"
+          schema: { type: string }
+        - name: radius_km
+          in: query
+          schema: { type: number, default: 5 }
+        - name: mine
+          in: query
+          description: Only the calling device's offers
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Offers (responders see exact location only if matched to their case; others see approx)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Offer" }
+  /offers/{offerId}:
+    parameters:
+      - $ref: "#/components/parameters/OfferId"
+    get:
+      tags: [Offers]
+      summary: Get offer
+      operationId: getOffer
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Offer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Offer" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Offers]
+      summary: Edit/withdraw offer
+      operationId: updateOffer
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OfferUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Offer" }
+    delete:
+      tags: [Offers]
+      summary: Delete offer
+      operationId: deleteOffer
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "204": { description: Deleted }
+  /offers/{offerId}/matches:
+    parameters:
+      - $ref: "#/components/parameters/OfferId"
+    get:
+      tags: [Offers]
+      summary: SOS cases this offer is matched to
+      operationId: listOfferMatches
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Matches
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/OfferMatch" }
+    post:
+      tags: [Offers]
+      summary: Manually match this offer to a case (responder)
+      operationId: createOfferMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sos_id]
+              properties:
+                sos_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Match created; offerer is notified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OfferMatch" }
+  /offers/{offerId}/matches/{matchId}:
+    parameters:
+      - $ref: "#/components/parameters/OfferId"
+      - name: matchId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Offers]
+      summary: Accept/decline/complete a match (offerer or responder)
+      operationId: updateOfferMatch
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [accepted, declined, completed]
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OfferMatch" }
+    delete:
+      tags: [Offers]
+      summary: Remove a match
+      operationId: deleteOfferMatch
+      responses:
+        "204": { description: Removed }
+
+  # ---------------------------------------------------------------- Mesh
+  /mesh/stats:
+    get:
+      tags: [Mesh]
+      summary: Mesh health panel
+      operationId: getMeshStats
+      parameters:
+        - name: window_minutes
+          in: query
+          schema: { type: integer, default: 60, minimum: 1, maximum: 1440 }
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeshStats" }
+  /mesh/receipts:
+    get:
+      tags: [Mesh]
+      summary: DELIVERED receipts to inject back into the mesh
+      description: Gateways pull recent receipts and broadcast them (5-hop limit). Phones holding a copy of a delivered id delete it and stop relaying; the original sender shows "Your SOS reached responders ✓".
+      operationId: listReceipts
+      security:
+        - deviceSignature: []
+      parameters:
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeliveredReceipt" }
+  /mesh/simulate:
+    post:
+      tags: [Mesh]
+      summary: Demo "simulate relay" mode — inject a synthetic SOS with a fabricated hop path
+      description: Disabled unless server runs with `DEMO_MODE=true` (otherwise `404`). Created cases have `synthetic=true`.
+      operationId: simulateRelay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lat, lng, category]
+              properties:
+                lat: { type: number }
+                lng: { type: number }
+                category: { $ref: "#/components/schemas/Category" }
+                text: { type: string }
+                people_count: { type: integer }
+                hops: { type: integer, minimum: 0, maximum: 10, default: 3 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sos" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /mesh/seed:
+    post:
+      tags: [Mesh]
+      summary: Generate synthetic disaster data (demo)
+      description: Demo mode only. Creates N synthetic cases clustered around a centre point.
+      operationId: seedSyntheticData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [center_lat, center_lng]
+              properties:
+                center_lat: { type: number }
+                center_lng: { type: number }
+                radius_km: { type: number, default: 5 }
+                count: { type: integer, default: 40, maximum: 500 }
+      responses:
+        "201":
+          description: Seeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Mesh]
+      summary: Delete all synthetic data
+      operationId: clearSyntheticData
+      responses:
+        "204": { description: Cleared }
+
+  /mesh/outbox:
+    get:
+      tags: [Mesh]
+      summary: Backend-to-phone messages for a gateway to inject into the mesh (receipts, check-in requests, status updates)
+      description: |
+        A gateway calls this whenever online and broadcasts the returned `BackendMessage`s to peers (each has its own `max_hops`/`expires_at`).
+        Every phone checks `target_sender_hash` / `sos_id` against what it holds; the addressed phone shows it, others just relay and forget.
+        Supersedes `/mesh/receipts`, which stays as a receipts-only shortcut.
+      operationId: getMeshOutbox
+      security:
+        - deviceSignature: []
+      parameters:
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Messages, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/BackendMessage" }
+  /events:
+    get:
+      tags: [Events]
+      summary: List disaster events
+      operationId: listEvents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, closed, purged] }
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Event" }
+    post:
+      tags: [Events]
+      summary: Open a disaster event (admin). New SOS cases attach to the single active event.
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /events/{eventId}:
+    parameters:
+      - $ref: "#/components/parameters/EventId"
+    get:
+      tags: [Events]
+      summary: Get event with case counts
+      operationId: getEvent
+      responses:
+        "200":
+          description: Event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Events]
+      summary: Edit event (name, region, retention) (admin)
+      operationId: updateEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+    delete:
+      tags: [Events]
+      summary: Delete event and all its data immediately (admin)
+      operationId: deleteEvent
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /events/{eventId}/close:
+    post:
+      tags: [Events]
+      summary: Close the event (admin). Stops silence detection and check-ins; starts the retention countdown.
+      description: Personal data (exact locations, text, voice notes, device links) is purged automatically after `retention_days`, or immediately via `/purge`. Aggregate stats are kept.
+      operationId: closeEvent
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "200":
+          description: Closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+  /events/{eventId}/purge:
+    post:
+      tags: [Events]
+      summary: Purge personal data now (admin, closed events only)
+      operationId: purgeEvent
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "200":
+          description: Purge result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  purged_cases: { type: integer }
+                  purged_voice_notes: { type: integer }
+                  purged_at: { type: string, format: date-time }
+        "409": { $ref: "#/components/responses/Conflict" }
+  # ---------------------------------------------------------------- Map
+  /map/heat:
+    get:
+      tags: [Map]
+      summary: Heat layer cells (coarse, privacy-safe)
+      operationId: getHeat
+      parameters:
+        - name: bbox
+          in: query
+          required: true
+          schema: { type: string, description: "min_lng,min_lat,max_lng,max_lat" }
+        - name: cell_km
+          in: query
+          schema: { type: number, default: 1 }
+      responses:
+        "200":
+          description: Cells
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [lat, lng, count, max_score]
+                      properties:
+                        lat: { type: number }
+                        lng: { type: number }
+                        count: { type: integer }
+                        max_score: { type: integer }
+  /map/deadzones:
+    get:
+      tags: [Map]
+      summary: Dead zones — areas with no check-ins/reports where people may be overlooked
+      operationId: listDeadzones
+      parameters:
+        - name: bbox
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Dead zones
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Deadzone" }
+  /map/deadzones/{deadzoneId}:
+    parameters:
+      - name: deadzoneId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Map]
+      summary: Mark a dead zone as being checked / dismissed (responder)
+      operationId: updateDeadzone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, being_checked, dismissed] }
+                note: { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deadzone" }
+
+components:
+  securitySchemes:
+    responderJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Responder or admin access token from `/auth/login`.
+    deviceSignature:
+      type: apiKey
+      in: header
+      name: X-Device-Signature
+      description: Also requires `X-Device-Id` and `X-Timestamp`. See API description.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    SosId:
+      name: sosId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CheckinId:
+      name: checkinId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AssignmentId:
+      name: assignmentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ResponderId:
+      name: responderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OfferId:
+      name: offerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated but not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: State conflict (e.g. case already claimed; `details.assignment` holds current assignment)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Request body failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Rate limited
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [unauthorized, forbidden, not_found, conflict, validation_failed, rate_limited, bad_signature, expired, internal]
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+          description: "For validation errors, `{ \"fields\": { \"<path>\": \"<msg>\" } }`"
+      example:
+        code: conflict
+        message: Case already claimed by another responder
+        details: { assignment_id: "0b0c3b0e-0000-7000-8000-000000000001" }
+
+    Page:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data: { type: array, items: {} }
+        next_cursor: { type: [string, "null"] }
+
+    # ---- enums
+    Channel:
+      type: string
+      enum: [mesh, app]
+      description: "`mesh` = arrived via phone-to-phone relay and uploaded by a gateway; `app` = sent directly by the phone while online."
+    Category:
+      type: string
+      enum: [injured, trapped, need_water_meds, safe, other]
+    Tier:
+      type: string
+      enum: [critical, high, normal, safe]
+    SosStatus:
+      type: string
+      enum: [reported, assigned, en_route, on_scene, resolved, merged, closed]
+      description: "`merged` = absorbed into another case (see `merged_into`)."
+    AssignmentStatus:
+      type: string
+      enum: [assigned, en_route, on_scene, resolved, released, cancelled]
+    Confidence:
+      type: string
+      enum: [low, medium, high]
+    OfferKind:
+      type: string
+      enum: [boat, water, food, medical, shelter, transport, other]
+    OfferStatus:
+      type: string
+      enum: [open, matched, completed, withdrawn]
+    Role:
+      type: string
+      enum: [responder, volunteer, admin]
+
+    # ---- shared
+    LatLng:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lng: { type: number, minimum: -180, maximum: 180 }
+    ApproxLocation:
+      type: object
+      description: Centre of a ~1 km grid cell
+      required: [lat, lng, radius_m]
+      properties:
+        lat: { type: number }
+        lng: { type: number }
+        radius_m: { type: integer, example: 1000 }
+
+    ServerInfo:
+      type: object
+      required: [server_time, encryption_public_key, hop_limits]
+      properties:
+        server_time: { type: string, format: date-time }
+        event:
+          oneOf:
+            - $ref: "#/components/schemas/Event"
+            - type: "null"
+          description: Current active event, if any
+        encryption_public_key:
+          type: string
+          description: Base64 Tink HPKE/ECIES public keyset phones use to encrypt `payload`
+        signing_public_key:
+          type: string
+          description: Base64 public key for verifying DELIVERED receipts
+        hop_limits:
+          type: array
+          items:
+            type: object
+            required: [tier, max_hops, ttl_seconds]
+            properties:
+              tier: { $ref: "#/components/schemas/Tier" }
+              max_hops: { type: integer }
+              ttl_seconds: { type: integer }
+        checkin_interval_seconds: { type: integer, example: 900 }
+        gateway_upload_max_batch: { type: integer, example: 500 }
+
+    AuthTokens:
+      type: object
+      required: [access_token, refresh_token, expires_in, responder]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer, description: Seconds, example: 900 }
+        responder: { $ref: "#/components/schemas/Responder" }
+
+    # ---- devices
+    DeviceRegister:
+      type: object
+      required: [public_key, platform]
+      properties:
+        public_key: { type: string, description: Base64 X.509 ECDSA P-256 public key from Android Keystore }
+        platform: { type: string, enum: [android] }
+        app_version: { type: string }
+        push_token: { type: string }
+        display_name: { type: string, maxLength: 60 }
+        attestation: { type: string, description: Optional Play Integrity / key attestation token }
+    DeviceUpdate:
+      type: object
+      properties:
+        push_token: { type: string }
+        display_name: { type: string, maxLength: 60 }
+        flagged: { type: boolean, description: Admin only }
+        flag_reason: { type: string, description: Admin only }
+    Device:
+      type: object
+      required: [id, sender_hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        sender_hash: { type: string }
+        platform: { type: string }
+        app_version: { type: string }
+        display_name: { type: [string, "null"] }
+        flagged: { type: boolean }
+        flag_reason: { type: [string, "null"] }
+        sos_count: { type: integer }
+        last_seen_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    # ---- mesh envelope
+    MeshEnvelope:
+      type: object
+      description: |
+        Wire format carried hand to hand and uploaded by gateways. `signature` covers the canonical JSON of
+        `{id, sender_key_id, kind, tier, max_hops, expires_at, created_at, routing, payload}` (everything except `hop_count`/`hop_path`,
+        which relays mutate). `payload` is encrypted to the backend key, so relays cannot read it.
+      required: [id, sender_key_id, kind, tier, max_hops, hop_count, expires_at, created_at, routing, payload, signature]
+      properties:
+        id: { type: string, format: uuid, description: UUIDv7 }
+        sender_key_id: { type: string, description: "Device id, or base64 public key if not yet registered" }
+        sender_public_key: { type: string, description: Include if device not yet registered }
+        kind:
+          type: string
+          enum: [sos, checkin_reply, safe, offer]
+        tier: { $ref: "#/components/schemas/Tier" }
+        max_hops: { type: integer, minimum: 1, maximum: 10 }
+        hop_count: { type: integer, minimum: 0, maximum: 10 }
+        hop_path:
+          type: array
+          items: { type: string, example: A1 }
+          description: Anonymized relay ids appended by each relay (unsigned)
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        routing:
+          type: object
+          required: [approx]
+          description: Readable by relays
+          properties:
+            approx: { $ref: "#/components/schemas/ApproxLocation" }
+            category: { $ref: "#/components/schemas/Category" }
+        payload:
+          type: string
+          description: Base64 ciphertext of `MeshPayload` JSON
+        signature: { type: string, description: Base64 ECDSA signature }
+      example:
+        id: 0192a7d4-1c2e-7000-8a00-0000000000a1
+        sender_key_id: 0192a000-0000-7000-8000-0000000000d1
+        kind: sos
+        tier: critical
+        max_hops: 10
+        hop_count: 3
+        hop_path: [A1, B7, C3]
+        expires_at: "2026-11-08T16:12:00Z"
+        created_at: "2026-11-07T16:12:00Z"
+        routing: { approx: { lat: 32.99, lng: -96.75, radius_m: 1000 }, category: trapped }
+        payload: BASE64_CIPHERTEXT
+        signature: MEUCIQDexample
+    MeshPayload:
+      type: object
+      description: Plaintext inside `MeshEnvelope.payload` (documented for client/server implementers)
+      required: [lat, lng, category]
+      properties:
+        lat: { type: number }
+        lng: { type: number }
+        accuracy_m: { type: number }
+        category: { $ref: "#/components/schemas/Category" }
+        text: { type: string, maxLength: 1000 }
+        voice_note_ref: { type: [string, "null"], description: Reserved; voice notes uploaded via gateway later }
+        people_count: { type: integer, minimum: 1 }
+        trapped: { type: boolean }
+        water_rising: { type: boolean }
+        injured: { type: boolean }
+        checkin_id: { type: string, format: uuid, description: For kind=checkin_reply }
+        offer: { $ref: "#/components/schemas/OfferCreate", description: For kind=offer }
+    DeliveredReceipt:
+      type: object
+      required: [id, delivered_at, max_hops, signature]
+      properties:
+        id: { type: string, format: uuid, description: The SOS/envelope id that was delivered }
+        delivered_at: { type: string, format: date-time }
+        max_hops: { type: integer, const: 5 }
+        hop_count: { type: integer, default: 0 }
+        signature: { type: string, description: Backend signature so phones can trust it }
+
+    # ---- SOS
+    TriageReason:
+      type: object
+      required: [source, text]
+      properties:
+        source: { type: string, enum: [rule, llm, silence, manual] }
+        text: { type: string, example: 2 people trapped with rising water }
+        weight: { type: integer, description: Score contribution }
+    Triage:
+      type: object
+      required: [score, confidence, reasons]
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100 }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        summary: { type: string, example: "Critical: 2 people trapped, mentions oxygen tank. Confidence: high." }
+        reasons:
+          type: array
+          items: { $ref: "#/components/schemas/TriageReason" }
+        extracted:
+          type: object
+          description: Entities the LLM pulled from free text
+          properties:
+            vulnerable: { type: array, items: { type: string, example: elderly } }
+            medical: { type: array, items: { type: string, example: insulin } }
+            hazards: { type: array, items: { type: string, example: rising water } }
+        tier: { $ref: "#/components/schemas/Tier" }
+        llm_used: { type: boolean, description: False if the Nemotron endpoint was unavailable and only rules scored the case }
+        model: { type: [string, "null"], description: Model id that produced the extraction }
+        scored_at: { type: string, format: date-time }
+    HopInfo:
+      type: object
+      properties:
+        hop_count: { type: integer }
+        max_hops: { type: integer }
+        hop_path:
+          type: array
+          items: { type: string }
+        gateway_device_id: { type: [string, "null"], format: uuid }
+        original_created_at: { type: string, format: date-time }
+    SosCreate:
+      type: object
+      required: [id, channel, category]
+      properties:
+        id: { type: string, format: uuid, description: Client-generated UUIDv7 (idempotency key) }
+        channel: { $ref: "#/components/schemas/Channel" }
+        category: { $ref: "#/components/schemas/Category" }
+        lat: { type: number }
+        lng: { type: number }
+        accuracy_m: { type: number }
+        text: { type: string, maxLength: 1000 }
+        people_count: { type: integer, minimum: 1 }
+        trapped: { type: boolean }
+        water_rising: { type: boolean }
+        injured: { type: boolean }
+        has_voice_note: { type: boolean, description: "Audio will follow via PUT /sos/{id}/voice-note" }
+        created_at: { type: string, format: date-time, description: When the user actually pressed SOS (may be much earlier than upload) }
+    SosUpdate:
+      type: object
+      properties:
+        category: { $ref: "#/components/schemas/Category" }
+        text: { type: string }
+        people_count: { type: integer, minimum: 1 }
+        status: { $ref: "#/components/schemas/SosStatus" }
+        score_override:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Manual score; clears with `null`
+        silent: { type: boolean, description: Manually mark/unmark silent }
+        note: { type: string, description: Appends internal responder note }
+        version: { type: integer, description: Optimistic concurrency; 409 if stale }
+    Sos:
+      type: object
+      required: [id, sender_hash, channel, category, status, score, confidence, approx_location, created_at, last_heard_at]
+      properties:
+        id: { type: string, format: uuid }
+        sender_hash: { type: string }
+        channel: { $ref: "#/components/schemas/Channel" }
+        category: { $ref: "#/components/schemas/Category" }
+        status: { $ref: "#/components/schemas/SosStatus" }
+        approx_location: { $ref: "#/components/schemas/ApproxLocation" }
+        location:
+          oneOf:
+            - $ref: "#/components/schemas/LatLng"
+            - type: "null"
+          description: Exact GPS — present only for the assigned responder or admin
+        text: { type: [string, "null"] }
+        people_count: { type: [integer, "null"] }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        reasons:
+          type: array
+          items: { $ref: "#/components/schemas/TriageReason" }
+        event_id: { type: [string, "null"], format: uuid }
+        has_voice_note: { type: boolean }
+        silent: { type: boolean, description: Silence detector tripped; priority already boosted }
+        silent_since: { type: [string, "null"], format: date-time }
+        last_heard_at: { type: string, format: date-time }
+        hop: { $ref: "#/components/schemas/HopInfo" }
+        merged_into: { type: [string, "null"], format: uuid }
+        duplicate_count: { type: integer, description: Number of other reports merged into this case }
+        assignment:
+          oneOf:
+            - $ref: "#/components/schemas/AssignmentSummary"
+            - type: "null"
+        synthetic: { type: boolean }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time, description: When the backend got it }
+        updated_at: { type: string, format: date-time }
+      example:
+        id: 0192a7d4-1c2e-7000-8a00-0000000000a1
+        sender_hash: 9f2c41ab
+        channel: mesh
+        category: trapped
+        status: reported
+        approx_location: { lat: 32.99, lng: -96.75, radius_m: 1000 }
+        location: null
+        text: "Trapped, 2 people, water rising"
+        people_count: 2
+        score: 92
+        confidence: high
+        reasons:
+          - { source: rule, text: "Trapped + rising water is always critical", weight: 60 }
+          - { source: llm, text: "Mentions oxygen tank", weight: 20 }
+        event_id: 0192a000-0000-7000-8000-000000000001
+        has_voice_note: false
+        silent: false
+        silent_since: null
+        last_heard_at: "2026-11-07T16:21:00Z"
+        hop: { hop_count: 3, max_hops: 10, hop_path: [A1, B7, C3], gateway_device_id: null, original_created_at: "2026-11-07T16:12:00Z" }
+        merged_into: null
+        duplicate_count: 0
+        assignment: null
+        synthetic: true
+        version: 1
+        created_at: "2026-11-07T16:12:00Z"
+        received_at: "2026-11-07T16:21:00Z"
+        updated_at: "2026-11-07T16:21:00Z"
+    SosDetail:
+      allOf:
+        - $ref: "#/components/schemas/Sos"
+        - type: object
+          properties:
+            triage: { $ref: "#/components/schemas/Triage" }
+            checkins:
+              type: array
+              items: { $ref: "#/components/schemas/Checkin" }
+            events:
+              type: array
+              items: { $ref: "#/components/schemas/SosEvent" }
+            merged_reports:
+              type: array
+              description: Other reports folded into this case
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  channel: { $ref: "#/components/schemas/Channel" }
+                  text: { type: [string, "null"] }
+                  hop: { $ref: "#/components/schemas/HopInfo" }
+                  created_at: { type: string, format: date-time }
+            matched_offers:
+              type: array
+              items: { $ref: "#/components/schemas/OfferMatch" }
+            notes:
+              type: array
+              items:
+                type: object
+                properties:
+                  responder_id: { type: string, format: uuid }
+                  text: { type: string }
+                  created_at: { type: string, format: date-time }
+    SosPublicStatus:
+      type: object
+      required: [id, status, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/SosStatus" }
+        reached_responders: { type: boolean }
+        eta_minutes: { type: [integer, "null"] }
+        message: { type: [string, "null"], example: "Help is on the way, ETA 40 min" }
+        updated_at: { type: string, format: date-time }
+    SosEvent:
+      type: object
+      required: [id, type, at]
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [reported, received_via_gateway, triaged, merged, silent_flagged, checkin_sent, checkin_responded, assigned, en_route, on_scene, resolved, released, note, edited, closed]
+        actor:
+          type: object
+          properties:
+            kind: { type: string, enum: [system, responder, victim] }
+            id: { type: [string, "null"] }
+        data: { type: object, additionalProperties: true }
+        at: { type: string, format: date-time }
+
+    # ---- check-ins
+    Checkin:
+      type: object
+      required: [id, sos_id, sent_at, channel]
+      properties:
+        id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        channel: { $ref: "#/components/schemas/Channel" }
+        sent_at: { type: string, format: date-time }
+        responded_at: { type: [string, "null"], format: date-time }
+        response: { type: [string, "null"], enum: [ok, need_help, other, null] }
+        text: { type: [string, "null"] }
+        attempt: { type: integer, description: "1-based; escalates scoring after missed attempts" }
+        missed: { type: boolean, description: Deadline passed with no response }
+        deadline_at: { type: string, format: date-time }
+
+      example:
+        id: 0192a7f0-0000-7000-8000-0000000000c1
+        sos_id: 0192a7d4-1c2e-7000-8a00-0000000000a1
+        channel: app
+        sent_at: "2026-11-07T16:30:00Z"
+        responded_at: null
+        response: null
+        text: null
+        attempt: 2
+        missed: false
+        deadline_at: "2026-11-07T16:45:00Z"
+    # ---- assignments
+    AssignmentCreate:
+      type: object
+      required: [sos_id]
+      properties:
+        sos_id: { type: string, format: uuid }
+        responder_id: { type: string, format: uuid }
+        eta_minutes: { type: integer, minimum: 0 }
+    AssignmentUpdate:
+      type: object
+      properties:
+        status: { $ref: "#/components/schemas/AssignmentStatus" }
+        eta_minutes: { type: integer, minimum: 0 }
+        responder_id: { type: string, format: uuid, description: Reassign (admin) }
+        note: { type: string }
+        outcome:
+          type: string
+          enum: [rescued, safe_on_arrival, false_alarm, unreachable, referred]
+          description: Required when status=resolved
+    AssignmentSummary:
+      type: object
+      required: [id, responder_id, status]
+      properties:
+        id: { type: string, format: uuid }
+        responder_id: { type: string, format: uuid }
+        responder_name: { type: string }
+        status: { $ref: "#/components/schemas/AssignmentStatus" }
+        eta_minutes: { type: [integer, "null"] }
+    Assignment:
+      allOf:
+        - $ref: "#/components/schemas/AssignmentSummary"
+        - type: object
+          required: [sos_id, created_at]
+          properties:
+            sos_id: { type: string, format: uuid }
+            eta_at: { type: [string, "null"], format: date-time }
+            outcome: { type: [string, "null"] }
+            location:
+              oneOf:
+                - $ref: "#/components/schemas/LatLng"
+                - type: "null"
+              description: Exact victim location, only for the assignee/admin
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+            resolved_at: { type: [string, "null"], format: date-time }
+
+    # ---- responders
+    ResponderCreate:
+      type: object
+      required: [username, password, name, role]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        skills:
+          type: array
+          items: { type: string, example: boat }
+        organization: { type: string, example: State Farm CAT Team }
+        phone: { type: string }
+    ResponderUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        password: { type: string, format: password }
+        role: { $ref: "#/components/schemas/Role" }
+        skills: { type: array, items: { type: string } }
+        available: { type: boolean }
+        location: { $ref: "#/components/schemas/LatLng" }
+        organization: { type: string }
+        phone: { type: string }
+    Responder:
+      type: object
+      required: [id, username, name, role]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        skills: { type: array, items: { type: string } }
+        organization: { type: [string, "null"] }
+        available: { type: boolean }
+        location:
+          oneOf:
+            - $ref: "#/components/schemas/LatLng"
+            - type: "null"
+        active_assignments: { type: integer }
+        last_seen_at: { type: [string, "null"], format: date-time }
+
+    # ---- offers
+    OfferCreate:
+      type: object
+      required: [kind, lat, lng]
+      properties:
+        kind: { $ref: "#/components/schemas/OfferKind" }
+        description: { type: string, maxLength: 500, example: "I have a 14ft boat, seats 4" }
+        capacity: { type: integer, minimum: 1 }
+        lat: { type: number }
+        lng: { type: number }
+        radius_km: { type: number, default: 3, description: How far the offerer will travel }
+        expires_at: { type: string, format: date-time }
+    OfferUpdate:
+      type: object
+      properties:
+        description: { type: string }
+        capacity: { type: integer }
+        radius_km: { type: number }
+        lat: { type: number }
+        lng: { type: number }
+        status: { $ref: "#/components/schemas/OfferStatus" }
+    Offer:
+      type: object
+      required: [id, kind, status, approx_location, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        sender_hash: { type: string }
+        kind: { $ref: "#/components/schemas/OfferKind" }
+        description: { type: string }
+        capacity: { type: [integer, "null"] }
+        status: { $ref: "#/components/schemas/OfferStatus" }
+        approx_location: { $ref: "#/components/schemas/ApproxLocation" }
+        radius_km: { type: number }
+        match_count: { type: integer }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+    OfferMatch:
+      type: object
+      required: [id, offer_id, sos_id, status, distance_km]
+      properties:
+        id: { type: string, format: uuid }
+        offer_id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        status: { type: string, enum: [suggested, accepted, declined, completed] }
+        distance_km: { type: number }
+        score: { type: number, description: Match quality 0-1 }
+        created_at: { type: string, format: date-time }
+
+    # ---- backend messages + events
+    BackendMessage:
+      type: object
+      description: |
+        Backend-signed message carried over the mesh to a specific phone. Relays forward it until `max_hops`/`expires_at`, then drop it.
+        Phones verify `signature` with `signing_public_key` from `/server-info`. Signature covers everything except `hop_count`/`hop_path`.
+        The addressed phone matches on `sos_id` (or `checkin_id`) against what it sent; `body` contains no personal data beyond what that phone already knows.
+      required: [id, kind, sos_id, max_hops, hop_count, expires_at, created_at, signature]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [delivered, checkin_request, status_update]
+          description: "`delivered` = your SOS reached responders; `checkin_request` = respond via PATCH /checkins/{id} or a checkin_reply envelope; `status_update` = assignment progress"
+        sos_id: { type: string, format: uuid }
+        checkin_id: { type: [string, "null"], format: uuid }
+        body:
+          type: object
+          properties:
+            status: { $ref: "#/components/schemas/SosStatus" }
+            eta_minutes: { type: [integer, "null"] }
+            message: { type: [string, "null"], example: "Help is on the way, ETA 40 min" }
+            deadline_at: { type: [string, "null"], format: date-time }
+        max_hops: { type: integer, minimum: 1, maximum: 10, example: 5 }
+        hop_count: { type: integer, default: 0 }
+        hop_path: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        signature: { type: string }
+      example:
+        id: 0192a7e0-5b1c-7000-8a00-0000000000b1
+        kind: status_update
+        sos_id: 0192a7d4-1c2e-7000-8a00-0000000000a1
+        body: { status: en_route, eta_minutes: 40, message: "Help is on the way, ETA 40 min" }
+        max_hops: 5
+        hop_count: 0
+        hop_path: []
+        expires_at: "2026-11-07T22:30:00Z"
+        created_at: "2026-11-07T16:30:00Z"
+        signature: MEUCIQDexample
+    EventCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: "Hurricane Demo 2026" }
+        region:
+          type: object
+          description: Bounding box the event covers
+          properties:
+            min_lat: { type: number }
+            min_lng: { type: number }
+            max_lat: { type: number }
+            max_lng: { type: number }
+        retention_days: { type: integer, default: 7, minimum: 0 }
+        synthetic: { type: boolean, description: Demo event; all data is synthetic }
+    EventUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        region: { type: object, additionalProperties: true }
+        retention_days: { type: integer, minimum: 0 }
+    Event:
+      type: object
+      required: [id, name, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [active, closed, purged] }
+        region: { type: [object, "null"], additionalProperties: true }
+        retention_days: { type: integer }
+        synthetic: { type: boolean }
+        case_count: { type: integer }
+        open_case_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: [string, "null"], format: date-time }
+        purge_at: { type: [string, "null"], format: date-time }
+        purged_at: { type: [string, "null"], format: date-time }
+
+    # ---- mesh / map
+    MeshStats:
+      type: object
+      required: [avg_hops, max_hops_seen, waiting_offline, window_minutes]
+      properties:
+        window_minutes: { type: integer }
+        messages_received: { type: integer }
+        avg_hops: { type: number }
+        longest_chain:
+          type: object
+          properties:
+            hops: { type: integer }
+            hop_path: { type: array, items: { type: string } }
+            sos_id: { type: [string, "null"], format: uuid }
+        max_hops_seen: { type: integer }
+        waiting_offline:
+          type: integer
+          description: Estimate of messages still held on phones (sent but not yet delivered; derived from gateway reports and silence)
+        active_gateways: { type: integer }
+        by_tier:
+          type: object
+          additionalProperties: { type: integer }
+        median_delivery_delay_seconds: { type: number, description: created_at -> received_at }
+        rejected:
+          type: object
+          properties:
+            bad_signature: { type: integer }
+            expired: { type: integer }
+            hop_limit_exceeded: { type: integer }
+            rate_limited: { type: integer }
+    Deadzone:
+      type: object
+      required: [id, center, radius_m, status, detected_at]
+      properties:
+        id: { type: string, format: uuid }
+        center: { $ref: "#/components/schemas/LatLng" }
+        radius_m: { type: integer }
+        status: { type: string, enum: [open, being_checked, dismissed] }
+        reason: { type: string, example: "No reports or check-ins for 6h; neighbouring cells have 14 active cases" }
+        last_activity_at: { type: [string, "null"], format: date-time }
+        neighbor_case_count: { type: integer }
+        detected_at: { type: string, format: date-time }
+
+    # ---- websocket events (not REST)
+    WsFrame:
+      type: object
+      required: [event, data, ts]
+      properties:
+        event:
+          type: string
+          enum: [sos.created, sos.updated, sos.merged, sos.silent, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
+        ts: { type: string, format: date-time }
+        data: {}
+      discriminator:
+        propertyName: event
+      example:
+        event: sos.silent
+        ts: "2026-11-07T17:02:00Z"
+        data: { id: 0192a7d4-1c2e-7000-8a00-0000000000a1, status: reported, silent: true, score: 97 }
+    WsEventSos:
+      description: "Payload for `sos.created`, `sos.updated`, `sos.silent` (data is a full `Sos`; location redacted per the receiving responder)"
+      allOf:
+        - $ref: "#/components/schemas/Sos"
+    WsEventSosMerged:
+      description: Payload for `sos.merged`
+      type: object
+      required: [primary_id, merged_ids]
+      properties:
+        primary_id: { type: string, format: uuid }
+        merged_ids: { type: array, items: { type: string, format: uuid } }
+    WsEventCheckin:
+      description: Payload for `checkin.sent` / `checkin.responded`
+      allOf:
+        - $ref: "#/components/schemas/Checkin"
+    WsEventAssignment:
+      description: Payload for `assignment.created` / `assignment.updated`
+      allOf:
+        - $ref: "#/components/schemas/Assignment"
+    WsEventOffer:
+      description: Payload for `offer.created`
+      allOf:
+        - $ref: "#/components/schemas/Offer"
+    WsEventOfferMatched:
+      description: Payload for `offer.matched`
+      allOf:
+        - $ref: "#/components/schemas/OfferMatch"
+    WsEventDeadzones:
+      description: Payload for `deadzones.updated`
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Deadzone" }
+    WsEventMeshStats:
+      description: Payload for `mesh.stats` (pushed about every 10 s while connected)
+      allOf:
+        - $ref: "#/components/schemas/MeshStats"
