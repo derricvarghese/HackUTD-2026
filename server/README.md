@@ -3,6 +3,16 @@
 TypeScript / Node 22 / Express 5 backend for Beacon: REST API (`/v1`), WebSocket hub (`/v1/ws`) and the responder dashboard (static, SPA fallback).
 Contract: `../openapi.yaml` (source of truth; every request and, in dev/test, every response is validated against it). Design: `../docs/server-design.md`. Crypto wire format for the Android app: `docs/crypto.md`.
 
+## Run with Docker
+
+```bash
+cd server
+cp .env.example .env && npm run keys -- --write   # JWT_SECRET + backend keys are required in production mode
+docker compose up -d --build                      # db + server (built from server/Dockerfile) on :3000
+```
+
+The compose file builds the image from `server/Dockerfile` (context = repo root, since the build embeds `openapi.yaml`). Migrations and seeding run on boot; the dashboard in `server/public` is served at `/`. Set `NEMOTRON_BASE_URL`, `NEMOTRON_API_KEY`, `NEMOTRON_MODEL` and `DEMO_MODE` in `.env` to configure triage and demo mode.
+
 ## Quick start
 
 ```bash
