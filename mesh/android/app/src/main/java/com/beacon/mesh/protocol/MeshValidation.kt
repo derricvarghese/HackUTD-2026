@@ -8,7 +8,7 @@ import java.util.Base64
  * to the backend, so relays never see it.
  */
 object MeshValidation {
-    val KINDS = setOf("sos", "checkin_reply", "safe", "offer", "heartbeat")
+    val KINDS = setOf("sos", "checkin_reply", "safe", "heartbeat")
     private val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
     const val MAX_PAYLOAD_CHARS = 16_000
 

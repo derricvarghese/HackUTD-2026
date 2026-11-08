@@ -20,6 +20,16 @@ import com.beacon.mesh.gateway.GatewaySync
 import com.beacon.mesh.gateway.GatewayUploader
 import com.beacon.mesh.gateway.UploadSummary
 import com.beacon.mesh.heartbeat.Heartbeat
+import com.beacon.mesh.heartbeat.HeartbeatExtras
+import com.beacon.mesh.identity.IdentityReset
+import com.beacon.mesh.identity.IdentityResetResult
+import com.beacon.mesh.identity.TransportIdentity
+import com.beacon.mesh.welfare.AndroidWelfareNotifier
+import com.beacon.mesh.welfare.DeliveryOutcome
+import com.beacon.mesh.welfare.MeshReplySender
+import com.beacon.mesh.welfare.WelfareManager
+import com.beacon.mesh.welfare.WelfareReplier
+import com.beacon.mesh.welfare.WelfareResponse
 import com.beacon.mesh.net.ApiResult
 import com.beacon.mesh.net.BeaconApi
 import com.beacon.mesh.net.RequestSigner
@@ -52,9 +62,9 @@ data class UploadResult(val atMs: Long, val messageId: String, val ok: Boolean, 
 /** Last known GPS fix (null in the snapshot when there is none). */
 data class GpsFix(val accuracyM: Float?, val timeMs: Long)
 
-/** Heartbeat state for the Mesh status screen. */
+/** Heartbeat state for the Mesh status screen. The heartbeat is automatic: it runs whenever the mesh service runs. */
 data class HeartbeatUi(
-    /** An event is active (from /server-info, last known), so heartbeats are being sent. */
+    /** The mesh service runs, so heartbeats are being sent (no event needed). */
     val active: Boolean = false,
     val lastSentMs: Long = 0,
     /** True when the last heartbeat went over the mesh instead of POST /v1/heartbeats. */
@@ -96,8 +106,10 @@ data class MeshSnapshot(
     val serverReachable: Boolean? = null,
     val serverInfoAtMs: Long = 0,
     val heartbeat: HeartbeatUi = HeartbeatUi(),
-    /** Check-ins the backend asked this phone to answer and that are still open. */
+    /** Welfare check-ins held on this phone (open and recently answered); the UI filters what it needs. */
     val checkins: List<CheckinPrompt> = emptyList(),
+    /** SHA-256 of this phone's signing key (hex); the first 8 chars identify the device identity before it is registered. */
+    val keyFingerprint: String = "",
     /** Profile sync bookkeeping (no profile content). */
     val profile: ProfileStatus = ProfileStatus(),
 )
@@ -114,7 +126,16 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
 
     private val signer = KeystoreSigner()
     val config = BackendConfig(PrefsKeyValueStore(prefs), BuildConfig.BACKEND_ENC_PUBLIC_KEY, BuildConfig.BACKEND_SIGN_PUBLIC_KEY)
-    val router = MeshRouter(signer, SqliteMessageStore(app), config)
+    private val store = SqliteMessageStore(app)
+    val router = MeshRouter(signer, store, config)
+    /** Welfare check-ins: dedupe, persistence, notification. Safe to call from any thread. */
+    val welfare = WelfareManager(
+        store, AndroidWelfareNotifier(app),
+        log = { line -> main.post { append(line) } }, onChange = { main.post { notifyChanged() } },
+        reminderIntervalMs = { config.checkinReminderSeconds * 1000L },
+    )
+    private val replier = WelfareReplier(welfare, MeshReplySender { p, r -> sendMeshReply(p, r) }, log = { append(it) })
+    private val replyInFlight = HashSet<String>()
     val relayId: String get() = router.relayId
 
     private val api = BeaconApi(
@@ -124,6 +145,17 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     /** The user's identity profile: encrypted at rest, synced by [profileSync]. */
     val profiles = ProfileRepository(KeystoreProfileStorage(app))
     private val profileSync = ProfileSync(api, profiles, config, log = { append(it) })
+    private val identity = IdentityReset(
+        signer, config,
+        object : TransportIdentity {
+            override fun regenerateInstanceId() = transport.regenerateInstanceId()
+            override fun forgetPeers() = router.clearPeers()
+        },
+        PrefsKeyValueStore(prefs),
+        cancelWelfare = { welfare.cancelAll() },
+        resetProfileSync = { profiles.resetForNewDevice() },
+        onNewPublicKey = { api.publicKeyB64 = it },
+    )
     private var profileBusy = false
     private val transport = BleMeshTransport(app, main)
     private val uploader = GatewayUploader(app, main, router.relayId)
@@ -167,6 +199,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         router.isOnline = { uploader.isOnline }
         router.upload = { if (!it.uploaded) inFlight.add(it.id); uploader.upload(it) }
         router.onChange = { notifyChanged() }
+        router.checkinSink = { welfare.ingest(listOf(it)) }
+        router.onSosResolved = { welfare.cancelForSos(it) }
         router.log = { append(it) }
         router.profileSummary = {
             val r = profiles.current
@@ -175,7 +209,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         profiles.onChange = { main.post { notifyChanged() } }
         uploader.sync = GatewaySync(api, router, config, log = { append(it) })
         // Own SOS created while online go straight to POST /v1/sos once; failures fall back to the mesh batch.
-        uploader.tryDirect = { it.isOwn && directAttempted.add(it.id) }
+        // Only messages of the CURRENT device identity go out under this device's signature (not ones from before a reset).
+        uploader.tryDirect = { it.isOwn && it.envelope.senderPublicKey == router.ownPublicKey && directAttempted.add(it.id) }
         uploader.forceOffline = forceOffline
         uploader.backendUrl = backendUrl
         uploader.onOnline = { notifyChanged(); onBecameOnline() }
@@ -200,6 +235,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         startLocation()
         syncProfile()
         router.pruneExpired()
+        welfare.restore() // open check-ins survive process death / reboot via the database
         main.postDelayed(object : Runnable {
             override fun run() {
                 router.pruneExpired()
@@ -211,18 +247,23 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     }
 
     /**
-     * Periodic work, driven by the foreground service (every ~30 s, also with the screen off): heartbeat, and while a
-     * gateway the outbox / status / check-in polling and a /server-info refresh. Uses only the last known location.
+     * Periodic work, driven by the foreground service (every ~30 s, also with the screen off): the automatic heartbeat, and while a
+     * gateway the outbox / status / welfare check-in polling, reply retries and a /server-info refresh. Uses only the last known location.
      */
     fun tick() {
         tickCount++
         heartbeatTick()
-        if (!uploader.isOnline) return
+        welfare.tickReminders() // overdue check-ins keep alerting (same notification) even when no server message arrives
+        if (!uploader.isOnline) {
+            retryReplies(online = false)
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - config.lastInfoAtMs > INFO_REFRESH_MS) uploader.refreshServerInfo()
         syncProfile()
         uploader.pollOutbox()
-        uploader.pollCheckins()
+        pollWelfare()
+        retryReplies(online = true)
         if (tickCount % 2 == 0) {
             val ids = router.messages.filter { it.isOwn && it.envelope.kind in setOf("sos", "safe") && it.expiresAtMs > now && it.remote?.status !in FINAL_STATUSES }.map { it.id }
             uploader.pollStatuses(ids)
@@ -234,7 +275,9 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         uploader.refreshServerInfo { syncProfile() }
         router.internetBecameAvailable()
         uploader.pollOutbox()
-        uploader.pollCheckins()
+        heartbeatTick(force = true) // connectivity is back: say so right away
+        pollWelfare()
+        retryReplies(online = true)
     }
 
     fun sendSos(category: Category, text: String?, people: Int? = null): SendResult {
@@ -253,6 +296,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
             )
             if (offline) sentTo[msg.id] = peersNow
             notifyChanged()
+            // A new SOS: heartbeat soon so the server links this device's liveness to it (a few seconds for the upload to land first).
+            main.postDelayed({ heartbeatTick(force = true) }, if (offline) 500L else 3_000L)
             SendResult.Sent(msg)
         } catch (e: SendException) {
             append("SOS not created: ${e.error.name.lowercase()}")
@@ -264,16 +309,66 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         }
     }
 
-    /** Reply "ok" / "need_help" to a backend check-in: PATCH /v1/checkins/{id} when online, else a checkin_reply envelope. */
-    fun answerCheckin(prompt: CheckinPrompt, response: String) {
-        val viaMesh = {
-            try { router.originateCheckinReply(prompt, response, nonCriticalHopCap = demoHopCap) } catch (e: SendException) { append("Check-in reply failed: ${e.error.name.lowercase()}") }
-            notifyChanged()
+    // ---- Welfare check-ins ----
+
+    /**
+     * The person answered a welfare check-in (notification button, or in-app screen). Marks it answered locally at once
+     * (removes the notification), then delivers: `PATCH /v1/checkins/{id}` when online, else a `checkin_reply` mesh envelope.
+     * `no_longer_need_help` also shows the case as resolved and stops further urgency. [done] runs on the main thread when delivery
+     * has been attempted.
+     */
+    fun answerCheckin(checkinId: String, response: String, done: () -> Unit = {}) {
+        if (!WelfareResponse.isKnown(response)) { done(); return }
+        val p = welfare.answer(checkinId, response)
+        if (p == null) { done(); return }
+        if (response == WelfareResponse.NO_LONGER_NEED_HELP && !p.isTest) {
+            router.markResolvedLocally(p.sosId, app.getString(R.string.welfare_resolved_message))
+            welfare.cancelForSos(p.sosId)
         }
-        if (!uploader.isOnline) { viaMesh(); return }
-        val at = System.currentTimeMillis()
-        uploader.background({ api.respondCheckin(prompt.checkinId, response, null, at) }) { r ->
-            if (r is ApiResult.Ok) router.markCheckinAnswered(prompt.checkinId, response) else viaMesh()
+        deliverReply(p, done)
+        notifyChanged()
+    }
+
+    /** Debug: a fake check-in notification with a 20 s deadline, handled entirely on the phone (no server call). */
+    fun scheduleTestCheckin() {
+        welfare.ingest(listOf(WelfareManager.testPrompt(System.currentTimeMillis())))
+    }
+
+    private fun deliverReply(p: CheckinPrompt, done: () -> Unit) {
+        if (p.checkinId in replyInFlight) { done(); return }
+        if (p.isTest || !uploader.isOnline) {
+            replier.apply(p, false, null); notifyChanged(); done(); return
+        }
+        replyInFlight.add(p.checkinId)
+        val at = p.answeredAtMs ?: System.currentTimeMillis()
+        uploader.background({ api.respondCheckin(p.checkinId, p.response.orEmpty(), null, at) }) { r ->
+            replyInFlight.remove(p.checkinId)
+            val outcome = replier.apply(p, true, r ?: ApiResult.Failure(null, null, "error"))
+            if (outcome == DeliveryOutcome.DELIVERED || outcome == DeliveryOutcome.CLEARED) append("Check-in answer delivered")
+            notifyChanged(); done()
+        }
+    }
+
+    private fun sendMeshReply(p: CheckinPrompt, response: String): Boolean = try {
+        router.originateCheckinReply(p, response, nonCriticalHopCap = demoHopCap); true
+    } catch (e: SendException) {
+        append("Check-in reply failed: ${e.error.name.lowercase()}"); false
+    }
+
+    /** Answers that did not reach the server yet: retry with backoff (online) or hand them to the mesh (offline). */
+    private fun retryReplies(online: Boolean) {
+        welfare.dueReplies().forEach { p ->
+            if (online) deliverReply(p) {} else if (!p.meshReplied) replier.apply(p, false, null)
+        }
+    }
+
+    /** GET /v1/checkins/pending: new check-ins raise the notification; ones the server dropped are cleared. */
+    private fun pollWelfare() {
+        uploader.pollCheckins { r ->
+            if (r is ApiResult.Ok) {
+                welfare.ingest(r.value)
+                welfare.reconcile(r.value.map { it.checkinId }.toSet())
+            }
         }
     }
 
@@ -299,6 +394,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
 
     /** Wipes the local copy now; the server copy is erased as soon as the phone is online. */
     fun deleteProfile() {
+        welfare.cancelAll() // consent withdrawn: no more check-in notifications
         profiles.eraseLocal()
         syncProfile(force = true)
     }
@@ -316,28 +412,36 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     /** Onboarding: fetch the latest `profile_required` / consent version if we can reach the server. */
     fun refreshServerInfo() { if (uploader.isOnline) uploader.refreshServerInfo() }
 
-    // ---- Heartbeats ----
+    // ---- Heartbeats (automatic liveness; nobody ever presses anything) ----
 
-    private fun heartbeatTick() {
-        if (!config.eventActive) return
+    /**
+     * Sends the heartbeat when it is due: every `heartbeat_interval_seconds` (cached /server-info, default 300) for as long as the mesh
+     * service runs, with or without an active event and while an SOS is open. [force] sends now (connectivity returned, SOS created).
+     */
+    private fun heartbeatTick(force: Boolean = false) {
         val now = System.currentTimeMillis()
-        val interval = config.heartbeatIntervalSeconds
-        if (!Heartbeat.due(prefs.getLong("hbLast", 0), now, interval)) return
-        val loc = lastLocation ?: return // never spin up GPS for a heartbeat
-        val seq = prefs.getLong("hbSeq", 0) + 1
+        val loc = lastLocation // never spin up GPS for a heartbeat
+        if (!Heartbeat.shouldSend(now, prefs.getLong(Heartbeat.KEY_LAST, 0), config.heartbeatIntervalSeconds, force, loc != null) || loc == null) return
+        val seq = prefs.getLong(Heartbeat.KEY_SEQ, 0) + 1
         val battery = batteryInfo()
-        val hb = Heartbeat.create(now, loc.latitude, loc.longitude, battery?.first, battery?.second, loc.hasSpeed() && loc.speed > 1.0f, seq)
+        val online = uploader.isOnline
+        val extras = HeartbeatExtras(
+            transport = if (online) "direct" else "mesh", network = networkKind(), peersNearby = router.connectedPeers.size,
+            gateway = online, openSosIds = Heartbeat.openSosIds(router.messages, now, router.ownPublicKey),
+        )
+        val hb = Heartbeat.create(now, loc.latitude, loc.longitude, battery?.first, battery?.second, loc.hasSpeed() && loc.speed > 1.0f, seq, extras)
         // Optimistic bookkeeping so a slow request is not repeated every tick.
-        prefs.edit().putLong("hbLast", now).putLong("hbSeq", seq).apply()
-        if (uploader.isOnline) {
-            uploader.background({ api.heartbeat(hb) }) { r ->
+        prefs.edit().putLong(Heartbeat.KEY_LAST, now).putLong(Heartbeat.KEY_SEQ, seq).apply()
+        if (online) {
+            uploader.background({ api.heartbeat(hb, now) }) { r ->
                 when {
                     r is ApiResult.Ok -> {
-                        prefs.edit().putBoolean("hbMesh", false).apply()
-                        if (!r.value.eventActive) config.setEventActive(false)
+                        prefs.edit().putBoolean(Heartbeat.KEY_MESH, false).apply()
+                        welfare.ingest(r.value.pendingCheckins)
                     }
-                    r is ApiResult.Failure && r.code == 404 -> config.setEventActive(false) // no active event any more
-                    else -> sendHeartbeatViaMesh(hb, loc)
+                    // 404: neither an active event nor an open SOS for this device; 429: slow down. Nothing to relay either way.
+                    r is ApiResult.Failure && (r.code == 404 || r.code == 429) -> Unit
+                    else -> sendHeartbeatViaMesh(Heartbeat.withTransport(hb, "mesh"), loc)
                 }
                 notifyChanged()
             }
@@ -350,10 +454,38 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     private fun sendHeartbeatViaMesh(hb: org.json.JSONObject, loc: Location) {
         try {
             router.originateHeartbeat(Heartbeat.meshPayload(hb), com.beacon.mesh.protocol.Routing.cell(loc.latitude), com.beacon.mesh.protocol.Routing.cell(loc.longitude))
-            prefs.edit().putBoolean("hbMesh", true).apply()
+            prefs.edit().putBoolean(Heartbeat.KEY_MESH, true).apply()
         } catch (e: SendException) {
             append("Heartbeat skipped: ${e.error.name.lowercase()}")
         }
+    }
+
+    private fun networkKind(): String {
+        val cm = connectivity ?: return Heartbeat.networkKind(false, false, false, known = false)
+        val net = cm.activeNetwork
+        val caps = net?.let { cm.getNetworkCapabilities(it) }
+        return Heartbeat.networkKind(
+            net != null && caps != null,
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true,
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true,
+        )
+    }
+
+    // ---- Demo: new identity ----
+
+    /**
+     * Debug: become a new device for the server (see [IdentityReset]). Held messages and the profile are kept; the profile is
+     * uploaded again for the new device as soon as the phone is online.
+     */
+    fun resetIdentity(): IdentityResetResult {
+        val result = identity.reset()
+        append("Device identity reset")
+        notifyChanged()
+        if (uploader.isOnline) {
+            uploader.refreshServerInfo { syncProfile(force = true) }
+            heartbeatTick(force = true)
+        }
+        return result
     }
 
     /** Battery percent and charging state from the sticky broadcast (no permission, no polling). */
@@ -395,8 +527,9 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         deviceId = config.deviceId,
         serverReachable = serverReachable,
         serverInfoAtMs = config.lastInfoAtMs,
-        heartbeat = HeartbeatUi(config.eventActive, prefs.getLong("hbLast", 0), prefs.getBoolean("hbMesh", false), config.heartbeatIntervalSeconds),
-        checkins = router.checkinPrompts.filter { it.response == null },
+        heartbeat = HeartbeatUi(started, prefs.getLong(Heartbeat.KEY_LAST, 0), prefs.getBoolean(Heartbeat.KEY_MESH, false), config.heartbeatIntervalSeconds),
+        checkins = welfare.all(),
+        keyFingerprint = IdentityReset.fingerprint(signer.publicKeyDer),
         profile = ProfileStatus.of(profiles.current, config.profileRequired, config.profileConsentVersion)
             .copy(bannerDismissed = profiles.bannerDismissedThisSession),
     )

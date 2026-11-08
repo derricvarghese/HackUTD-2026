@@ -10,6 +10,8 @@ data class UiSettings(
     val onboardingDone: Boolean = false,
     /** Master switch for every haptic in the app, including hold-to-send. */
     val hapticsEnabled: Boolean = true,
+    /** Shows the Responder tab (sign in with a dashboard account). Off by default: the victim app is unchanged. */
+    val responderMode: Boolean = false,
     /** Permissions we have already requested once; needed to tell "denied" from "never asked". */
     val askedPermissions: Set<String> = emptySet(),
 )
@@ -23,6 +25,7 @@ class UiPrefs(context: Context) {
         dynamicColor = prefs.getBoolean("dynamic", true),
         onboardingDone = prefs.getBoolean("onboarded", false),
         hapticsEnabled = prefs.getBoolean("haptics", true),
+        responderMode = prefs.getBoolean("responder", false),
         askedPermissions = prefs.getStringSet("asked", emptySet()).orEmpty().toSet(),
     )
 
@@ -32,6 +35,7 @@ class UiPrefs(context: Context) {
             .putBoolean("dynamic", s.dynamicColor)
             .putBoolean("onboarded", s.onboardingDone)
             .putBoolean("haptics", s.hapticsEnabled)
+            .putBoolean("responder", s.responderMode)
             .putStringSet("asked", s.askedPermissions)
             .apply()
     }

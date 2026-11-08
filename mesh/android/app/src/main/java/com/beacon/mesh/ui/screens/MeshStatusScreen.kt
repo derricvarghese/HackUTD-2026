@@ -59,6 +59,7 @@ fun MeshStatusScreen(mesh: MeshSnapshot, items: List<MessageItem>, system: Syste
                 GatewayCard(mesh, now, Modifier.weight(1f))
                 BackendCard(mesh, now, Modifier.weight(1f))
                 HeartbeatCard(mesh, now, Modifier.weight(1f))
+                WelfareReadinessCard(system, Modifier.weight(1f))
                 ProfileSyncCard(mesh, Modifier.weight(1f))
                 GpsCard(mesh, system, Modifier.weight(1f))
             }

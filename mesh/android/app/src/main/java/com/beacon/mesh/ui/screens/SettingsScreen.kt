@@ -73,6 +73,7 @@ fun SettingsScreen(
     onDynamic: (Boolean) -> Unit,
     onOpenDebug: () -> Unit,
     onHaptics: (Boolean) -> Unit = {},
+    onResponderMode: (Boolean) -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onRetryProfile: () -> Unit = {},
 ) {
@@ -154,6 +155,25 @@ fun SettingsScreen(
                             if (on) haptics.toggle(true)
                         },
                     )
+                }
+            }
+
+            ElevatedSection {
+                SectionTitle(stringResource(R.string.settings_responder))
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_responder_title), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            stringResource(R.string.settings_responder_body),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = settings.responderMode, onCheckedChange = haptics.onToggle(onResponderMode))
                 }
             }
 

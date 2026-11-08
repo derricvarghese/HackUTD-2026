@@ -60,6 +60,8 @@ data class MessageItem(
     /** Human text from the backend ("Help is on the way, ETA 40 min"). */
     val statusMessage: String? = null,
     val rejectReason: String? = null,
+    /** Welfare check-in state of this own SOS (due countdown / what the person answered), null for none. */
+    val welfare: com.beacon.mesh.welfare.WelfareState? = null,
 )
 
 object MessageUi {
@@ -67,6 +69,8 @@ object MessageUi {
         m: StoredMessage,
         sentToPeers: Map<String, Int> = emptyMap(),
         uploadingIds: Set<String> = emptySet(),
+        checkins: List<com.beacon.mesh.store.CheckinPrompt> = emptyList(),
+        nowMs: Long = System.currentTimeMillis(),
     ): MessageItem {
         val payload = m.ownPayload?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val relayed = sentToPeers[m.id] ?: 0
@@ -112,6 +116,7 @@ object MessageUi {
             etaMinutes = remote?.etaMinutes,
             statusMessage = remote?.message,
             rejectReason = m.rejectReason,
+            welfare = if (m.isOwn) com.beacon.mesh.welfare.WelfareState.of(m.id, checkins, nowMs) else null,
         )
     }
 

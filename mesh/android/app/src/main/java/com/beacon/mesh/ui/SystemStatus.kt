@@ -26,6 +26,7 @@ import androidx.core.location.LocationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.beacon.mesh.welfare.WelfarePermissions
 import com.beacon.mesh.ui.logic.PermGroup
 import com.beacon.mesh.ui.logic.PermissionPlan
 
@@ -36,6 +37,8 @@ data class SystemStatus(
     val bluetoothOn: Boolean = false,
     val locationOn: Boolean = false,
     val sdk: Int = Build.VERSION.SDK_INT,
+    /** Notifications are switched on for the app (welfare check-ins need them). Default true for previews and tests. */
+    val notificationsEnabled: Boolean = true,
 ) {
     private fun has(group: PermGroup, any: Boolean = false): Boolean {
         val p = PermissionPlan.permissions(group, sdk)
@@ -62,7 +65,10 @@ fun readSystemStatus(context: Context, activity: Activity?): SystemStatus {
     val bt = context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
     val lm = context.getSystemService(LocationManager::class.java)
     val loc = lm != null && LocationManagerCompat.isLocationEnabled(lm)
-    return SystemStatus(granted, rationale, bt, loc, sdk)
+    return SystemStatus(
+        granted, rationale, bt, loc, sdk,
+        notificationsEnabled = WelfarePermissions.notificationsEnabled(context),
+    )
 }
 
 /** Live [SystemStatus] with an explicit [refresh] for use right after a permission result. */

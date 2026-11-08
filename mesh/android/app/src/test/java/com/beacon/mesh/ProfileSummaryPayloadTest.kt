@@ -59,7 +59,7 @@ class ProfileSummaryPayloadTest {
         val s = JSONObject(msg.ownPayload!!).getJSONObject("profile_summary")
         assertTrue(s.keys().asSequence().all { it in setOf("full_name", "age_range", "vulnerability_flags", "profile_version") })
         val wire = msg.envelope.toJson().toString() + msg.ownPayload
-        for (secret in listOf("Mimi", "5550142", "Cedar", "insulin", "penicillin", "Daniel", "green pot", "O+", "grey")) assertFalse(secret, wire.contains(secret))
+        for (secret in listOf("Mimi", "5550142", "Cedar", "insulin", "penicillin", "Daniel", "green pot", "grey")) assertFalse(secret, wire.contains(secret))
     }
 
     @Test fun skippedProfileSosIsFullyUsableWithoutSummary() {

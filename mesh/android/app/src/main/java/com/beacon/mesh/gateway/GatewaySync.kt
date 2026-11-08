@@ -181,7 +181,4 @@ class GatewaySync(
     }
 
     fun fetchPendingCheckins(): ApiResult<List<CheckinPrompt>> = api.pendingCheckins(now())
-    fun applyPendingCheckins(r: ApiResult<List<CheckinPrompt>>) {
-        if (r is ApiResult.Ok) r.value.forEach { router.addPrompt(it) }
-    }
 }

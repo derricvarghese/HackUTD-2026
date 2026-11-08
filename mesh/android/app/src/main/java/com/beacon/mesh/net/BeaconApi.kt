@@ -8,6 +8,7 @@ import com.beacon.mesh.protocol.Iso
 import com.beacon.mesh.protocol.MeshEnvelope
 import com.beacon.mesh.store.CheckinPrompt
 import com.beacon.mesh.store.RemoteStatus
+import com.beacon.mesh.welfare.CheckinParser
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -31,7 +32,8 @@ data class BatchResponse(val results: List<BatchItem>, val receipts: List<Delive
 /** Server copy of the profile as far as the sync engine cares: version plus the full body (device's own view). */
 data class ServerProfile(val profileVersion: Int, val profile: JSONObject, val created: Boolean)
 
-data class HeartbeatAck(val eventActive: Boolean, val nextInSeconds: Int?)
+/** 202 body of `POST /heartbeats`: [eventActive] is false when accepted only because the device has an open SOS. */
+data class HeartbeatAck(val eventActive: Boolean, val nextInSeconds: Int?, val pendingCheckins: List<CheckinPrompt> = emptyList())
 
 /**
  * Blocking client for the Beacon REST contract (openapi.yaml). Call off the main thread.
@@ -42,9 +44,12 @@ class BeaconApi(
     private val http: HttpClient,
     private val signer: RequestSigner,
     private val config: BackendConfig,
-    private val publicKeyB64: String,
+    publicKeyB64: String,
     private val appVersion: String,
 ) {
+    /** Base64 SPKI sent to `POST /v1/devices`; replaced when the device identity is reset. */
+    @Volatile var publicKeyB64: String = publicKeyB64
+
     private val base = baseUrl.trim().trimEnd('/')
     private val basePath = try { URL(base).path.trimEnd('/') } catch (e: Exception) { "" }
 
@@ -93,28 +98,28 @@ class BeaconApi(
         }
     }
 
+    /** GET /v1/checkins/pending: unanswered, not-yet-missed welfare check-ins of this device. */
     fun pendingCheckins(now: Long): ApiResult<List<CheckinPrompt>> = signedCall("GET", "/v1/checkins/pending", null) {
-        val a = JSONObject(it).getJSONArray("data")
-        (0 until a.length()).map { i ->
-            val c = a.getJSONObject(i)
-            CheckinPrompt(
-                c.getString("id"), c.getString("sos_id"), null,
-                Iso.parse(c.optString("deadline_at", "")), now, null,
-            )
-        }
+        CheckinParser.fromRestArray(JSONObject(it).getJSONArray("data"), now)
     }
 
-    /** PATCH /v1/checkins/{id}; response is ok | need_help | other. */
+    /** PATCH /v1/checkins/{id}: response is still_here | no_longer_need_help | need_urgent_help. */
     fun respondCheckin(checkinId: String, response: String, text: String?, respondedAtMs: Long): ApiResult<Unit> {
         val body = JSONObject().put("response", response).put("responded_at", Iso.format(respondedAtMs))
         text?.let { body.put("text", it) }
         return signedCall("PATCH", "/v1/checkins/$checkinId", body.toString()) { }
     }
 
-    fun heartbeat(payload: JSONObject): ApiResult<HeartbeatAck> = signedCall("POST", "/v1/heartbeats", payload.toString()) {
-        val o = JSONObject(it)
-        HeartbeatAck(o.optBoolean("event_active", true), if (o.has("next_heartbeat_in_seconds")) o.optInt("next_heartbeat_in_seconds") else null)
-    }
+    /** POST /v1/heartbeats (automatic liveness). The 202 body may carry `pending_checkins`. */
+    fun heartbeat(payload: JSONObject, now: Long = System.currentTimeMillis()): ApiResult<HeartbeatAck> =
+        signedCall("POST", "/v1/heartbeats", payload.toString()) {
+            val o = JSONObject(it)
+            HeartbeatAck(
+                o.optBoolean("event_active", true),
+                if (o.has("next_heartbeat_in_seconds") && !o.isNull("next_heartbeat_in_seconds")) o.optInt("next_heartbeat_in_seconds") else null,
+                CheckinParser.fromRestArray(o.optJSONArray("pending_checkins"), now),
+            )
+        }
 
     // ---- profile (personal data: never log bodies) ----
 

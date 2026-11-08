@@ -20,6 +20,7 @@ import com.beacon.mesh.store.InboxItem
 import com.beacon.mesh.store.MessageStore
 import com.beacon.mesh.store.RemoteStatus
 import com.beacon.mesh.store.StoredMessage
+import com.beacon.mesh.welfare.CheckinParser
 import org.json.JSONObject
 import java.util.Base64
 
@@ -48,8 +49,9 @@ class MeshRouter(
     private val config: BackendConfig,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    val relayId: String = MeshCrypto.relayId(signer.publicKeyDer)
-    private val ownPublicKey: String = b64(signer.publicKeyDer)
+    /** Both follow the signer, so a device identity reset (new key) changes them at once. */
+    val relayId: String get() = MeshCrypto.relayId(signer.publicKeyDer)
+    val ownPublicKey: String get() = b64(signer.publicKeyDer)
     var transport: MeshTransport? = null
     /** True when this phone can reach the backend (gateway mode). */
     var isOnline: () -> Boolean = { false }
@@ -61,6 +63,13 @@ class MeshRouter(
     /** Called with each own/received message that should go to the backend (the gateway decides how). */
     var upload: (StoredMessage) -> Unit = {}
     var onChange: () -> Unit = {}
+    /**
+     * A verified `checkin_request` addressed to one of our SOS. The node routes it to the welfare manager (notification);
+     * without a sink it is only stored (JVM tests).
+     */
+    var checkinSink: ((CheckinPrompt) -> Unit)? = null
+    /** The backend says one of our SOS is resolved (status_update / polled status): cancel its welfare check-ins. */
+    var onSosResolved: (String) -> Unit = {}
     var log: (String) -> Unit = {}
 
     private val peers = LinkedHashSet<String>()
@@ -107,7 +116,7 @@ class MeshRouter(
         return msg
     }
 
-    /** Answer a backend check-in over the mesh (`kind=checkin_reply`, tier normal). */
+    /** Answer a welfare check-in over the mesh (`kind=checkin_reply`, tier normal, `payload.response` = the CheckinResponse value). */
     @Throws(SendException::class)
     fun originateCheckinReply(prompt: CheckinPrompt, response: String, text: String? = null, nonCriticalHopCap: Int? = null): StoredMessage {
         val sos = store.all().firstOrNull { it.id == prompt.sosId && it.ownPayload != null }
@@ -118,7 +127,7 @@ class MeshRouter(
         val payload = JSONObject().put("checkin_id", prompt.checkinId).put("response", response)
         text?.let { payload.put("text", it) }
         val msg = create("checkin_reply", Priority.NORMAL, null, payload, Routing.build(lat, lng, null), nonCriticalHopCap)
-        store.answerPrompt(prompt.checkinId, response)
+        if (store.prompts().firstOrNull { it.checkinId == prompt.checkinId }?.response == null) store.answerPrompt(prompt.checkinId, response)
         log("CHECKIN reply ${short(msg.id)} ($response)")
         dispatchOwn(msg)
         return msg
@@ -312,13 +321,14 @@ class MeshRouter(
                 log("Status update ${short(mine.id)}: ${bm.body.optStringOrNull("status")}")
             }
             "checkin_request" -> {
-                val id = bm.checkinId ?: return
-                if (store.prompts().none { it.checkinId == id }) {
-                    store.savePrompt(CheckinPrompt(id, mine.id, bm.body.optStringOrNull("message"), bm.body.optStringOrNull("deadline_at")?.let(Iso::parse), now(), null))
-                    log("Check-in requested for ${short(mine.id)}")
-                }
+                val prompt = CheckinParser.fromBackend(bm, now()) ?: return
+                val sink = checkinSink
+                if (sink != null) sink(prompt)
+                else if (prompt.isPending(now()) && store.prompts().none { it.checkinId == prompt.checkinId }) store.savePrompt(prompt)
+                log("Check-in requested for ${short(mine.id)}")
             }
         }
+        if (bm.kind == "status_update" && bm.body.optStringOrNull("status") in RESOLVED_STATUSES) onSosResolved(mine.id)
     }
 
     private fun actReceipt(r: DeliveredReceipt) {
@@ -338,12 +348,21 @@ class MeshRouter(
     /** From GET /sos/{id}/status polling. */
     fun applyPolledStatus(id: String, s: RemoteStatus) {
         ownMessage(id)?.let { applyRemote(it, s); if (s.reachedResponders) store.markUploaded(id) }
+        if (s.status in RESOLVED_STATUSES && ownMessage(id) != null) onSosResolved(id)
         onChange()
     }
 
-    /** Check-in surfaced from GET /checkins/pending. */
-    fun addPrompt(p: CheckinPrompt) {
-        if (store.prompts().none { it.checkinId == p.checkinId }) { store.savePrompt(p); onChange() }
+    /** The person answered "I no longer need help": show the case as resolved at once (the server confirms later). */
+    fun markResolvedLocally(sosId: String, message: String) {
+        val mine = ownMessage(sosId) ?: return
+        store.updateRemote(mine.id, RemoteStatus("resolved", mine.remote?.reachedResponders ?: false, null, message, now()))
+        onChange()
+    }
+
+    /** The BLE identity changed: forget the links of the old one. */
+    fun clearPeers() {
+        peers.clear()
+        onChange()
     }
 
     fun markCheckinAnswered(checkinId: String, response: String) {
@@ -432,6 +451,7 @@ class MeshRouter(
     }
 
     private fun short(id: String) = id.take(8)
+    private companion object { val RESOLVED_STATUSES = setOf("resolved", "closed") }
     private fun b64(b: ByteArray): String = Base64.getEncoder().encodeToString(b)
 
     private fun JSONObject.optStringOrNull(k: String): String? = if (has(k) && !isNull(k)) getString(k) else null

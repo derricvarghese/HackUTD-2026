@@ -89,7 +89,9 @@ fun ScreenScaffold(
     val scroll = if (shortWindow) TopAppBarDefaults.pinnedScrollBehavior()
     else TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
-        modifier = modifier.nestedScroll(scroll.nestedScrollConnection),
+        // Only wire the app bar's scroll behaviour when there is an app bar: with no bar its connection still
+        // swallows upward scrolls ("collapsing" a bar that does not exist), which froze the Home screen.
+        modifier = if (title != null) modifier.nestedScroll(scroll.nestedScrollConnection) else modifier,
         containerColor = Color.Transparent,
         floatingActionButton = floatingActionButton,
         topBar = {

@@ -11,7 +11,6 @@ import com.beacon.mesh.MeshService
 import com.beacon.mesh.MeshSnapshot
 import com.beacon.mesh.SendError
 import com.beacon.mesh.SendResult
-import com.beacon.mesh.store.CheckinPrompt
 import com.beacon.mesh.protocol.Category
 import com.beacon.mesh.ui.logic.SosDraft
 import com.beacon.mesh.ui.theme.ThemeMode
@@ -29,6 +28,9 @@ import kotlinx.coroutines.flow.update
 sealed interface UiEvent {
     data class SosSent(val messageId: String, val category: Category) : UiEvent
     data class SosFailed(val error: SendError?) : UiEvent
+    /** A welfare check-in was answered with [response]. */
+    data class WelfareAnswered(val response: String) : UiEvent
+    data class IdentityReset(val oldId: String, val newId: String) : UiEvent
 }
 
 /**
@@ -91,6 +93,7 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
     fun setThemeMode(mode: ThemeMode) = updateSettings { it.copy(themeMode = mode) }
     fun setDynamicColor(on: Boolean) = updateSettings { it.copy(dynamicColor = on) }
     fun setHapticsEnabled(on: Boolean) = updateSettings { it.copy(hapticsEnabled = on) }
+    fun setResponderMode(on: Boolean) = updateSettings { it.copy(responderMode = on) }
     fun setOnboardingDone(done: Boolean) = updateSettings { it.copy(onboardingDone = done) }
     fun markPermissionsAsked(perms: Collection<String>) =
         updateSettings { it.copy(askedPermissions = it.askedPermissions + perms) }
@@ -101,7 +104,15 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
     }
 
     fun setHopCap(cap: Int?) { node.demoHopCap = cap?.coerceIn(1, 10) }
-    fun answerCheckin(prompt: CheckinPrompt, response: String) = node.answerCheckin(prompt, response)
+    fun answerCheckin(checkinId: String, response: String) {
+        node.answerCheckin(checkinId, response)
+        _events.trySend(UiEvent.WelfareAnswered(response))
+    }
+    fun scheduleTestCheckin() = node.scheduleTestCheckin()
+    fun resetIdentity() {
+        val r = node.resetIdentity()
+        _events.trySend(UiEvent.IdentityReset(r.oldShortId, r.newShortId))
+    }
     fun setForceOffline(on: Boolean) { node.forceOffline = on }
 
     private companion object {

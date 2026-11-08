@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_responder">Responder</string>
+
+    <!-- Settings entry -->
+    <string name="settings_responder">Responder mode</string>
+    <string name="settings_responder_title">First responder mode</string>
+    <string name="settings_responder_body">Adds a Responder tab: sign in with your dashboard account to see people who asked for help on a map. The mesh keeps relaying while you use it. Turning this off signs you out.</string>
+
+    <!-- Login -->
+    <string name="responder_login_title">First responder mode</string>
+    <string name="responder_login_body">See where people have asked for help on a map, claim a case to get their exact location, and update your status as you go.</string>
+    <string name="responder_account">Responder account</string>
+    <string name="responder_username">Username</string>
+    <string name="responder_password">Password</string>
+    <string name="responder_show_password">Show password</string>
+    <string name="responder_hide_password">Hide password</string>
+    <string name="responder_login_hint">Use your Beacon dashboard login. Server: %1$s</string>
+    <string name="responder_sign_in">Sign in</string>
+    <string name="responder_signing_in">Signing in</string>
+    <string name="responder_sign_out">Sign out</string>
+    <string name="responder_signed_in_as">%1$s (%2$s)</string>
+    <string name="responder_account_menu">Account and map options</string>
+    <string name="responder_read_only">Read-only account: you can see cases but not claim or change them.</string>
+
+    <!-- Errors -->
+    <string name="responder_err_credentials">Wrong username or password.</string>
+    <string name="responder_err_signed_out">Signed out. Sign in again.</string>
+    <string name="responder_err_claimed">Another responder already claimed this case.</string>
+    <string name="responder_err_claimed_by">Another responder already claimed this case (%1$s).</string>
+    <string name="responder_err_forbidden">Your account can\'t do that.</string>
+    <string name="responder_err_not_found">That case no longer exists.</string>
+    <string name="responder_err_rate">Too many attempts. Wait a moment and try again.</string>
+    <string name="responder_err_server">Server error (%1$d). Try again.</string>
+    <string name="responder_err_offline">Can\'t reach the server. Showing the last known cases.</string>
+    <string name="responder_err_bad_response">The server sent something unexpected.</string>
+    <string name="action_dismiss">Dismiss</string>
+
+    <!-- Connection -->
+    <string name="responder_live">Live</string>
+    <string name="responder_live_desc">Live updates connected</string>
+    <string name="responder_connecting">Connecting</string>
+    <string name="responder_reconnecting">Reconnecting</string>
+    <string name="responder_reconnecting_desc">Live updates lost, reconnecting. The list refreshes every 15 seconds meanwhile.</string>
+    <string name="responder_idle">Paused</string>
+
+    <!-- Dashboard -->
+    <string name="responder_title">Responder</string>
+    <string name="responder_refresh">Refresh</string>
+    <string name="responder_fit">Show all cases</string>
+    <string name="responder_zoom_in">Zoom in</string>
+    <string name="responder_zoom_out">Zoom out</string>
+    <string name="responder_map_description">Map of open cases, %1$d on the map. The list has the same cases.</string>
+    <string name="responder_map_attribution">© OpenStreetMap contributors</string>
+    <string name="responder_show_mesh">Show Bluetooth reports</string>
+    <plurals name="responder_open_cases">
+        <item quantity="one">%1$d open case</item>
+        <item quantity="other">%1$d open cases</item>
+    </plurals>
+    <string name="responder_updated">Updated %1$s</string>
+    <string name="responder_loading">Loading cases</string>
+    <string name="responder_loading_body">Fetching open cases from the server.</string>
+    <string name="responder_empty_title">No open cases right now</string>
+    <string name="responder_empty_body">New cases appear here as soon as they are reported.</string>
+    <string name="responder_no_match_title">Nothing matches this filter</string>
+    <string name="responder_no_match_body">Choose a different filter to see more cases.</string>
+    <string name="responder_legend_circle">Circle = the person is somewhere inside</string>
+    <string name="responder_legend_claim">Claim a case to see the exact spot</string>
+
+    <!-- Filters -->
+    <string name="responder_filter_all">All</string>
+    <string name="responder_filter_critical">Critical</string>
+    <string name="responder_filter_silent">Silent</string>
+    <string name="responder_filter_mine">Mine</string>
+    <string name="responder_filter_unclaimed">Unclaimed</string>
+
+    <!-- Case row -->
+    <string name="responder_badge_yours">Yours</string>
+    <string name="responder_silent_badge">Silent</string>
+    <string name="responder_unresponsive_badge">Not answering</string>
+    <string name="responder_priority">Priority %1$d</string>
+    <string name="responder_row_summary">%1$s, %2$s, priority %3$d, %4$s, last heard %5$s</string>
+    <string name="responder_row_sub">%1$s · %2$s · %3$s</string>
+    <string name="responder_unknown">unknown</string>
+    <string name="responder_just_now">just now</string>
+    <string name="responder_mesh_row_sub">Heard nearby over Bluetooth, not on the server yet</string>
+    <string name="responder_mesh_title">%1$s (Bluetooth)</string>
+    <string name="responder_mesh_info">This phone heard this SOS over Bluetooth. Its exact location is encrypted for the server, so only the area of about 1 km is shown. It becomes a case once any phone uploads it.</string>
+    <string name="responder_unnamed">Unnamed person</string>
+
+    <!-- Status -->
+    <string name="responder_status_reported">Waiting for help</string>
+    <string name="responder_status_assigned">Claimed</string>
+    <string name="responder_status_en_route">Responder en route</string>
+    <string name="responder_status_on_scene">Responder on scene</string>
+    <string name="responder_status_resolved">Resolved</string>
+    <string name="responder_status_other">%1$s</string>
+
+    <!-- Flags -->
+    <string name="flag_mobility">Mobility needs</string>
+    <string name="flag_medical">Medical</string>
+    <string name="flag_elderly">Elderly</string>
+    <string name="flag_child">Child</string>
+    <string name="flag_oxygen">Oxygen</string>
+    <string name="flag_sensory">Vision or hearing</string>
+    <string name="flag_cognitive">Cognitive</string>
+
+    <!-- Detail -->
+    <string name="responder_case">Case</string>
+    <string name="responder_close_case">Close case details</string>
+    <string name="responder_back_to_list">Back to the case list</string>
+    <string name="responder_header_sub">%1$s · priority %2$d</string>
+    <string name="responder_section_actions">Your actions</string>
+    <string name="responder_claim">Claim this case</string>
+    <string name="responder_en_route">I\'m on my way</string>
+    <string name="responder_on_scene">I\'m on scene</string>
+    <string name="responder_resolve">Resolve case</string>
+    <string name="responder_release">Release case</string>
+    <string name="responder_claimed_by">Claimed by %1$s</string>
+    <string name="responder_claimed_by_other">another responder</string>
+    <string name="responder_resolve_title">How did it end?</string>
+    <string name="responder_outcome_rescued">Rescued</string>
+    <string name="responder_outcome_safe_on_arrival">Safe on arrival</string>
+    <string name="responder_outcome_referred">Referred</string>
+    <string name="responder_outcome_unreachable">Couldn\'t reach them</string>
+    <string name="responder_outcome_false_alarm">False alarm</string>
+    <string name="responder_release_title">Release this case?</string>
+    <string name="responder_release_body">It goes back to the queue and you lose its exact location.</string>
+    <string name="responder_confirm">Confirm</string>
+
+    <string name="responder_section_location">Location</string>
+    <string name="responder_exact_gps">Exact GPS: %1$s, %2$s</string>
+    <string name="responder_directions">Directions in Maps</string>
+    <string name="responder_directions_area">Directions to the area</string>
+    <string name="responder_directions_area_note">Approximate: this leads to the centre of an area of about 1 km. Claim the case for the exact spot.</string>
+    <string name="responder_area_within">Somewhere within %1$d m of the circle\'s centre</string>
+    <string name="responder_claim_for_exact">Claim the case to get the exact spot.</string>
+
+    <string name="responder_section_details">Details</string>
+    <string name="responder_people">People</string>
+    <string name="responder_age">Age</string>
+    <string name="responder_needs">Needs</string>
+    <string name="responder_status">Status</string>
+    <string name="responder_last_heard">Last heard</string>
+    <string name="responder_gone_quiet">Gone quiet since the last check-in</string>
+    <string name="responder_not_answering">Phone is online but not answering welfare check-ins</string>
+    <string name="responder_welfare_missed">Missed check-ins: %1$d</string>
+    <string name="responder_hops">Relayed</string>
+    <string name="responder_hops_value">%1$d of %2$d phone hops</string>
+    <string name="responder_hop_path">Path: %1$s</string>
+    <string name="responder_text_quote">“%1$s”</string>
+
+    <string name="responder_section_triage">Why this priority</string>
+    <string name="responder_confidence">Confidence: %1$s</string>
+    <string name="responder_reason_weight">%1$s (%2$+d)</string>
+    <string name="responder_detail_loading">Loading more details</string>
+    <string name="responder_detail_failed">Couldn\'t load triage and history.</string>
+
+    <string name="responder_section_profile">Profile</string>
+    <string name="responder_profile_limited">Medical and contact details are shared only with the responder who has claimed this case.</string>
+    <string name="responder_call">Call</string>
+    <string name="responder_call_contact">Call %1$s</string>
+    <string name="responder_profile_phone">Phone</string>
+    <string name="responder_profile_conditions">Conditions</string>
+    <string name="responder_profile_medications">Medications</string>
+    <string name="responder_profile_allergies">Allergies</string>
+    <string name="responder_profile_blood">Blood type</string>
+    <string name="responder_profile_mobility">Mobility</string>
+    <string name="responder_profile_contact">Emergency contact</string>
+    <string name="responder_contact_value">%1$s (%2$s)</string>
+
+    <string name="responder_section_history">History</string>
+    <string name="responder_checkin_line">Check-in sent %1$s: %2$s</string>
+    <string name="responder_checkin_answered">answered</string>
+    <string name="responder_checkin_missed">missed</string>
+    <string name="responder_checkin_waiting">waiting</string>
+    <string name="responder_event_line">%1$s · %2$s</string>
+    <string name="responder_notes">Notes</string>
+    <string name="responder_note_label">Add a note</string>
+    <string name="responder_note_add">Add note</string>
+
+    <!-- Event types -->
+    <string name="evt_reported">Reported</string>
+    <string name="evt_received_via_gateway">Reached the server via a gateway phone</string>
+    <string name="evt_triaged">Triaged</string>
+    <string name="evt_merged">Merged with a duplicate</string>
+    <string name="evt_silent_flagged">Flagged silent</string>
+    <string name="evt_heartbeat_silent">Heartbeats stopped</string>
+    <string name="evt_contact_restored">Contact restored</string>
+    <string name="evt_checkin_sent">Check-in sent</string>
+    <string name="evt_checkin_responded">Check-in answered</string>
+    <string name="evt_checkin_missed">Check-in missed</string>
+    <string name="evt_self_resolved">Person says they no longer need help</string>
+    <string name="evt_urgent_help_requested">Person asked for urgent help</string>
+    <string name="evt_assigned">Claimed by a responder</string>
+    <string name="evt_en_route">Responder en route</string>
+    <string name="evt_on_scene">Responder on scene</string>
+    <string name="evt_resolved">Resolved</string>
+    <string name="evt_released">Released back to the queue</string>
+    <string name="evt_note">Note added</string>
+    <string name="evt_edited">Edited</string>
+    <string name="evt_closed">Closed</string>
+    <string name="evt_other">Update</string>
+
+    <!-- Location sharing / availability -->
+    <string name="responder_share_open">Sharing and availability</string>
+    <string name="responder_share_title">Share my location with dispatch</string>
+    <string name="responder_share_body">Off by default. Only while this app is open or the mesh service keeps it running.</string>
+    <string name="responder_share_resume_body">This was on when you last used the app. It is paused until you resume it.</string>
+    <string name="responder_share_resume">Resume sharing</string>
+    <string name="responder_available_title">Available for assignments</string>
+    <string name="responder_available_body">Lets dispatch know you can take a case.</string>
+    <string name="responder_sharing_chip">Sharing your location</string>
+    <string name="responder_sharing_chip_desc">Sharing your location with dispatch. Double tap to open sharing settings.</string>
+    <string name="responder_sharing_waiting">Waiting for a position</string>
+    <string name="responder_sharing_retrying">Can\'t reach the server, retrying</string>
+    <string name="responder_sharing_stopping">Removing your position from the map</string>
+    <string name="responder_share_rationale_title">Share your location?</string>
+    <string name="responder_share_rationale">Dispatch and other responders can see your position on the dashboard map while sharing is on. It stops when you turn it off, sign out or leave responder mode.</string>
+    <string name="responder_share_continue">Continue</string>
+    <string name="responder_share_denied">Location permission was not granted, so nothing is shared.</string>
+    <string name="responder_share_denied_permanent">Android will no longer ask for location. Open app settings, choose Permissions, then Location, and allow it.</string>
+    <string name="responder_share_approximate">Only approximate location is allowed, so your position on the map will be rough. Allow precise location in app settings for better results.</string>
+    <string name="responder_share_revoked">Location permission was removed, so sharing stopped and your position was cleared.</string>
+    <string name="responder_share_no_provider">No location source is available. Turn on location in system settings.</string>
+    <string name="responder_share_stop">Stop</string>
+</resources>

@@ -60,7 +60,10 @@ fun DebugScreen(
     onBack: () -> Unit,
     onHopCap: (Int?) -> Unit,
     onForceOffline: (Boolean) -> Unit,
+    onTestWelfare: () -> Unit = {},
+    onResetIdentity: () -> Unit = {},
 ) {
+    var confirmReset by rememberSaveable { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val haptics = LocalHaptics.current
     val scope = rememberCoroutineScope()
@@ -71,6 +74,23 @@ fun DebugScreen(
             IconButton(onClick = haptics.onClick(HapticEvent.Navigate, onBack)) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.action_back)) }
         },
     ) { pad ->
+        if (confirmReset) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmReset = false },
+                title = { Text(stringResource(R.string.debug_identity_dialog_title)) },
+                text = { Text(stringResource(R.string.debug_identity_dialog_body)) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = haptics.onClick(HapticEvent.Warning) { confirmReset = false; onResetIdentity() }) {
+                        Text(stringResource(R.string.debug_identity_confirm))
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = haptics.onClick(HapticEvent.LightTap) { confirmReset = false }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                },
+            )
+        }
         ScrollColumn(pad) {
             HapticsLab()
 
@@ -125,6 +145,38 @@ fun DebugScreen(
                         )
                     }
                     Switch(checked = mesh.forceOffline, onCheckedChange = haptics.onToggle(onForceOffline))
+                }
+            }
+
+            ElevatedSection {
+                SectionTitle(stringResource(R.string.debug_welfare_title))
+                Text(stringResource(R.string.debug_welfare_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FilledTonalButton(
+                    onClick = haptics.onClick(HapticEvent.Tap, onTestWelfare),
+                    shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.debug_welfare_test)) }
+            }
+
+            ElevatedSection {
+                SectionTitle(stringResource(R.string.debug_identity_title))
+                val shortId = mesh.deviceId?.take(8) ?: mesh.keyFingerprint.take(8)
+                Text(
+                    if (mesh.deviceId != null) stringResource(R.string.debug_identity_id, shortId)
+                    else stringResource(R.string.debug_identity_id, stringResource(R.string.debug_identity_unregistered, shortId)),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                )
+                Text(stringResource(R.string.debug_identity_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(
+                        onClick = haptics.onClick(HapticEvent.Success) {
+                            scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("device id", mesh.deviceId ?: mesh.keyFingerprint))) }
+                        },
+                        shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.debug_identity_copy)) }
+                    FilledTonalButton(
+                        onClick = haptics.onClick(HapticEvent.Warning) { confirmReset = true },
+                        shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.debug_identity_reset)) }
                 }
             }
 

@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Inbox
@@ -78,6 +79,8 @@ import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.haptics.rememberHaptics
 import com.beacon.mesh.ui.logic.MessageItem
 import com.beacon.mesh.ui.logic.MessageUi
+import com.beacon.mesh.ui.responder.ResponderScreen
+import com.beacon.mesh.ui.responder.ResponderViewModel
 import com.beacon.mesh.ui.screens.DebugScreen
 import com.beacon.mesh.ui.screens.HomeScreen
 import com.beacon.mesh.ui.screens.MeshStatusScreen
@@ -90,11 +93,15 @@ import com.beacon.mesh.ui.screens.ProfileReconsentDialog
 import com.beacon.mesh.ui.screens.ProfileSettingsScreen
 import com.beacon.mesh.ui.theme.BeaconTheme
 import com.beacon.mesh.ui.theme.isDark
+import com.beacon.mesh.ui.welfare.WelfareAnswerScreen
+import com.beacon.mesh.welfare.WelfareLaunch
+import com.beacon.mesh.welfare.WelfareResponse
 
 private object Routes {
     const val HOME = "home"
     const val MESSAGES = "messages"
     const val MESH = "mesh"
+    const val RESPONDER = "responder"
     const val SETTINGS = "settings"
     const val DEBUG = "settings/debug"
     const val PROFILE = "settings/profile"
@@ -104,15 +111,23 @@ private enum class Stage { PERMISSIONS, PROFILE, MAIN }
 
 private data class TopLevel(val route: String, val label: Int, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
-private val TopLevels = listOf(
+private val ResponderTop = TopLevel(Routes.RESPONDER, R.string.nav_responder, Icons.Rounded.HealthAndSafety)
+
+/** The Responder tab only exists while responder mode is on, so the victim app is unchanged otherwise. */
+private fun topLevels(responderMode: Boolean) = listOfNotNull(
     TopLevel(Routes.HOME, R.string.nav_home, Icons.Rounded.Home),
     TopLevel(Routes.MESSAGES, R.string.nav_messages, Icons.Rounded.Inbox),
     TopLevel(Routes.MESH, R.string.nav_mesh, Icons.Rounded.Hub),
+    ResponderTop.takeIf { responderMode },
     TopLevel(Routes.SETTINGS, R.string.nav_settings, Icons.Rounded.Settings),
 )
 
 @Composable
-fun BeaconApp(vm: MeshViewModel = viewModel(), profileVm: ProfileViewModel = viewModel()) {
+fun BeaconApp(
+    vm: MeshViewModel = viewModel(),
+    profileVm: ProfileViewModel = viewModel(),
+    responderVm: ResponderViewModel = viewModel(),
+) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val reduceMotion = remember {
@@ -160,7 +175,7 @@ fun BeaconApp(vm: MeshViewModel = viewModel(), profileVm: ProfileViewModel = vie
                         onFinish = { vm.setOnboardingDone(true) },
                     )
                     Stage.PROFILE -> ProfileOnboardingScreen(profileVm)
-                    Stage.MAIN -> MainShell(vm, holder, profileVm)
+                    Stage.MAIN -> MainShell(vm, holder, profileVm, responderVm, dark)
                 }
             }
         }
@@ -169,14 +184,14 @@ fun BeaconApp(vm: MeshViewModel = viewModel(), profileVm: ProfileViewModel = vie
 }
 
 @Composable
-private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: ProfileViewModel) {
+private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: ProfileViewModel, responderVm: ResponderViewModel, dark: Boolean) {
     val mesh by vm.mesh.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val draft by vm.draft.collectAsStateWithLifecycle()
     val system = holder.status
 
-    val items: List<MessageItem> = remember(mesh.messages, mesh.sentToPeers, mesh.uploadingIds) {
-        mesh.messages.map { MessageUi.map(it, mesh.sentToPeers, mesh.uploadingIds) }
+    val items: List<MessageItem> = remember(mesh.messages, mesh.sentToPeers, mesh.uploadingIds, mesh.checkins) {
+        mesh.messages.map { MessageUi.map(it, mesh.sentToPeers, mesh.uploadingIds, mesh.checkins) }
     }
 
     val nav = rememberNavController()
@@ -185,12 +200,18 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
     fun selected(route: String) = hierarchy?.any { it.route == route } == true ||
         (route == Routes.SETTINGS && (backEntry?.destination?.route == Routes.DEBUG || backEntry?.destination?.route == Routes.PROFILE))
 
+    val topLevels = remember(settings.responderMode) { topLevels(settings.responderMode) }
+
     fun goTop(route: String) {
         nav.navigate(route) {
             popUpTo(nav.graph.findStartDestination().id) { saveState = true }
             launchSingleTop = true
             restoreState = true
         }
+    }
+
+    LaunchedEffect(settings.responderMode, backEntry?.destination?.route) {
+        if (!settings.responderMode && backEntry?.destination?.route == Routes.RESPONDER) goTop(Routes.HOME)
     }
 
     var requestedMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -204,6 +225,11 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
     val noKeyText = stringResource(R.string.snack_failed_no_key)
     val noLocationText = stringResource(R.string.snack_failed_no_location)
     val viewText = stringResource(R.string.action_view)
+    val welfareStill = stringResource(R.string.welfare_snack_still)
+    val welfareResolved = stringResource(R.string.welfare_resolved_message)
+    val welfareUrgent = stringResource(R.string.welfare_snack_urgent)
+    val welfareClosed = stringResource(R.string.welfare_snack_closed)
+    val identityDoneFmt = stringResource(R.string.debug_identity_done)
     LaunchedEffect(Unit) {
         vm.events.collect { e ->
             when (e) {
@@ -214,6 +240,20 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
                         haptics.perform(HapticEvent.LightTap)
                         openMessage(e.messageId)
                     }
+                }
+                is UiEvent.WelfareAnswered -> {
+                    WelfareLaunch.close()
+                    snackbar.showSnackbar(
+                        when (e.response) {
+                            WelfareResponse.NO_LONGER_NEED_HELP -> welfareResolved
+                            WelfareResponse.NEED_URGENT_HELP -> welfareUrgent
+                            else -> welfareStill
+                        }
+                    )
+                }
+                is UiEvent.IdentityReset -> {
+                    haptics.perform(HapticEvent.Success)
+                    snackbar.showSnackbar(identityDoneFmt.format(e.newId, e.oldId))
                 }
                 is UiEvent.SosFailed -> {
                     haptics.perform(HapticEvent.Error)
@@ -236,7 +276,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
     val imeVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
 
     val navHost: @Composable (Modifier) -> Unit = { modifier ->
-        ShellNavHost(nav, modifier, vm, profileVm, mesh, items, system, settings, requestedMessage,
+        ShellNavHost(nav, modifier, vm, profileVm, responderVm, dark, mesh, items, system, settings, requestedMessage,
             onRequestConsumed = { requestedMessage = null },
             onOpenMessage = ::openMessage,
             onGoTop = ::goTop,
@@ -248,7 +288,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
             NavigationRail(
                 windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Start + WindowInsetsSides.Vertical),
             ) {
-                TopLevels.forEach { t ->
+                topLevels.forEach { t ->
                     NavigationRailItem(
                         selected = selected(t.route),
                         onClick = haptics.onClick(HapticEvent.Navigate) { goTop(t.route) },
@@ -270,7 +310,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
                 // Hidden while the keyboard is open so text fields are never squeezed.
                 if (!wide && !imeVisible) {
                     NavigationBar {
-                        TopLevels.forEach { t ->
+                        topLevels.forEach { t ->
                             NavigationBarItem(
                                 selected = selected(t.route),
                                 onClick = haptics.onClick(HapticEvent.Navigate) { goTop(t.route) },
@@ -292,6 +332,20 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
         ProfileReconsentDialog(onAgree = profileVm::reconsent, onLater = { reconsentLater = true })
     }
 
+    // Welfare check-in confirmation (from the notification, or the Home card): three big answers, back closes without answering.
+    val requestedCheckin by WelfareLaunch.requested.collectAsStateWithLifecycle()
+    requestedCheckin?.let { cid ->
+        val prompt = mesh.checkins.firstOrNull { it.checkinId == cid }
+        if (prompt != null && prompt.isPending(System.currentTimeMillis())) {
+            WelfareAnswerScreen(prompt, onAnswer = { vm.answerCheckin(cid, it) }, onClose = WelfareLaunch::close)
+        } else {
+            LaunchedEffect(cid) {
+                WelfareLaunch.close()
+                snackbar.showSnackbar(welfareClosed)
+            }
+        }
+    }
+
     draft?.let { d ->
         SosSheet(
             draft = d,
@@ -311,6 +365,8 @@ private fun ShellNavHost(
     modifier: Modifier,
     vm: MeshViewModel,
     profileVm: ProfileViewModel,
+    responderVm: ResponderViewModel,
+    dark: Boolean,
     mesh: com.beacon.mesh.MeshSnapshot,
     items: List<MessageItem>,
     system: SystemStatus,
@@ -352,7 +408,7 @@ private fun ShellNavHost(
                 onOpenMessage = onOpenMessage,
                 onFixSetup = { vm.setOnboardingDone(false) },
                 onOpenMesh = { onGoTop(Routes.MESH) },
-                onCheckinReply = vm::answerCheckin,
+                onOpenCheckin = WelfareLaunch::open,
                 onOpenProfile = { nav.navigate(Routes.PROFILE) { launchSingleTop = true } },
                 onRetryProfile = profileVm::retrySync,
                 onDismissProfileBanner = profileVm::dismissBanner,
@@ -362,6 +418,7 @@ private fun ShellNavHost(
             MessagesScreen(items, mesh.relayId, requestedMessage, onRequestConsumed)
         }
         composable(Routes.MESH) { MeshStatusScreen(mesh, items, system) }
+        composable(Routes.RESPONDER) { ResponderScreen(responderVm, mesh.messages, dark) }
         composable(
             Routes.SETTINGS,
             exitTransition = { slideOutHorizontally(spatial) { -it / 4 } + fadeOut(fastEffects) },
@@ -374,6 +431,11 @@ private fun ShellNavHost(
                 onTheme = vm::setThemeMode,
                 onDynamic = vm::setDynamicColor,
                 onHaptics = vm::setHapticsEnabled,
+                onResponderMode = { on ->
+                    vm.setResponderMode(on)
+                    // Turning the mode off signs out and wipes the stored session.
+                    if (!on) responderVm.signOut()
+                },
                 onOpenDebug = { nav.navigate(Routes.DEBUG) },
                 onOpenProfile = { nav.navigate(Routes.PROFILE) { launchSingleTop = true } },
                 onRetryProfile = profileVm::retrySync,
@@ -400,6 +462,8 @@ private fun ShellNavHost(
                 onBack = { nav.popBackStack() },
                 onHopCap = vm::setHopCap,
                 onForceOffline = vm::setForceOffline,
+                onTestWelfare = vm::scheduleTestCheckin,
+                onResetIdentity = vm::resetIdentity,
             )
         }
     }

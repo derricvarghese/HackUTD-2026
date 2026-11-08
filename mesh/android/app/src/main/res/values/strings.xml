@@ -138,14 +138,11 @@
     <string name="heartbeat_title">Heartbeat</string>
     <string name="heartbeat_active">Heartbeat active</string>
     <string name="heartbeat_inactive">Heartbeat idle</string>
-    <string name="heartbeat_inactive_body">Heartbeats start when the server reports an active event.</string>
+    <string name="heartbeat_inactive_body">Heartbeats start as soon as the mesh is running.</string>
+    <string name="heartbeat_automatic">Sent automatically every %1$d min. Nothing to press.</string>
     <string name="heartbeat_never">Waiting for the first heartbeat.</string>
     <string name="heartbeat_last_direct">Last sent %s, directly to the server</string>
     <string name="heartbeat_last_mesh">Last sent %s, over the mesh</string>
-    <string name="checkin_title">Are you OK?</string>
-    <string name="checkin_default_body">Responders ask you to confirm your status.</string>
-    <string name="checkin_ok">I\'m OK</string>
-    <string name="checkin_need_help">I need help</string>
 
     <!-- Messages -->
     <string name="filter_all">All</string>

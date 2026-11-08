@@ -152,7 +152,9 @@ class GatewayUploader(context: Context, private val main: Handler, private val r
         )
     }
 
-    fun pollCheckins() = runIo(work = { it.fetchPendingCheckins() }, apply = { s, r -> s.applyPendingCheckins(r) })
+    /** GET /v1/checkins/pending; [apply] runs on the main thread with the result. */
+    fun pollCheckins(apply: (ApiResult<List<com.beacon.mesh.store.CheckinPrompt>>) -> Unit) =
+        runIo(work = { it.fetchPendingCheckins() }, apply = { _, r -> apply(r) })
 
     /** Run [work] on the IO thread, then [apply] on main. Skips if a previous background job of this kind is still busy. */
     fun <T> runIo(work: (GatewaySync) -> T, apply: (GatewaySync, T) -> Unit, failed: () -> Unit = {}) {

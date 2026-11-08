@@ -130,7 +130,7 @@ class ProfileRepository(private val storage: ProfileStorage) {
         )
     }
 
-    /** Onboarding step skipped (only offered when the server says `profile_required=false`). */
+    /** Onboarding step skipped (only shown when the server says `profile_required=false`). */
     fun markStepDone() { update { it.copy(stepDone = true) } }
 
     /** "Complete your profile" dismissed for this process only: not persisted, so the nudge returns next launch. */
@@ -147,6 +147,17 @@ class ProfileRepository(private val storage: ProfileStorage) {
     /** Wipes the local profile now. The server erasure (404 = already gone) is retried until it succeeds. Keeps `stepDone`. */
     fun eraseLocal() {
         update { ProfileRecord(pendingErase = it.profile != null || it.pendingErase, stepDone = true) }
+    }
+
+    /**
+     * New device identity: the server has never seen this device, so forget what it acknowledged. The profile itself is kept and
+     * uploaded again (`PUT` with version 0 = create) as soon as the phone is online.
+     */
+    fun resetForNewDevice() {
+        update {
+            if (it.profile == null) it
+            else it.copy(profileVersion = 0, syncState = SyncState.PENDING, attempts = 0, nextAttemptAtMs = 0, lastError = null)
+        }
     }
 
     /** Manual "retry" from the UI: forget the backoff. */

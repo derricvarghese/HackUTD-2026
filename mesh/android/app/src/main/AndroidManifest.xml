@@ -21,6 +21,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Re-post pending welfare check-in notifications after a reboot (a reboot clears them). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Hold-to-send haptics -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
@@ -54,5 +56,13 @@
             android:name=".MeshService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver android:name=".welfare.WelfareActionReceiver" android:exported="false" />
+        <receiver android:name=".welfare.WelfareBootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

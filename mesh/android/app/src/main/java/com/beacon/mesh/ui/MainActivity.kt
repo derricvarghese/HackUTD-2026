@@ -4,7 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import android.content.Intent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.beacon.mesh.welfare.WelfareLaunch
 
 /**
  * Single activity hosting the Compose UI. Edge-to-edge is enabled before content is set; the theme
@@ -17,6 +19,13 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        WelfareLaunch.handle(intent)
         setContent { BeaconApp() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        WelfareLaunch.handle(intent)
     }
 }

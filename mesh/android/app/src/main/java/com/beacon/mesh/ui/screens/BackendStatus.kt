@@ -24,13 +24,13 @@ import androidx.compose.ui.unit.dp
 import com.beacon.mesh.MeshSnapshot
 import com.beacon.mesh.R
 import com.beacon.mesh.backend.KeyStatus
-import com.beacon.mesh.store.CheckinPrompt
 import com.beacon.mesh.ui.components.BadgeIcon
 import com.beacon.mesh.ui.components.ElevatedSection
 import com.beacon.mesh.ui.components.SectionTitle
 import com.beacon.mesh.ui.components.ageText
 import com.beacon.mesh.ui.haptics.HapticEvent
 import com.beacon.mesh.ui.haptics.LocalHaptics
+import com.beacon.mesh.ui.safeStart
 
 @Composable
 fun keyStatusText(s: KeyStatus): String = stringResource(
@@ -125,7 +125,7 @@ fun HeartbeatCard(mesh: MeshSnapshot, now: Long, modifier: Modifier = Modifier) 
                 else -> stringResource(
                     if (hb.lastViaMesh) R.string.heartbeat_last_mesh else R.string.heartbeat_last_direct,
                     ageText(hb.lastSentMs, now),
-                )
+                ) + "\n" + stringResource(R.string.heartbeat_automatic, (hb.intervalSeconds / 60).coerceAtLeast(1))
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -133,24 +133,25 @@ fun HeartbeatCard(mesh: MeshSnapshot, now: Long, modifier: Modifier = Modifier) 
     }
 }
 
-/** A check-in the backend sent: one tap to answer "I'm OK" or "I need help". */
+/** Welfare check-in readiness: check-ins reach the person as notifications, so they must be allowed. */
 @Composable
-fun CheckinCard(prompt: CheckinPrompt, onReply: (String) -> Unit, modifier: Modifier = Modifier) {
+fun WelfareReadinessCard(system: com.beacon.mesh.ui.SystemStatus, modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val haptics = LocalHaptics.current
+    val ok = system.notificationsEnabled && system.notificationsPermission
     ElevatedSection(modifier) {
-        SectionTitle(stringResource(R.string.checkin_title))
-        Text(prompt.message ?: stringResource(R.string.checkin_default_body), style = MaterialTheme.typography.bodyLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = haptics.onClick(HapticEvent.Success) { onReply("ok") },
-                shapes = ButtonDefaults.shapes(),
-                modifier = Modifier.weight(1f).heightIn(min = 56.dp),
-            ) { Text(stringResource(R.string.checkin_ok)) }
-            FilledTonalButton(
-                onClick = haptics.onClick(HapticEvent.Error) { onReply("need_help") },
-                shapes = ButtonDefaults.shapes(),
-                modifier = Modifier.weight(1f).heightIn(min = 56.dp),
-            ) { Text(stringResource(R.string.checkin_need_help)) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            BadgeIcon(Icons.Rounded.Favorite, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer, size = 40.dp)
+            Text(stringResource(R.string.welfare_ready_title), style = MaterialTheme.typography.titleMediumEmphasized)
         }
+        Text(
+            stringResource(if (ok) R.string.welfare_ready_ok else R.string.welfare_ready_needs_fix),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+        )
+        if (!ok) FilledTonalButton(
+            onClick = haptics.onClick(HapticEvent.Tap) { context.safeStart(com.beacon.mesh.ui.SystemIntents.notificationSettings(context)) },
+            shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.welfare_perm_fix)) }
     }
 }

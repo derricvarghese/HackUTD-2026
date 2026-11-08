@@ -101,6 +101,10 @@ dependencies {
     // Splash Screen API with backport to API 26.
     implementation("androidx.core:core-splashscreen:1.2.0")
 
+    // Responder mode: OkHttp for REST (PATCH) and the live WebSocket; osmdroid for a Google-free OpenStreetMap map.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+
     testImplementation("junit:junit:4.13.2")
     // Android's org.json is a stub in JVM unit tests; use the real one there.
     testImplementation("org.json:json:20240303")

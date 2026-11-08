@@ -66,8 +66,9 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
      * Stable identity of this app install, kept in its own preferences file so it survives restarts.
      * Peers read it from [ID_CHARACTERISTIC_UUID] and use it instead of the (rotating) BLE address.
      */
-    val instanceId: String = loadOrCreateInstanceId()
-    private val registry = PeerRegistry(instanceId)
+    var instanceId: String = loadOrCreateInstanceId()
+        private set
+    private var registry = PeerRegistry(instanceId)
     /** Inbound writers (phones that connected to our GATT server) that said hello: address -> phone id. */
     private val inboundIds = HashMap<String, String>()
 
@@ -76,6 +77,23 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
         prefs.getString("id", null)?.let { return it }
         val fresh = UUID.randomUUID().toString().lowercase()
         prefs.edit().putString("id", fresh).apply()
+        return fresh
+    }
+
+    /**
+     * New persistent instance UUID (demo "Reset device identity"): stops the transport, forgets every link, then restarts it
+     * (when it was running) so the phone re-advertises and reconnects under the new id.
+     */
+    fun regenerateInstanceId(): String {
+        val wasRunning = running
+        if (wasRunning) stop()
+        val fresh = UUID.randomUUID().toString().lowercase()
+        context.getSharedPreferences("beacon_instance", Context.MODE_PRIVATE).edit().putString("id", fresh).apply()
+        instanceId = fresh
+        registry = PeerRegistry(fresh)
+        inboundIds.clear()
+        // Give the BLE stack a moment to release the old GATT server / advertiser before starting again.
+        if (wasRunning) main.postDelayed({ if (!running) start() }, 600)
         return fresh
     }
 

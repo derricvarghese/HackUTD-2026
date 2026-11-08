@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.beacon.mesh.protocol.MeshEnvelope
+import com.beacon.mesh.welfare.WelfareManager
+import com.beacon.mesh.welfare.WelfareResponse
 import org.json.JSONObject
 
 /** What the backend told us about one of our own messages (from a verified BackendMessage or GET /sos/{id}/status). */
@@ -72,16 +74,51 @@ data class InboxItem(
         get() = JSONObject(json).let { it.optInt("hop_count", 0) < it.optInt("max_hops", 0) }
 }
 
-/** A check-in the backend asked this phone to answer. */
+/**
+ * A welfare check-in the backend asked this phone to answer (openapi `Checkin` / `BackendMessage kind=checkin_request`).
+ * Persisted so the notification and the pending reply survive process death and reboot.
+ */
 data class CheckinPrompt(
     val checkinId: String,
     val sosId: String,
+    /** Server text (`Checkin.message` / `body.message`), shown as the notification text. */
     val message: String?,
+    /** Answer by this time; after it the server marks the check-in missed. */
     val deadlineAtMs: Long?,
     val receivedAt: Long,
-    /** null while unanswered, else ok / need_help / other. */
+    /** null while unanswered, else still_here / no_longer_need_help / need_urgent_help (or "server_cleared" / "cancelled"). */
     val response: String?,
-)
+    val title: String? = null,
+    /** Replies to the message, in the order the server gave them. */
+    val choices: List<String> = WelfareResponse.ALL,
+    val attempt: Int = 1,
+    val tier: String? = null,
+    val sentAtMs: Long = receivedAt,
+    val answeredAtMs: Long? = null,
+    /** The answer reached the server (PATCH 200, 409 or 404). */
+    val delivered: Boolean = false,
+    val replyAttempts: Int = 0,
+    val nextReplyAtMs: Long = 0,
+    /** A `checkin_reply` mesh envelope was created for this answer. */
+    val meshReplied: Boolean = false,
+    /** How many times the server re-delivered this same check-in after the deadline (0 = original delivery only). */
+    val reminderCount: Int = 0,
+    /** When the notification last alerted (sound / vibration); drives the local reminder cadence. */
+    val lastNotifiedAtMs: Long = 0,
+) {
+    val isTest: Boolean get() = sosId == WelfareManager.TEST_SOS_ID
+    val answered: Boolean get() = response != null
+    /**
+     * Still waiting for an answer. A check-in that passed its deadline stays the ONE active check-in of its case (overdue) until it is
+     * answered, cleared by the server or the case resolves; only a day-old one is given up on.
+     */
+    fun isPending(nowMs: Long): Boolean = response == null && (deadlineAtMs == null || nowMs < deadlineAtMs + STALE_AFTER_DEADLINE_MS)
+
+    /** Past `deadline_at` and unanswered: the notification says "overdue" and repeats instead of counting down. */
+    fun isOverdue(nowMs: Long): Boolean = isPending(nowMs) && deadlineAtMs != null && nowMs >= deadlineAtMs
+
+    companion object { const val STALE_AFTER_DEADLINE_MS = 24L * 3_600_000 }
+}
 
 interface MessageStore {
     fun contains(id: String): Boolean
@@ -100,6 +137,7 @@ interface MessageStore {
     fun savePrompt(p: CheckinPrompt)
     fun prompts(): List<CheckinPrompt>
     fun answerPrompt(checkinId: String, response: String)
+    fun deletePrompt(checkinId: String)
 }
 
 class InMemoryMessageStore : MessageStore {
@@ -115,6 +153,7 @@ class InMemoryMessageStore : MessageStore {
     override fun deleteExpired(nowMs: Long) {
         messages.values.removeAll { it.expiresAtMs < nowMs }
         items.values.removeAll { it.expiresAt < nowMs }
+        checkins.values.removeAll { (it.deadlineAtMs ?: it.receivedAt) < nowMs - PROMPT_KEEP_MS }
     }
 
     override fun containsInbox(key: String) = items.containsKey(key)
@@ -127,6 +166,7 @@ class InMemoryMessageStore : MessageStore {
     override fun answerPrompt(checkinId: String, response: String) {
         checkins[checkinId]?.let { checkins[checkinId] = it.copy(response = response) }
     }
+    override fun deletePrompt(checkinId: String) { checkins.remove(checkinId) }
 }
 
 /**
@@ -135,7 +175,7 @@ class InMemoryMessageStore : MessageStore {
  * not valid contract messages and could never be uploaded.
  */
 class SqliteMessageStore(context: Context) :
-    SQLiteOpenHelper(context, "beacon_mesh.db", null, 2), MessageStore {
+    SQLiteOpenHelper(context, "beacon_mesh.db", null, 3), MessageStore {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -163,6 +203,10 @@ class SqliteMessageStore(context: Context) :
                 acted INTEGER NOT NULL DEFAULT 0
             )"""
         )
+        createCheckins(db)
+    }
+
+    private fun createCheckins(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE checkins (
                 checkin_id TEXT PRIMARY KEY,
@@ -170,12 +214,30 @@ class SqliteMessageStore(context: Context) :
                 message TEXT,
                 deadline_at INTEGER,
                 received_at INTEGER NOT NULL,
-                response TEXT
+                response TEXT,
+                title TEXT,
+                choices TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                tier TEXT,
+                sent_at INTEGER NOT NULL DEFAULT 0,
+                answered_at INTEGER,
+                delivered INTEGER NOT NULL DEFAULT 0,
+                reply_attempts INTEGER NOT NULL DEFAULT 0,
+                next_reply_at INTEGER NOT NULL DEFAULT 0,
+                mesh_replied INTEGER NOT NULL DEFAULT 0,
+                reminder_count INTEGER NOT NULL DEFAULT 0,
+                last_notified_at INTEGER NOT NULL DEFAULT 0
             )"""
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion == 2) {
+            // v2 -> v3 only reshapes the check-in table (welfare check-ins); held messages and the inbox are kept.
+            db.execSQL("DROP TABLE IF EXISTS checkins")
+            createCheckins(db)
+            return
+        }
         db.execSQL("DROP TABLE IF EXISTS messages")
         db.execSQL("DROP TABLE IF EXISTS inbox")
         db.execSQL("DROP TABLE IF EXISTS checkins")
@@ -244,6 +306,7 @@ class SqliteMessageStore(context: Context) :
     override fun deleteExpired(nowMs: Long) {
         writableDatabase.delete("messages", "expires_at < ?", arrayOf(nowMs.toString()))
         writableDatabase.delete("inbox", "expires_at < ?", arrayOf(nowMs.toString()))
+        writableDatabase.delete("checkins", "COALESCE(deadline_at, received_at) < ?", arrayOf((nowMs - PROMPT_KEEP_MS).toString()))
     }
 
     override fun containsInbox(key: String): Boolean =
@@ -273,16 +336,32 @@ class SqliteMessageStore(context: Context) :
         val v = ContentValues().apply {
             put("checkin_id", p.checkinId); put("sos_id", p.sosId); put("message", p.message)
             put("deadline_at", p.deadlineAtMs); put("received_at", p.receivedAt); put("response", p.response)
+            put("title", p.title); put("choices", p.choices.joinToString(","))
+            put("attempt", p.attempt); put("tier", p.tier); put("sent_at", p.sentAtMs)
+            put("answered_at", p.answeredAtMs)
+            put("delivered", if (p.delivered) 1 else 0); put("reply_attempts", p.replyAttempts)
+            put("next_reply_at", p.nextReplyAtMs); put("mesh_replied", if (p.meshReplied) 1 else 0)
+            put("reminder_count", p.reminderCount); put("last_notified_at", p.lastNotifiedAtMs)
         }
         writableDatabase.insertWithOnConflict("checkins", null, v, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     override fun prompts(): List<CheckinPrompt> {
         val out = ArrayList<CheckinPrompt>()
-        readableDatabase.rawQuery("SELECT checkin_id, sos_id, message, deadline_at, received_at, response FROM checkins ORDER BY received_at", null).use { c ->
+        readableDatabase.rawQuery(
+            "SELECT checkin_id, sos_id, message, deadline_at, received_at, response, title, choices, attempt, tier, sent_at, " +
+                "answered_at, delivered, reply_attempts, next_reply_at, mesh_replied, reminder_count, last_notified_at FROM checkins ORDER BY received_at",
+            null,
+        ).use { c ->
+            fun str(i: Int) = if (c.isNull(i)) null else c.getString(i)
+            fun lng(i: Int) = if (c.isNull(i)) null else c.getLong(i)
             while (c.moveToNext()) out += CheckinPrompt(
-                c.getString(0), c.getString(1), if (c.isNull(2)) null else c.getString(2),
-                if (c.isNull(3)) null else c.getLong(3), c.getLong(4), if (c.isNull(5)) null else c.getString(5),
+                checkinId = c.getString(0), sosId = c.getString(1), message = str(2), deadlineAtMs = lng(3),
+                receivedAt = c.getLong(4), response = str(5), title = str(6),
+                choices = str(7)?.split(',')?.filter { it.isNotBlank() }?.ifEmpty { null } ?: WelfareResponse.ALL,
+                attempt = c.getInt(8), tier = str(9), sentAtMs = c.getLong(10), answeredAtMs = lng(11),
+                delivered = c.getInt(12) == 1, replyAttempts = c.getInt(13), nextReplyAtMs = c.getLong(14),
+                meshReplied = c.getInt(15) == 1, reminderCount = c.getInt(16), lastNotifiedAtMs = c.getLong(17),
             )
         }
         return out
@@ -291,4 +370,11 @@ class SqliteMessageStore(context: Context) :
     override fun answerPrompt(checkinId: String, response: String) {
         writableDatabase.execSQL("UPDATE checkins SET response = ? WHERE checkin_id = ?", arrayOf(response, checkinId))
     }
+
+    override fun deletePrompt(checkinId: String) {
+        writableDatabase.delete("checkins", "checkin_id = ?", arrayOf(checkinId))
+    }
 }
+
+/** Answered / expired check-ins stay this long after their deadline so the UI can show "you said ...". */
+internal const val PROMPT_KEEP_MS = 24L * 3_600_000

@@ -85,7 +85,7 @@ fun HomeScreen(
     onOpenMessage: (String) -> Unit,
     onFixSetup: () -> Unit,
     onOpenMesh: () -> Unit,
-    onCheckinReply: (com.beacon.mesh.store.CheckinPrompt, String) -> Unit = { _, _ -> },
+    onOpenCheckin: (String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onRetryProfile: () -> Unit = {},
     onDismissProfileBanner: () -> Unit = {},
@@ -143,7 +143,7 @@ fun HomeScreen(
                     prominent = nudge == com.beacon.mesh.ui.logic.ProfileOnboardingLogic.Nudge.PROMINENT,
                 )
             }
-            mesh.checkins.forEach { c -> CheckinCard(c, onReply = { onCheckinReply(c, it) }) }
+            mesh.checkins.filter { it.isPending(now) }.forEach { c -> com.beacon.mesh.ui.welfare.WelfareDueCard(c, onOpen = { onOpenCheckin(c.checkinId) }) }
 
             SectionTitle(stringResource(R.string.home_send_title))
             val perRow = if (wide) 4 else 2

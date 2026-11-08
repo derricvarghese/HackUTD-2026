@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Notification channels -->
+    <string name="welfare_channel_name">Welfare check-ins</string>
+    <string name="welfare_channel_desc">Responders asking whether you are safe. Answer with one tap.</string>
+
+    <!-- Notification -->
+    <string name="welfare_notif_title">Are you still there?</string>
+    <string name="welfare_notif_body">Responders are checking on you. Please answer.</string>
+    <string name="welfare_notif_overdue">Please confirm you\'re okay: your check-in is overdue.</string>
+    <string name="welfare_notif_answer_by">Answer by %1$s.</string>
+
+    <!-- The three answers -->
+    <string name="welfare_still_here">I\'m still here</string>
+    <string name="welfare_no_longer">I no longer need help</string>
+    <string name="welfare_urgent">I need urgent help</string>
+
+    <!-- Confirmation screen -->
+    <string name="welfare_screen_title">Welfare check-in</string>
+    <string name="welfare_time_left">Time left to answer</string>
+    <string name="welfare_time_left_desc">%1$s left to answer</string>
+    <string name="welfare_later">Not now</string>
+    <string name="welfare_thanks">Thank you</string>
+
+    <!-- Snackbars -->
+    <string name="welfare_snack_still">Thanks. Responders know you are still here.</string>
+    <string name="welfare_snack_urgent">Responders were told you need urgent help.</string>
+    <string name="welfare_resolved_message">Marked as resolved. Stay safe.</string>
+    <string name="welfare_snack_closed">This check-in is no longer open.</string>
+
+    <!-- Home and message cards -->
+    <string name="welfare_card_due">Check-in due in %1$s</string>
+    <string name="welfare_card_overdue">Check-in overdue. Please confirm you\'re okay.</string>
+    <string name="welfare_overdue">Your check-in is overdue. Please confirm you\'re okay.</string>
+    <string name="welfare_card_answer">Answer</string>
+    <string name="welfare_state_still">You said you still need help</string>
+    <string name="welfare_state_urgent">You asked for urgent help</string>
+    <string name="welfare_state_resolved">Marked as resolved by you</string>
+
+    <!-- Mesh status: readiness -->
+    <string name="welfare_ready_title">Welfare check-ins</string>
+    <string name="welfare_ready_ok">Ready: check-ins arrive as notifications with answer buttons.</string>
+    <string name="welfare_ready_needs_fix">Notifications are off: you would not see a check-in. Turn them on.</string>
+        <string name="welfare_perm_fix">Fix</string>
+
+    <!-- Debug -->
+    <string name="debug_welfare_title">Welfare check-in</string>
+    <string name="debug_welfare_body">Posts a fake check-in notification on this phone with a 20-second deadline. Answer it to try the buttons. Nothing is sent to the server.</string>
+    <string name="debug_welfare_test">Test welfare check-in notification</string>
+
+    <string name="debug_identity_title">Device identity</string>
+    <string name="debug_identity_id">Device id: %1$s</string>
+    <string name="debug_identity_copy">Copy device id</string>
+    <string name="debug_identity_unregistered">not registered yet (key %1$s)</string>
+    <string name="debug_identity_body">The server merges reports from the same device. Reset the identity to send several separate reports from this phone.</string>
+    <string name="debug_identity_reset">Reset device identity</string>
+    <string name="debug_identity_dialog_title">Reset device identity?</string>
+    <string name="debug_identity_dialog_body">This phone becomes a new device for the server:\n\n- the signing key is deleted and a new one is created (new sender id, so reports are no longer merged with earlier ones)\n- a new Bluetooth id: nearby phones see a new phone and reconnect\n- the server registration is cleared; the new key registers when you are next online\n- the heartbeat counter restarts and open welfare check-ins and alarms are cancelled\n- your profile is kept and uploaded again for the new device\n- held messages and history stay on this phone\n\nUse this for demos only.</string>
+    <string name="debug_identity_confirm">Reset</string>
+    <string name="debug_identity_done">New identity: %1$s (was %2$s)</string>
+</resources>

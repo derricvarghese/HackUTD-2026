@@ -135,6 +135,7 @@ fun MessageCard(
                 Text(it, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
             Text(hop, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item.welfare?.let { com.beacon.mesh.ui.welfare.WelfareLine(it) }
             Row { StatusPill(item) }
         }
     }

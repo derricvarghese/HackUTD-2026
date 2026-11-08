@@ -19,14 +19,35 @@ interface MeshSigner {
     fun sign(data: ByteArray): ByteArray
 }
 
+/** A signer whose key pair can be replaced (demo "Reset device identity"). */
+interface RegenerableSigner : MeshSigner {
+    /** Deletes the key and creates a new one. @return the new SPKI DER. */
+    fun regenerate(): ByteArray
+}
+
 /** Hardware-backed key in AndroidKeyStore; the private key never leaves the device. */
-class KeystoreSigner(private val alias: String = "beacon_mesh_device_key") : MeshSigner {
-    private val privateKey: PrivateKey
-    override val publicKeyDer: ByteArray
+class KeystoreSigner(private val alias: String = "beacon_mesh_device_key") : RegenerableSigner {
+    @Volatile private var privateKey: PrivateKey
+    @Volatile override var publicKeyDer: ByteArray
+        private set
 
     init {
+        val loaded = load(createIfMissing = true)
+        privateKey = loaded.first
+        publicKeyDer = loaded.second
+    }
+
+    override fun regenerate(): ByteArray {
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.let { if (it.containsAlias(alias)) it.deleteEntry(alias) }
+        val loaded = load(createIfMissing = true)
+        privateKey = loaded.first
+        publicKeyDer = loaded.second
+        return publicKeyDer
+    }
+
+    private fun load(createIfMissing: Boolean): Pair<PrivateKey, ByteArray> {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (!ks.containsAlias(alias)) {
+        if (createIfMissing && !ks.containsAlias(alias)) {
             val gen = KeyPairGenerator.getInstance(
                 android.security.keystore.KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore"
             )
@@ -41,8 +62,7 @@ class KeystoreSigner(private val alias: String = "beacon_mesh_device_key") : Mes
             gen.generateKeyPair()
         }
         val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
-        privateKey = entry.privateKey
-        publicKeyDer = entry.certificate.publicKey.encoded
+        return entry.privateKey to entry.certificate.publicKey.encoded
     }
 
     override fun sign(data: ByteArray): ByteArray =
@@ -54,8 +74,15 @@ class KeystoreSigner(private val alias: String = "beacon_mesh_device_key") : Mes
 }
 
 /** Plain JCA key, for JVM unit tests. */
-class SoftwareSigner(private val keyPair: KeyPair = generate()) : MeshSigner {
-    override val publicKeyDer: ByteArray = keyPair.public.encoded
+class SoftwareSigner(private var keyPair: KeyPair = generate()) : RegenerableSigner {
+    override var publicKeyDer: ByteArray = keyPair.public.encoded
+        private set
+
+    override fun regenerate(): ByteArray {
+        keyPair = generate()
+        publicKeyDer = keyPair.public.encoded
+        return publicKeyDer
+    }
 
     override fun sign(data: ByteArray): ByteArray =
         Signature.getInstance("SHA256withECDSA").run {

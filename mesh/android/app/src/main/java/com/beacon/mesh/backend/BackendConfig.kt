@@ -56,6 +56,10 @@ data class ServerInfo(
     val profileRequired: Boolean? = null,
     /** `profile_consent_version`: id of the consent text the app must have shown. */
     val profileConsentVersion: String? = null,
+    /** `checkin_window_seconds`: time to answer a welfare check-in. */
+    val checkinWindowSeconds: Int? = null,
+    /** `checkin_reminder_seconds`: an overdue check-in is re-delivered (and re-alerted locally) this often. */
+    val checkinReminderSeconds: Int? = null,
 ) {
     companion object {
         fun fromJson(o: JSONObject): ServerInfo = ServerInfo(
@@ -71,6 +75,8 @@ data class ServerInfo(
             gatewayUploadMaxBatch = o.optInt("gateway_upload_max_batch", 0).takeIf { it > 0 },
             profileRequired = if (o.has("profile_required") && !o.isNull("profile_required")) o.optBoolean("profile_required") else null,
             profileConsentVersion = o.optString("profile_consent_version", "").ifBlank { null },
+            checkinWindowSeconds = o.optInt("checkin_window_seconds", 0).takeIf { it > 0 },
+            checkinReminderSeconds = o.optInt("checkin_reminder_seconds", 0).takeIf { it > 0 },
         )
     }
 }
@@ -111,6 +117,8 @@ class BackendConfig(
         get() = kv.getString(K_HOPS)?.let { try { HopLimits.fromJson(JSONArray(it)) } catch (e: Exception) { null } } ?: HopLimits.DEFAULT
 
     val heartbeatIntervalSeconds: Int get() = kv.getLong(K_HB_INT, DEFAULT_HEARTBEAT_S.toLong()).toInt()
+    /** How often an overdue welfare check-in alerts again (cached /server-info `checkin_reminder_seconds`, default 300). */
+    val checkinReminderSeconds: Int get() = kv.getLong(K_REMINDER, DEFAULT_REMINDER_S.toLong()).toInt().coerceAtLeast(5)
     val silenceThresholdSeconds: Int get() = kv.getLong(K_SILENCE, 0).toInt()
     val maxBatch: Int get() = kv.getLong(K_BATCH, DEFAULT_BATCH.toLong()).toInt().coerceIn(1, 500)
     val eventActive: Boolean get() = kv.getLong(K_EVENT, 0) == 1L
@@ -129,6 +137,12 @@ class BackendConfig(
     /** Consent text version the server currently wants; null until a /server-info said so. */
     val profileConsentVersion: String? get() = kv.getString(K_PROFILE_CONSENT)
 
+    /** New device identity: the server must register the new key again; the outbox cursor belonged to the old device. */
+    fun resetRegistration() {
+        deviceId = null
+        outboxCursor = null
+    }
+
     fun setEventActive(active: Boolean) = kv.putLong(K_EVENT, if (active) 1 else 0)
 
     /** Stores a fresh /server-info. Garbage keys are ignored so a bad response cannot lock the phone out. */
@@ -137,6 +151,7 @@ class BackendConfig(
         validKey(info.signingPublicKey)?.let { kv.putString(K_SIGN, it) }
         kv.putString(K_HOPS, info.hopLimits.toJson().toString())
         info.heartbeatIntervalSeconds?.let { kv.putLong(K_HB_INT, it.toLong()) }
+        info.checkinReminderSeconds?.let { kv.putLong(K_REMINDER, it.toLong()) }
         info.silenceThresholdSeconds?.let { kv.putLong(K_SILENCE, it.toLong()) }
         info.gatewayUploadMaxBatch?.let { kv.putLong(K_BATCH, it.toLong()) }
         setEventActive(info.eventActive)
@@ -147,12 +162,14 @@ class BackendConfig(
 
     companion object {
         const val DEFAULT_HEARTBEAT_S = 300
+        const val DEFAULT_REMINDER_S = 300
         const val DEFAULT_BATCH = 500
         private const val K_ENC = "be_enc_key"
         private const val K_SIGN = "be_sign_key"
         private const val K_HOPS = "be_hops"
         private const val K_HB_INT = "be_hb_interval"
         private const val K_SILENCE = "be_silence"
+        private const val K_REMINDER = "be_checkin_reminder"
         private const val K_BATCH = "be_batch"
         private const val K_EVENT = "be_event_active"
         private const val K_INFO_AT = "be_info_at"

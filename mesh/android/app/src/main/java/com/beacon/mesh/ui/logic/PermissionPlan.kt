@@ -39,7 +39,7 @@ object PermissionPlan {
         if (ok) return GroupStatus.GRANTED
         val missing = needed.filter { it !in granted }
         if (missing.none { it in askedBefore }) return GroupStatus.NOT_ASKED
-        // Asked before, not granted, and the system no longer offers the dialog -> permanent denial.
+        // Asked before, not granted, and the system no longer shows the dialog -> permanent denial.
         return if (missing.none { it in rationale }) GroupStatus.DENIED_PERMANENTLY else GroupStatus.DENIED
     }
 

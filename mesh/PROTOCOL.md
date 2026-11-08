@@ -55,7 +55,7 @@ install therefore has a persistent random **instance UUID**, and peers are ident
 * The router only sees these peer strings (it never forwards a message back to the peer it came from). The instance UUID is **not** the
   relay id in `hop_path` and is never sent in an envelope.
 
-## `MeshEnvelope` (kinds `sos`, `checkin_reply`, `safe`, `offer`, `heartbeat`)
+## `MeshEnvelope` (kinds `sos`, `checkin_reply`, `safe`, `heartbeat`)
 
 Exactly the contract schema, JSON, UTF-8:
 
@@ -80,12 +80,12 @@ Exactly the contract schema, JSON, UTF-8:
   An unregistered device also puts its public key in `sender_key_id`; the server auto-registers it on first sight.
 * App categories map to the contract: `trapped`, `injured` as is; `medical` is sent as `injured`; `water_meds` as `need_water_meds` (tier high);
   `safe` is `kind=safe`, tier safe; the un-prompted "check-in" and `other` are `kind=sos`, tier normal, category `other`.
-  A `checkin_reply` (tier normal) answers a backend check-in. `offer` is parsed and relayed but Android does not create it yet.
+  A `checkin_reply` (tier normal) answers a backend check-in.
 
 ### Plaintext `MeshPayload` (inside the ciphertext, never visible to relays)
 
 `{lat, lng, accuracy_m?, category, text? (<= 280 chars in the UI, 1000 server), people_count?, trapped?, water_rising?, injured?}`;
-`checkin_reply`: `{checkin_id, response: ok|need_help|other, text?}`; `heartbeat`: `{heartbeat: {sent_at, approx{lat,lng,radius_m}, battery_pct?, charging?, moving?, seq?}}`.
+`checkin_reply`: `{checkin_id, response: still_here|no_longer_need_help|need_urgent_help, text?}`; `heartbeat`: `{heartbeat: {sent_at, approx{lat,lng,radius_m}, battery_pct?, charging?, moving?, seq?, transport?, network?, peers_nearby?, gateway?, open_sos_ids?}}`.
 `lat`/`lng` are required for `sos`, so a phone with no location fix refuses to create an SOS (clear error) instead of sending a bogus place.
 
 ### Profile summary in payload
@@ -175,9 +175,30 @@ onInternetAvailable(): upload everything held that is not yet uploaded or termin
 
 A phone **acts** on an item only after verifying the backend signature with the cached or baked `signing_public_key`; a relay without the key
 forwards but does not act, and acts later when the key arrives. It acts only when `sos_id` (or the receipt `id`) is one of its own messages:
-`delivered` shows "Reached responders"; `status_update` shows status plus ETA text; `checkin_request` (needs `checkin_id`) shows an "I'm OK /
-I need help" prompt. The answer is `PATCH /v1/checkins/{id}` when online, else a `checkin_reply` envelope (tier normal). Older updates
-(`created_at` before the current one) are ignored.
+`delivered` shows "Reached responders"; `status_update` shows status plus ETA text; `checkin_request` (needs `checkin_id`) is a **welfare check-in**
+(see below). A `status_update` with status `resolved` also ends the case's check-ins. Older updates (`created_at` before the current one) are ignored.
+
+## Welfare check-ins (layer B; only for a person with an open SOS)
+
+The heartbeat is automatic and means "this phone has connectivity". A welfare check-in is the only thing a person is ever asked to answer.
+It arrives as a mesh `checkin_request` BackendMessage (body `{title, message, choices, deadline_at, attempt, tier, reminder}`; `alarm_at` is ignored),
+as `pending_checkins` in the `POST /v1/heartbeats` 202 body, and from `GET /v1/checkins/pending` (polled on every tick while online).
+
+* **One check-in per `checkin_id`.** Dedupe is on `checkin_id`, never on the BackendMessage id: the server re-delivers the SAME check-in (new message id,
+  `reminder` n, `overdue=true`) every `checkin_reminder_seconds` (server-info, default 300) while it is unanswered. Each delivery updates the single
+  stored prompt and the single notification (stable notification id from the check-in id), and alerts again when the reminder count rises.
+* **Notification**: channel "Welfare check-ins" (high importance, own sound/vibration, public on the lock screen, category alarm, ongoing), title from the
+  server `title`/`message`, a live countdown to `deadline_at`, and up to three action buttons from `choices`: "I'm still here" `still_here`,
+  "I no longer need help" `no_longer_need_help`, "I need urgent help" `need_urgent_help`. Tapping it opens the in-app confirmation screen (same three buttons).
+* **Overdue**: after `deadline_at` the same notification says "Please confirm you're okay: your check-in is overdue.", has no countdown and is never
+  auto-cancelled. While the service runs the phone also re-alerts locally every `checkin_reminder_seconds` (the notification is updated, never duplicated).
+* **Answer**: marked answered locally at once (notification removed), then `PATCH /v1/checkins/{id} {response, responded_at}` when online, else a
+  `checkin_reply` envelope (tier normal, `payload {checkin_id, response}`) for any gateway. `409`/`404` clear it locally; network, `429` and `5xx` retry with
+  backoff (5 s doubling to 2 min), also by mesh once. A late answer after the deadline is accepted. `no_longer_need_help` also shows the case as
+  resolved ("Marked as resolved. Stay safe.").
+* Prompts are stored in the local database (survive restarts and reboot; `BOOT_COMPLETED` re-posts the notifications); an unanswered one the server no
+  longer lists in `GET /checkins/pending` is cleared. Deleting the profile cancels all open check-ins.
+* There is no alarm, full-screen intent or exact-alarm permission: the notification (and its repeats) is the only channel.
 
 ## Gateway and online behaviour
 
@@ -193,10 +214,14 @@ I need help" prompt. The answer is `PATCH /v1/checkins/{id}` when online, else a
 
 ## Heartbeats
 
-While `/server-info.event` is non-null (last known value kept offline) the foreground service ticks every 30 s and sends a heartbeat every
-`heartbeat_interval_seconds` (default 300): `POST /v1/heartbeats` when online, otherwise a `kind=heartbeat`, tier heartbeat envelope (2 hops, 30 min).
-Content: `sent_at`, `approx` (1 km grid), `battery_pct`, `charging`, `moving`, `seq`. Only the last known location is used (no GPS spin-up); with no fix
-nothing is sent. `404` from `/heartbeats` means the event ended and stops heartbeats until `/server-info` says otherwise.
+The heartbeat is fully automatic (nobody presses anything) and its absence tells the server the phone has no connectivity. Whenever the mesh service
+runs (event or no event, also while an SOS is open) it ticks every 30 s and sends a heartbeat every `heartbeat_interval_seconds` (cached
+`/server-info`, default 300), plus at once when internet returns and shortly after an SOS is created: `POST /v1/heartbeats` when online, otherwise a
+`kind=heartbeat`, tier heartbeat envelope (2 hops, 30 min). Content: `sent_at`, `approx` (1 km grid), `battery_pct`, `charging`, `moving`, `seq`,
+`transport` (`direct` over REST, `mesh` in an envelope), `network` (`wifi|cellular|none|unknown`), `peers_nearby` (distinct connected peer ids),
+`gateway` (internet and relaying), `open_sos_ids` (own unresolved `sos` ids of the current identity, at most 20). Only the last known location is used
+(no GPS spin-up); with no fix nothing is sent. `404`/`429` from `/heartbeats` are not retried over the mesh. `pending_checkins` in the 202 body feed the
+welfare flow above. Unknown envelope `kind`s are dropped like any malformed envelope (accepted kinds: `sos`, `checkin_reply`, `safe`, `heartbeat`).
 
 ## Test vectors
 

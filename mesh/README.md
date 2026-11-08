@@ -81,6 +81,9 @@ UI structure (`app/src/main/java/com/beacon/mesh/ui`):
   * Tests: `profile/ProfileRulesTest` (flags/age buckets/limits mirror the server), `ProfileModelTest` (ProfileInput JSON omits empty fields), `ProfileSyncTest` (fake HTTP: 201/200, 409, 422 consent, 404 re-PUT, 429, offline, erase), `ProfileSummaryPayloadTest` (summary only on sos/safe, nothing else leaks, worst-case envelope still fits 64 chunks at a 100 B write), `ui/ProfileEditorTest` (onboarding/form state), `AndroidProfileFixtureTest` + `server/test/e2e/android-profile-interop.test.ts`.
 * Material 3 Expressive needs `material3` 1.5.0 alpha (1.4.0 keeps those APIs internal); newer androidx releases require AGP 9.1 and compileSdk 37.
 
+* **First responder mode (Android).** Settings -> Responder mode adds a Responder tab (off by default; turning it off signs out). Sign in with a dashboard account (`POST /v1/auth/login` on the baked-in server): the access token stays in memory, the refresh token is stored AES-GCM encrypted with a non-exportable Keystore key, a 401 refreshes once and retries, sign out wipes everything. The tab shows a live OpenStreetMap map of open cases (pin colour by score tier, a pulsing ring for silent or unresponsive people, a circle over the ~1 km `approx_location` unless the API returned an exact `location`, dashed circles for SOS only heard over Bluetooth) plus a ranked list with filters (All, Critical, Silent, Mine, Unclaimed). Case details show triage reasons, hop path, check-ins and history; claim, en route, on scene, resolve (with outcome), release and notes need a responder or admin (volunteers are read-only); Navigate and Call appear only when the API returns the exact location or the full profile. Updates arrive over `/v1/ws` with exponential-backoff reconnect and an `updated_since` catch-up, falling back to a 15 s poll like iOS. The map uses **osmdroid** (about 1 MB, plain Views, no API key, no Google services) with OSM raster tiles in an `AndroidView`; MapLibre Native was heavier (about 10 MB of native libraries per ABI) and needs a style JSON for the same result. If tiles cannot load the map is a blank surface and the list keeps working. The mesh service keeps relaying while responder mode is on. Case details have a Directions button for every case (exact spot, or "Directions to the area" toward the centre of the ~1 km circle, as on iOS). **Location sharing** (Responder tab -> sliders icon -> "Share my location with dispatch", off by default, plus "Available for assignments"): after a plain-language rationale and the runtime location permission (while in use only; approximate-only is accepted with a notice), the platform `LocationManager` (no Play services) feeds `PATCH /v1/responders/{id}` with `location`, at most every 10 s, when the position moved 25 m or every 60 s, with backoff, nothing sent offline, only the newest fix kept. A "Sharing your location" banner stays visible in the Responder tab. Switching off, signing out, leaving responder mode, revoking the permission or an expired session stops it and sends `location: null` (retried until accepted, or dropped if the session is gone). The switch persists but sharing starts only after a sign-in in the current run (after a restart you tap Resume). **Limitation:** there is no background-location permission, so Android only delivers fixes while the app is in the foreground; with the screen off or another app on top the position goes stale and dispatch sees the last one until it is cleared.
+* **First responder mode (iOS).** Same behaviour as Android: Settings -> Responder mode (off by default) adds the Responder tab and turning it off signs out, stops sharing and removes the tab; with it off the app is the plain victim app. Inside, "Share my location with dispatch" (rationale, When-In-Use only, approximate accepted with a notice, Open Settings when denied) and "Available for assignments" send `PATCH /v1/responders/{id}`; a "Sharing your location" chip stays above every tab while sharing. The throttle/backoff/clear logic is the pure `ResponderLocationSharer` in the BeaconMesh target (tested in `ResponderLocationTests`). Sharing only starts after a sign-in in the current run and fixes arrive only while the app is active (no background location). **Reset device identity (iOS, Settings -> Debug and demo, with confirmation):** for demos, because the server merges reports from one sender. It replaces the Keychain signing key, rotates the BLE instance UUID and restarts the transport, forgets the device id and heartbeat sequence (the next online moment registers the new key), and marks the profile unsynced so it is re-PUT to the new device. Message history and seen-ids stay; old and new 8-character ids are shown with a copy button. Sequencing lives in `IdentityResetter` (tested in `IdentityResetTests`).
+
 ### iOS (needs real iPhones; the Simulator has no Bluetooth)
 
 1. Open `mesh/ios/BeaconDemo.xcodeproj` in Xcode. It already links the local `BeaconMesh` package
@@ -98,17 +101,38 @@ UI structure (`app/src/main/java/com/beacon/mesh/ui`):
 1. Put every phone in airplane mode with Bluetooth on. Keep the app **in the foreground** (see caveats).
 2. Line up A, B, C and D far enough apart that each phone only reaches its neighbours,
    or just watch the `hop` and `path` on each phone.
-3. On A open Settings -> Debug and demo, set **Hop cap = 2**, go Home and send a **Check-in** (the + menu): it reaches C, and C shows "hop limit reached". D never gets it.
+3. On A open Settings -> Debug and demo, set **Hop cap = 2**, go Home and send **Something else** (a normal-tier message, in the + menu): it reaches C, and C shows "hop limit reached". D never gets it.
 4. Tap **Trapped** (critical ignores the cap): it reaches D.
 5. On C, turn Wi-Fi on and connect: C becomes **GATEWAY** and uploads everything it holds.
    Use **Force offline** (Settings -> Debug and demo) to keep a phone that has Wi-Fi acting as a pure relay.
+
+## Welfare check-ins and the heartbeat (iOS)
+
+The iOS app sends the **automatic heartbeat** itself (`POST /v1/heartbeats` with `transport=direct`, otherwise a `kind=heartbeat` envelope with `transport=mesh`) every
+`heartbeat_interval_seconds` (default 300) while the app runs, with or without an event and while an SOS is open, plus at once when connectivity returns and when an SOS is
+created. It carries `network` (NWPath interface), `peers_nearby`, `gateway` and `open_sos_ids` (max 20). Nobody presses anything for it; there is no "I'm OK" button.
+A person with an open SOS gets **welfare check-ins** (heartbeat 202 `pending_checkins`, `GET /v1/checkins/pending`, mesh `checkin_request`) as ONE local notification per
+`checkin_id` with the buttons "I'm still here", "I no longer need help" (both answered in the background) and "I need urgent help" (opens the app); a tap opens a sheet with the
+same three large buttons. Answers go by `PATCH /v1/checkins/{id}` or a mesh `checkin_reply`; `no_longer_need_help` also shows the case as resolved. A missed check-in stays the same
+one: the notification becomes "overdue" and is replaced and re-alerted (same identifier, never a pile) on every re-delivery, by one repeating local request (iOS floors repeating triggers at 60 s, so a shorter server value is honoured only while the app is in the foreground) and by the foreground timer; a late answer is accepted. No alarm. Limitation: a repeating request can only start once the app runs after the deadline, so until then a sleeping phone shows just the one notification scheduled for `deadline_at`.
+**iOS limits (be honest):** iOS only runs the app in the background for Bluetooth (the `bluetooth-central/peripheral` modes) and short wakeups, so a check-in can only be shown when the
+app runs (BLE wake, foreground, heartbeat reply); local reminders then keep coming. Real push (APNs) is NOT set up: it needs the Push Notifications capability plus APNs credentials on the
+server. Xcode: enable **Time Sensitive Notifications** under Signing & Capabilities (adds `com.apple.developer.usernotifications.time-sensitive`; the project has no entitlements file yet).
+Without it notifications are still delivered, just not as time sensitive. No critical alerts are used.
 
 ## Gateway to backend
 
 A phone with internet registers once (`POST /v1/devices`), signs every call (`X-Device-Id`, `X-Timestamp`, `X-Device-Signature`), uploads held envelopes with
 `POST /v1/sos/batch` (per-item results, `Retry-After` honoured), injects returned receipts and backend messages into the mesh, polls `GET /v1/mesh/outbox`
 every 30 s, and keeps keys and hop table fresh from `/v1/server-info`. If the sender itself is online it uses `POST /v1/sos` and polls `GET /v1/sos/{id}/status`.
-While an event is active the foreground service sends heartbeats (`POST /v1/heartbeats`, or a heartbeat envelope over the mesh). Details: [`PROTOCOL.md`](PROTOCOL.md).
+The foreground service sends the automatic heartbeat (`POST /v1/heartbeats`, or a heartbeat envelope over the mesh) whenever it runs, event or not. A person with
+an open SOS may get a welfare check-in: one notification with "I'm still here" / "I no longer need help" / "I need urgent help" buttons (answered by PATCH or a mesh
+`checkin_reply`); if missed it stays the same notification, turns "overdue" and re-alerts until answered. There is no alarm. Details: [`PROTOCOL.md`](PROTOCOL.md).
+
+**Debug and demo (Settings -> Debug):** "Test welfare check-in notification" posts a fake local check-in with a 20 s deadline (no server call). "Reset device identity" deletes
+the Keystore signing key and makes a new one, gives the BLE transport a new instance id, clears the server device registration (the new key registers when next online),
+restarts the heartbeat counter, cancels open check-ins and re-uploads the kept profile for the new device; held messages and history stay. Use it to send several separate
+reports from one phone, since the server merges reports from the same device. The screen shows the device id with a copy button.
 
 ## Known limits / caveats
 
