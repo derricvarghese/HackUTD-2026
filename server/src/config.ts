@@ -21,6 +21,7 @@ const schema = z.object({
   NEMOTRON_API_KEY: z.string().optional().default(''),
   NEMOTRON_MODEL: z.string().default('nvidia/nemotron'),
   NEMOTRON_TIMEOUT_MS: z.coerce.number().int().default(4000),
+  NEMOTRON_ENABLE_THINKING: bool(false),
   INLINE_TRIAGE_BUDGET_MS: z.coerce.number().int().default(3000),
   DEMO_MODE: bool(false),
   SEED_ON_START: bool(true),

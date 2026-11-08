@@ -58,7 +58,25 @@ interface ChatClient { chat: { completions: { create(body: any, opts?: any): Pro
 
 export interface NemotronOpts {
   baseURL: string; apiKey: string; model: string; timeoutMs: number;
+  /** Reasoning models (Nemotron 3.x) spend the whole token budget "thinking" and return `content: null`. Default false = thinking off. */
+  enableThinking?: boolean;
   client?: ChatClient; breaker?: CircuitBreaker;
+}
+
+/**
+ * OpenAI-compatible servers (vLLM, NIM, Ollama) serve under `/v1`. A bare host such as
+ * `https://8000-abc.gobrev.dev` makes the SDK call `/chat/completions` and `/models`, which 404, so triage
+ * silently fell back to rules only. Append `/v1` when the URL has no path.
+ */
+export function normalizeBaseUrl(raw: string): string {
+  const t = raw.trim().replace(/\/+$/, '');
+  if (!t) return t;
+  try {
+    const u = new URL(t);
+    return u.pathname === '' || u.pathname === '/' ? `${t}/v1` : t;
+  } catch {
+    return t;
+  }
 }
 
 export class NemotronClient implements TriageLlm {
@@ -72,7 +90,7 @@ export class NemotronClient implements TriageLlm {
   constructor(private o: NemotronOpts) {
     this.model = o.model;
     this.breaker = o.breaker ?? new CircuitBreaker();
-    this.client = o.client ?? (new OpenAI({ baseURL: o.baseURL, apiKey: o.apiKey || 'none', timeout: o.timeoutMs, maxRetries: 0 }) as unknown as ChatClient);
+    this.client = o.client ?? (new OpenAI({ baseURL: normalizeBaseUrl(o.baseURL), apiKey: o.apiKey || 'none', timeout: o.timeoutMs, maxRetries: 0 }) as unknown as ChatClient);
   }
 
   async extract(input: LlmInput): Promise<LlmResult | null> {
@@ -89,8 +107,10 @@ export class NemotronClient implements TriageLlm {
             {
               model: this.o.model,
               temperature: 0,
-              max_tokens: 400,
+              max_tokens: 600,
               response_format: { type: 'json_object' },
+              // vLLM chat-template switch: without it Nemotron 3.x answers with reasoning only and `content` is null.
+              ...(this.o.enableThinking ? {} : { chat_template_kwargs: { enable_thinking: false } }),
               messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
                 { role: 'user', content: JSON.stringify({ category: input.category, people_count: input.people_count ?? null, trapped: !!input.trapped, water_rising: !!input.water_rising, injured: !!input.injured, note_text: input.text, ...(input.profile_context ? { profile_context: input.profile_context } : {}) }) },
@@ -173,7 +193,7 @@ export class StubLlm implements TriageLlm {
   health() { return { status: 'ok' as const, model: this.model }; }
 }
 
-export function createLlm(cfg: { NEMOTRON_BASE_URL: string; NEMOTRON_API_KEY: string; NEMOTRON_MODEL: string; NEMOTRON_TIMEOUT_MS: number }): TriageLlm {
+export function createLlm(cfg: { NEMOTRON_BASE_URL: string; NEMOTRON_API_KEY: string; NEMOTRON_MODEL: string; NEMOTRON_TIMEOUT_MS: number; NEMOTRON_ENABLE_THINKING?: boolean }): TriageLlm {
   if (!cfg.NEMOTRON_BASE_URL) return new StubLlm();
-  return new NemotronClient({ baseURL: cfg.NEMOTRON_BASE_URL, apiKey: cfg.NEMOTRON_API_KEY, model: cfg.NEMOTRON_MODEL, timeoutMs: cfg.NEMOTRON_TIMEOUT_MS });
+  return new NemotronClient({ baseURL: cfg.NEMOTRON_BASE_URL, apiKey: cfg.NEMOTRON_API_KEY, model: cfg.NEMOTRON_MODEL, timeoutMs: cfg.NEMOTRON_TIMEOUT_MS, enableThinking: cfg.NEMOTRON_ENABLE_THINKING });
 }
