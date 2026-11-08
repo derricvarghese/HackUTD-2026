@@ -38,6 +38,9 @@ export async function startTestApp(overrides: { fetch?: typeof fetch; llm?: Tria
   await app.ctx.pool.query(
     'truncate sos, sos_reports, triage_results, sos_events, checkins, assignments, heartbeats, silent_devices, deadzones, mesh_outbox, voice_notes, case_images, rejections, devices, refresh_tokens, events restart identity cascade',
   );
+  // responders are not truncated (they are seeded once), so presence, positions and demo accounts left by an earlier test would change who the agent ranks first
+  await app.ctx.pool.query("delete from responders where username not in ('admin', 'alice', 'bob', 'carol')");
+  await app.ctx.pool.query('update responders set in_app = false, available = (role <> \'volunteer\'), available_manual = null, last_app_seen_at = null, lat = null, lng = null, location_updated_at = null, last_seen_at = null, presence_pinned = false');
   await new Promise<void>((r) => app.server.listen(0, '127.0.0.1', r));
   const port = (app.server.address() as { port: number }).port;
   const baseUrl = `http://127.0.0.1:${port}`;

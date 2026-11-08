@@ -104,7 +104,9 @@ export function createAiTriage(ctx: Ctx): AiTriage {
     if (!claimed) {
       // not due yet (backoff) or owned by another instance: the sweep covers both, but a due-later row is easy to schedule exactly
       const r = await ctx.db.selectFrom('sos').select(['triage_status', sql<number>`extract(epoch from (triage_next_at - now())) * 1000`.as('wait_ms')]).where('id', '=', id).executeTakeFirst();
-      if (r?.triage_status === 'provisional' && Number(r.wait_ms) > 0) later(id, Number(r.wait_ms), true);
+      // wait_ms can already be <= 0 here: claim() judged "not due" with its own statement-start now(), and by the time this read ran the backoff had passed (slow DB, row lock).
+      // Dropping the job then would strand the case until the next sweep, so always reschedule, at least 1 ms ahead.
+      if (r?.triage_status === 'provisional') later(id, Math.max(1, Math.ceil(Number(r.wait_ms))), true);
       return;
     }
     const started = Date.now();

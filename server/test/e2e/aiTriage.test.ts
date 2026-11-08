@@ -207,6 +207,26 @@ describe('failures, retries and the sweep', () => {
     expect(await getSos(t, id, alice)).toMatchObject({ triage_status: 'complete', triage: { triage_attempts: 1 } });
   });
 
+  it('a job that finds its backoff elapsed only after a slow claim is rescheduled, not dropped', async () => {
+    const llm = new FakeLlm();
+    t = await startTestApp({ llm });
+    const dev = await t.registerDevice();
+    const { id } = await postSos(t, dev);
+    await t.ctx.idle();
+    llm.calls.length = 0;
+    await t.ctx.pool.query(`update sos set triage_status = 'provisional', triage_next_at = now() + interval '150 milliseconds' where id = $1`, [id]);
+    // hold a table lock past the backoff: claim() blocks before it evaluates, then judges "not due" with its older statement-start now(); the follow-up read sees the backoff as already over
+    const c = await t.ctx.pool.connect();
+    try {
+      await c.query('begin'); await c.query('lock table sos in share row exclusive mode');
+      t.ctx.aiTriage.enqueue(id);
+      await sleep(350);
+      await c.query('commit');
+    } finally { c.release(); }
+    await until(async () => (await row(t!, id)).triage_status === 'complete'); // no sweep runs in tests: only the reschedule can finish it
+    expect(llm.calls).toHaveLength(1);
+  });
+
   it('restart recovery: provisional and stale-pending cases are processed, a fresh claim is left alone', async () => {
     const llm = new FakeLlm();
     t = await startTestApp({ llm });
