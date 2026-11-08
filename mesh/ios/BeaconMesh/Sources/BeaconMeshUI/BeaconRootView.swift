@@ -19,7 +19,7 @@ public struct BeaconRootView: View {
                 ProfileOnboardingView(node: node, onClose: nil)
             } else if onboarded {
                 TabView(selection: $tab) {
-                    HomeView(node: node)
+                    HomeView(node: node, onOpenMesh: { tab = 2 })
                         .tabItem { Label("Home", systemImage: "sos") }.tag(0)
                     MessagesView(node: node)
                         .tabItem { Label("Messages", systemImage: "tray.full") }.tag(1)

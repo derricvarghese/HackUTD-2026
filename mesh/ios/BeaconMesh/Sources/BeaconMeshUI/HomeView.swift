@@ -5,6 +5,8 @@ import SwiftUI
 /// Home: SOS tiles, check-in prompts and blocking problems. Deliberately no navigation title / big heading.
 struct HomeView: View {
     @ObservedObject var node: MeshNode
+    /// Opens the Mesh tab (the "Mesh details" button on the summary card).
+    var onOpenMesh: (() -> Void)? = nil
     @ObservedObject private var haptics = Haptics.shared
     @State private var draft: Category?
     @State private var banner: Banner?
@@ -21,6 +23,7 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    MeshSummaryCard(node: node, onOpenMesh: onOpenMesh)
                     if let banner { BannerView(banner: banner) }
                     ProfileHomeSection(node: node)
                     ForEach(node.checkins) { prompt in CheckinCard(prompt: prompt) { checkinPrompt = prompt } }
@@ -37,7 +40,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("More message types")
-                    statusLine
                 }
                 .padding(16)
             }
@@ -90,16 +92,6 @@ struct HomeView: View {
         .accessibilityLabel(c == .safe ? "I'm safe" : "Send SOS: \(c.title)")
     }
 
-    private var statusLine: some View {
-        HStack(spacing: 6) {
-            Image(systemName: node.isGateway ? "wifi" : "dot.radiowaves.left.and.right")
-            Text(node.isGateway ? "Online, relaying for others" : "Offline: \(node.peerCount) phone\(node.peerCount == 1 ? "" : "s") nearby")
-        }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .accessibilityElement(children: .combine)
-    }
-
     private func open(_ c: Category) {
         haptics.play(.sheetOpen)
         draft = c
@@ -122,7 +114,66 @@ struct HomeView: View {
     }
 }
 
-extension Category: Identifiable { var id: String { rawValue } }
+extension Category: Identifiable { public var id: String { rawValue } }
+
+/// Phones nearby, gateway role and GPS at a glance, pinned to the top of Home (same as Android's MeshSummary).
+/// Every value is @Published on MeshNode, so the card updates live as peers connect and drop.
+struct MeshSummaryCard: View {
+    @ObservedObject var node: MeshNode
+    var onOpenMesh: (() -> Void)?
+
+    private var searching: Bool { node.peerCount == 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(node.isGateway ? Color.teal.opacity(0.25) : Color.accentColor.opacity(0.18))
+                    if searching && !node.isGateway {
+                        ProgressView().controlSize(.large)
+                    } else {
+                        Image(systemName: node.isGateway ? "icloud.and.arrow.up.fill" : "point.3.connected.trianglepath.dotted")
+                            .font(.title2)
+                            .foregroundStyle(node.isGateway ? Color.teal : Color.accentColor)
+                    }
+                }
+                .frame(width: 64, height: 64)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(searching ? "Looking for nearby phones" : "\(node.peerCount) phone\(node.peerCount == 1 ? "" : "s") nearby")
+                        .font(.title3.weight(.semibold))
+                        .contentTransition(.numericText())
+                        .animation(.default, value: node.peerCount)
+                    Text(node.isGateway ? "Gateway: uploading to responders" : "Offline relay: passing messages along")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Label(gpsText, systemImage: node.hasLocation ? "location.fill" : "location.slash")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if let onOpenMesh {
+                Button("Mesh details", action: onOpenMesh)
+                    .font(.subheadline.weight(.medium))
+                    .frame(minHeight: 44)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var gpsText: String {
+        guard node.hasLocation else { return "Searching for GPS" }
+        if let acc = node.gpsAccuracy { return "GPS fix, accurate to \(Int(acc.rounded())) m" }
+        return "GPS fix"
+    }
+}
 
 struct BannerView: View {
     let banner: HomeView.Banner
