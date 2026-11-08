@@ -183,8 +183,6 @@ Replace `RADIUS`, `LAT`, `LNG`. `nwr` = node, way or relation. `out center` give
 (
   nwr(around:RADIUS,LAT,LNG)["amenity"="hospital"];
   nwr(around:RADIUS,LAT,LNG)["healthcare"="hospital"];
-  nwr(around:RADIUS,LAT,LNG)["amenity"="shelter"];
-  nwr(around:RADIUS,LAT,LNG)["emergency"="assembly_point"];
   nwr(around:RADIUS,LAT,LNG)["amenity"="fire_station"];
 );
 out center 20;
@@ -194,7 +192,7 @@ Dallas example (3 km), POST form-encoded:
 
 ```bash
 curl -s -H "User-Agent: BeaconHackUTD/1.0 (hackutd.alecj.com)" \
-  --data-urlencode 'data=[out:json][timeout:25];(nwr(around:3000,32.7767,-96.7970)["amenity"="hospital"];nwr(around:3000,32.7767,-96.7970)["healthcare"="hospital"];nwr(around:3000,32.7767,-96.7970)["amenity"="shelter"];nwr(around:3000,32.7767,-96.7970)["emergency"="assembly_point"];nwr(around:3000,32.7767,-96.7970)["amenity"="fire_station"];);out center 20;' \
+  --data-urlencode 'data=[out:json][timeout:25];(nwr(around:3000,32.7767,-96.7970)["amenity"="hospital"];nwr(around:3000,32.7767,-96.7970)["healthcare"="hospital"];nwr(around:3000,32.7767,-96.7970)["amenity"="fire_station"];);out center 20;' \
   https://overpass-api.de/api/interpreter
 ```
 

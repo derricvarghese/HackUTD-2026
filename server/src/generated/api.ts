@@ -977,7 +977,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Hospitals, shelters and fire stations of the event area
+         * Hospitals and fire stations of the event area
          * @description Public infrastructure from OpenStreetMap (Overpass), ingested in the background when the event is created or its geofence changes. Any responder or volunteer can read it
          *     (the dashboard may draw it). In demo mode a small synthetic set is seeded when Overpass is unavailable (`source: synthetic_demo`). Empty `data` with `source: null` means not ingested yet.
          */
@@ -2648,7 +2648,7 @@ export interface components {
             assignment: components["schemas"]["Assignment"];
         };
         /** @enum {string} */
-        FacilityKind: "hospital" | "shelter" | "fire_station";
+        FacilityKind: "hospital" | "fire_station";
         Facility: {
             /** Format: uuid */
             id: string;

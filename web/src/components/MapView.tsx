@@ -372,8 +372,8 @@ export function MapView(p: MapViewProps) {
     if (!g) return;
     g.facilities.clearLayers();
     for (const f of p.facilities ?? []) {
-      const color = f.kind === 'hospital' ? '#DC2626' : f.kind === 'shelter' ? '#059669' : '#D97706';
-      const badgeChar = f.kind === 'hospital' ? 'H' : f.kind === 'shelter' ? 'S' : 'F';
+      const color = f.kind === 'hospital' ? '#DC2626' : '#D97706';
+      const badgeChar = f.kind === 'hospital' ? 'H' : 'F';
       const icon = L.divIcon({
         className: 'facility-marker',
         html: `<div style="background:${color}; color:#fff; width:26px; height:26px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; font-family:Inter,sans-serif">${badgeChar}</div>`,

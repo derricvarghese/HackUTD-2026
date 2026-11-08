@@ -23,7 +23,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function overpassQuery(b: { s: number; w: number; n: number; e: number }, limit = 300): string {
   const box = `(${b.s},${b.w},${b.n},${b.e})`;
-  return `[out:json][timeout:25];(nwr["amenity"="hospital"]${box};nwr["healthcare"="hospital"]${box};nwr["amenity"="shelter"]${box};nwr["emergency"="assembly_point"]${box};nwr["amenity"="fire_station"]${box};);out center ${limit};`;
+  return `[out:json][timeout:25];(nwr["amenity"="hospital"]${box};nwr["healthcare"="hospital"]${box};nwr["amenity"="fire_station"]${box};);out center ${limit};`;
 }
 
 /** Overpass elements (nodes carry lat/lon, ways/relations a `center`) -> facility rows. */
@@ -34,12 +34,12 @@ export function parseOverpass(j: any): { kind: Kind; name: string; lat: number; 
     const lat = el.lat ?? el.center?.lat, lng = el.lon ?? el.center?.lon;
     if (typeof lat !== 'number' || typeof lng !== 'number') continue;
     const t = el.tags ?? {};
-    const kind: Kind | null = t.amenity === 'hospital' || t.healthcare === 'hospital' ? 'hospital' : t.amenity === 'fire_station' ? 'fire_station' : t.amenity === 'shelter' || t.emergency === 'assembly_point' ? 'shelter' : null;
+    const kind: Kind | null = t.amenity === 'hospital' || t.healthcare === 'hospital' ? 'hospital' : t.amenity === 'fire_station' ? 'fire_station' : null;
     if (!kind) continue;
     const id = `${el.type}/${el.id}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    const label = kind === 'fire_station' ? 'Fire station' : kind === 'hospital' ? 'Hospital' : 'Shelter';
+    const label = kind === 'fire_station' ? 'Fire station' : 'Hospital';
     out.push({ kind, name: String(t.name ?? `Unnamed ${label.toLowerCase()}`).slice(0, 120), lat, lng, osm_id: id, tags: { ...(t.emergency ? { emergency: String(t.emergency) } : {}), ...(t.amenity ? { amenity: String(t.amenity) } : {}) } });
   }
   return out;
@@ -75,8 +75,7 @@ export function createFacilities(ctx: Ctx): FacilitiesService {
     const mk = (kind: Kind, name: string, ox: number, oy: number, i: number) => ({ kind, name, lat: Math.round((lat + oy * dy) * 1e5) / 1e5, lng: Math.round((lng + ox * dx) * 1e5) / 1e5, osm_id: `demo/${i}`, tags: { synthetic: 'true' } as Record<string, string> });
     return [
       mk('hospital', 'Demo Regional Medical Center', 1.2, 0.8, 1), mk('hospital', 'Demo Community Hospital', -1.4, -0.6, 2),
-      mk('shelter', 'Demo High School Shelter', -0.5, 1.1, 3), mk('shelter', 'Demo Community Center Shelter', 0.9, -1.2, 4),
-      mk('fire_station', 'Demo Fire Station 1', 0.2, 0.3, 5), mk('fire_station', 'Demo Fire Station 2', -1.1, 1.3, 6),
+      mk('fire_station', 'Demo Fire Station 1', 0.2, 0.3, 3), mk('fire_station', 'Demo Fire Station 2', -1.1, 1.3, 4),
     ];
   }
 

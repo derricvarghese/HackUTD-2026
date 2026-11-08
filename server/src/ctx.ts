@@ -37,7 +37,7 @@ export interface Ctx {
   aiTriage: AiTriage;
   /** dispatch agent: tool-calling Nemotron loop that proposes a dispatch for human approval */
   agent: AgentRunner;
-  /** background Overpass ingestion of hospitals, shelters and fire stations per event */
+  /** background Overpass ingestion of hospitals and fire stations per event */
   facilities: FacilitiesService;
   /** outbound HTTP for the agent's external tools (tests inject a fake); defaults to global fetch */
   fetch?: typeof fetch;

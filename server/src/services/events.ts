@@ -98,7 +98,7 @@ export async function createEvent(ctx: Ctx, b: Create): Promise<EventDto> {
       heartbeat_interval_s: b.heartbeat_interval_seconds ?? ctx.cfg.HEARTBEAT_INTERVAL_S, silence_threshold_s: b.silence_threshold_seconds ?? ctx.cfg.SILENCE_THRESHOLD_S,
       synthetic: b.synthetic ?? false,
     }).returningAll().executeTakeFirstOrThrow();
-    ctx.facilities.schedule(e.id); // hospitals / shelters / fire stations from OpenStreetMap, in the background
+    ctx.facilities.schedule(e.id); // hospitals / fire stations from OpenStreetMap, in the background
     return toEvent(ctx, e);
   } catch (err) {
     if ((err as { code?: string }).code === '23505') throw conflict('Another event is already active; close it first');

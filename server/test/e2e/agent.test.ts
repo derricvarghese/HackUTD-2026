@@ -425,7 +425,7 @@ describe('facilities ingestion', () => {
     const list = await get(`/events/${ev.id}/facilities`, carol); // volunteers too
     expect(list.status).toBe(200);
     expect(list.body.source).toBe('osm');
-    expect(list.body.data.map((f: any) => f.kind).sort()).toEqual(['fire_station', 'hospital', 'shelter', 'shelter']);
+    expect(list.body.data.map((f: any) => f.kind).sort()).toEqual(['fire_station', 'hospital']);
     expect(list.body.data.find((f: any) => f.name === 'Parkland Memorial Hospital')).toMatchObject({ osm_id: 'node/1', synthetic: false });
     expect(net.urls.filter((u) => u.includes('o1.test'))).toHaveLength(2);
     expect(net.urls.filter((u) => u.includes('o2.test'))).toHaveLength(1);
@@ -472,7 +472,7 @@ describe('facilities ingestion', () => {
     await until(async () => (await t!.ctx.pool.query('select facilities_source s from events where id = $1', [ev.id])).rows[0].s === 'synthetic_demo', 10000);
     const list = (await get(`/events/${ev.id}/facilities`, admin)).body;
     expect(list.source).toBe('synthetic_demo');
-    expect(list.data).toHaveLength(6);
+    expect(list.data).toHaveLength(4);
     expect(list.data.every((f: any) => f.synthetic)).toBe(true);
     const c = await mkCase(t!, dev, { lat: 32.78, lng: -96.8 });
     const row = await t!.ctx.db.selectFrom('sos').selectAll().where('id', '=', c.id).executeTakeFirstOrThrow();

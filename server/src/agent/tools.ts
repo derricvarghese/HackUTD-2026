@@ -360,8 +360,8 @@ const reverseGeocode: ToolDef = {
 
 const nearestFacilities: ToolDef = {
   name: 'nearest_facilities', kind: 'internal',
-  schema: z.object({ kind: z.enum(['hospital', 'shelter', 'fire_station', 'any']).default('any').optional(), limit: z.number().int().min(1).max(8).default(3).optional() }),
-  description: 'Nearest hospitals, shelters and fire stations from the local facilities table (OpenStreetMap, ingested per event): name, kind, distance_km, coarse position.',
+  schema: z.object({ kind: z.enum(['hospital', 'fire_station', 'any']).default('any').optional(), limit: z.number().int().min(1).max(8).default(3).optional() }),
+  description: 'Nearest hospitals and fire stations from the local facilities table (OpenStreetMap, ingested per event): name, kind, distance_km, coarse position.',
   async run({ ctx, sos }, a) {
     const ev = sos.event_id ?? (await activeEventRow(ctx))?.id;
     if (!ev) return { facilities: [], note: 'no event' };

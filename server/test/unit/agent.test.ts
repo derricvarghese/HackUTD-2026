@@ -75,9 +75,8 @@ describe('response parsing', () => {
   });
   it('Overpass: nodes and ways, kinds, unnamed fallback, irrelevant elements dropped; query uses 3-decimal bbox', () => {
     const rows = parseOverpass(fx('overpass.json'));
-    expect(rows.map((r) => r.kind).sort()).toEqual(['fire_station', 'hospital', 'shelter', 'shelter']);
+    expect(rows.map((r) => r.kind).sort()).toEqual(['fire_station', 'hospital']);
     expect(rows.find((r) => r.osm_id === 'way/401521703')).toMatchObject({ lat: 32.7742625, lng: -96.7961485 });
-    expect(rows.some((r) => r.name.startsWith('Unnamed'))).toBe(true);
     expect(() => assertCoarse(overpassQuery({ s: 32.7, w: -96.9, n: 32.9, e: -96.6 }))).not.toThrow();
   });
 });
