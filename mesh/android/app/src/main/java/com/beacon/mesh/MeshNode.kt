@@ -60,7 +60,8 @@ import java.util.concurrent.ConcurrentHashMap
 data class UploadResult(val atMs: Long, val messageId: String, val ok: Boolean, val detail: String?, val summary: UploadSummary? = null)
 
 /** Last known GPS fix (null in the snapshot when there is none). */
-data class GpsFix(val accuracyM: Float?, val timeMs: Long)
+/** [source] is "gps", "fused", "network" or "other". [accuracyM] is the 68 % radius, null when unknown. */
+data class GpsFix(val accuracyM: Float?, val timeMs: Long, val source: String = "gps")
 
 /** Heartbeat state for the Mesh status screen. The heartbeat is automatic: it runs whenever the mesh service runs. */
 data class HeartbeatUi(
@@ -160,7 +161,12 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     private val transport = BleMeshTransport(app, main)
     private val uploader = GatewayUploader(app, main, router.relayId)
     private val locationManager = app.getSystemService(LocationManager::class.java)
-    private var lastLocation: Location? = null
+    private val best = com.beacon.mesh.location.BestFix<Location>()
+    /** The best fix that is still fresh (< 2 min), or null: callers never show or send an old position as current. */
+    private val lastLocation: Location? get() = best.fresh()?.second
+    private var locationListener: LocationListener? = null
+    private var foreground = false
+    private var warmUntilMs = 0L
     private var started = false
 
     val logLines = ArrayDeque<String>()
@@ -281,7 +287,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     }
 
     fun sendSos(category: Category, text: String?, people: Int? = null): SendResult {
-        val loc = lastLocation
+        val loc = lastLocation ?: best.fresh(SOS_MAX_FIX_AGE_MS)?.second // an older fix beats none when the alert goes out
         return try {
             val offline = !isGateway
             val peersNow = router.connectedPeers.size
@@ -520,7 +526,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         demoHopCap = demoHopCap,
         uploadingIds = inFlight.toSet(),
         lastUpload = lastUpload,
-        gps = lastLocation?.let { GpsFix(if (it.hasAccuracy()) it.accuracy else null, it.time) },
+        gps = best.fresh()?.let { (i, _) -> GpsFix(i.accuracyM, i.timeMs, com.beacon.mesh.location.LocationSelector.sourceOf(i.provider)) },
         sentToPeers = sentTo.toMap(),
         encKeyStatus = config.encryptionKeyStatus,
         signKeyStatus = config.signingKeyStatus,
@@ -554,20 +560,56 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         notifyChanged()
     }
 
+    private fun hasFinePermission() = androidx.core.content.ContextCompat.checkSelfPermission(app, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun offerFix(l: Location) {
+        if (best.offer(com.beacon.mesh.location.LocationProviders.info(l), l)) {
+            // The shown fix expires on its own: refresh the snapshot once it turns stale so the UI says "searching".
+            main.postDelayed({ notifyChanged() }, com.beacon.mesh.location.LocationSelector.STALE_MS + 1_000)
+            notifyChanged()
+        }
+    }
+
+    private fun cadenceMs(): Long = when {
+        System.currentTimeMillis() < warmUntilMs -> com.beacon.mesh.location.LocationProviders.WARMUP_MS
+        foreground -> com.beacon.mesh.location.LocationProviders.FOREGROUND_MS
+        else -> com.beacon.mesh.location.LocationProviders.BACKGROUND_MS
+    }
+
+    /** (Re)registers the location listeners with the current cadence. Safe to call repeatedly. */
     private fun startLocation() {
         val lm = locationManager ?: return
-        val listener = LocationListener { lastLocation = it; notifyChanged() }
-        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
-            try {
-                if (!lm.isProviderEnabled(provider)) continue
-                lm.getLastKnownLocation(provider)?.let { if (lastLocation == null) lastLocation = it }
-                lm.requestLocationUpdates(provider, 10_000L, 0f, listener, Looper.getMainLooper())
-            } catch (e: SecurityException) {
-                append("No location permission; SOS cannot be created without a location")
-            } catch (e: IllegalArgumentException) {
-                // provider missing on this device
+        locationListener?.let { runCatching { lm.removeUpdates(it) } }
+        val listener = LocationListener { offerFix(it) }
+        val providers = com.beacon.mesh.location.LocationProviders.chooseProviders(lm, hasFinePermission())
+        try {
+            com.beacon.mesh.location.LocationProviders.lastKnown(lm, providers).forEach(::offerFix)
+            for (p in providers) {
+                try {
+                    com.beacon.mesh.location.LocationProviders.request(lm, p, cadenceMs(), listener)
+                } catch (e: IllegalArgumentException) {
+                    // provider missing on this device
+                }
             }
+            locationListener = listener
+        } catch (e: SecurityException) {
+            append("No location permission; SOS cannot be created without a location")
         }
+    }
+
+    /** The app is on screen (fast fixes) or not (slow, the foreground service keeps going). */
+    fun setForeground(value: Boolean) {
+        if (foreground == value) return
+        foreground = value
+        if (started) startLocation()
+    }
+
+    /** The SOS confirmation opened: ask for a fresh, accurate fix at the fastest cadence for a short while. */
+    fun warmUpLocation(durationMs: Long = 25_000L) {
+        if (!started) return
+        warmUntilMs = System.currentTimeMillis() + durationMs
+        startLocation()
+        main.postDelayed({ if (System.currentTimeMillis() >= warmUntilMs) startLocation() }, durationMs + 500)
     }
 
     // ---- BleMeshTransport.Listener ----
@@ -579,6 +621,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
 
     companion object {
         private const val INFO_REFRESH_MS = 5 * 60_000L
+        private const val SOS_MAX_FIX_AGE_MS = 15 * 60_000L
         private val FINAL_STATUSES = setOf("resolved", "closed", "merged")
 
         @Volatile private var instance: MeshNode? = null

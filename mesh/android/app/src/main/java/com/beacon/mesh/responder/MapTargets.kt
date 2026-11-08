@@ -15,6 +15,8 @@ data class MapTarget(
     val mine: Boolean,
     /** Silent or unresponsive: drawn with a pulsing ring. */
     val attention: Boolean,
+    /** App category wire name (trapped, injured, ...) for the pin glyph; null when unknown. */
+    val category: String? = null,
 ) {
     enum class Source { SERVER, MESH }
 }
@@ -25,7 +27,7 @@ object MapTargets {
     fun fromCase(c: ResponderCase, title: String, account: ResponderAccount?) = MapTarget(
         id = c.id, source = MapTarget.Source.SERVER, tone = CaseRules.tone(c), title = title,
         lat = c.lat, lng = c.lng, radiusM = CaseRules.mapRadiusM(c), exact = c.hasExactLocation,
-        mine = c.isMine(account), attention = c.needsAttention,
+        mine = c.isMine(account), attention = c.needsAttention, category = com.beacon.mesh.ui.responder.appCategory(c.category),
     )
 
     /**
@@ -41,7 +43,7 @@ object MapTargets {
             MapTarget(
                 id = MESH_PREFIX + m.id, source = MapTarget.Source.MESH, tone = tonePriority(e.category),
                 title = title(e.category), lat = approx.getDouble("lat"), lng = approx.getDouble("lng"),
-                radiusM = approx.optDouble("radius_m", 1000.0), exact = false, mine = false, attention = false,
+                radiusM = approx.optDouble("radius_m", 1000.0), exact = false, mine = false, attention = false, category = e.category,
             )
         }
 

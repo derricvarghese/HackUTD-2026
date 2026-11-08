@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -98,34 +99,6 @@ fun HomeScreen(
 
     ScreenScaffold(
         title = null,
-        floatingActionButton = {
-            FloatingActionButtonMenu(
-                expanded = menuOpen,
-                button = {
-                    ToggleFloatingActionButton(
-                        checked = menuOpen,
-                        onCheckedChange = { menuOpen = it; haptics.perform(if (it) HapticEvent.Expand else HapticEvent.Collapse) },
-                        modifier = Modifier.semantics { stateDescription = "" },
-                    ) {
-                        val image = if (checkedProgress > 0.5f) Icons.Rounded.Close else Icons.Rounded.Add
-                        Icon(
-                            image,
-                            contentDescription = stringResource(R.string.home_more_alerts),
-                            modifier = Modifier.animateIcon({ checkedProgress }),
-                        )
-                    }
-                },
-            ) {
-                MoreMenu.forEach { cat ->
-                    val st = categoryStyle(cat.wire)
-                    FloatingActionButtonMenuItem(
-                        onClick = haptics.onClick(HapticEvent.SheetOpen) { menuOpen = false; onSos(cat) },
-                        icon = { Icon(st.icon, null) },
-                        text = { Text(stringResource(st.label)) },
-                    )
-                }
-            }
-        },
     ) { pad ->
         ScrollColumn(pad) {
             if (!system.readiness.canRunMesh) {
@@ -155,6 +128,7 @@ fun HomeScreen(
             ) {
                 BigFour.forEach { cat -> SosTile(cat, onClick = { onSos(cat) }, modifier = Modifier.weight(1f)) }
             }
+            MoreAlerts(open = menuOpen, onToggle = { menuOpen = it; haptics.perform(if (it) HapticEvent.Expand else HapticEvent.Collapse) }, onSos = onSos)
             Text(
                 stringResource(R.string.home_tile_hint),
                 style = MaterialTheme.typography.bodySmall,
@@ -172,8 +146,37 @@ fun HomeScreen(
             } else {
                 mine.forEach { MessageCard(it, now, selected = false, onClick = { onOpenMessage(it.id) }) }
             }
-            // Room so the floating menu never covers the last card.
-            Spacer(Modifier.height(88.dp))
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** The three less common alert types, inline under the tiles (a floating button used to sit on top of the fourth tile). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MoreAlerts(open: Boolean, onToggle: (Boolean) -> Unit, onSos: (Category) -> Unit) {
+    val haptics = LocalHaptics.current
+    androidx.compose.material3.OutlinedButton(
+        onClick = { onToggle(!open) },
+        shapes = ButtonDefaults.shapes(),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics { stateDescription = "" },
+    ) {
+        Icon(if (open) Icons.Rounded.Close else Icons.Rounded.Add, null)
+        Text(stringResource(R.string.home_more_alerts), Modifier.padding(start = 8.dp))
+    }
+    androidx.compose.animation.AnimatedVisibility(visible = open) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            MoreMenu.forEach { cat ->
+                val st = categoryStyle(cat.wire)
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = haptics.onClick(HapticEvent.SheetOpen) { onToggle(false); onSos(cat) },
+                    shapes = ButtonDefaults.shapes(),
+                    modifier = Modifier.heightIn(min = 56.dp),
+                ) {
+                    Icon(st.icon, null)
+                    Text(stringResource(st.label), Modifier.padding(start = 8.dp))
+                }
+            }
         }
     }
 }

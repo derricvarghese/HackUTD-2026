@@ -23,6 +23,16 @@ class MainActivity : ComponentActivity() {
         setContent { BeaconApp() }
     }
 
+    override fun onStart() {
+        super.onStart()
+        com.beacon.mesh.MeshNode.get(this).setForeground(true)
+    }
+
+    override fun onStop() {
+        com.beacon.mesh.MeshNode.get(this).setForeground(false)
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

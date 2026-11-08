@@ -78,7 +78,8 @@ fun outcomeText(o: String): String = stringResource(
 @Composable
 fun agoText(ms: Long?, now: Long): String {
     if (ms == null) return stringResource(R.string.responder_unknown)
-    if (kotlin.math.abs(now - ms) < 10_000) return stringResource(R.string.responder_just_now)
+    // A timestamp from the server can be a little ahead of this phone's clock: never show 'In 0 min.', treat it as just now.
+    if (ms > now - 10_000) return stringResource(R.string.responder_just_now)
     return DateUtils.getRelativeTimeSpanString(ms, now, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
 }
 

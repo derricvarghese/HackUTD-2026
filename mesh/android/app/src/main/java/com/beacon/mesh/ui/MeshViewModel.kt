@@ -63,6 +63,7 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
         handle[KEY_CATEGORY] = category.wire
         handle[KEY_NOTE] = ""
         handle[KEY_PEOPLE] = 1
+        node.warmUpLocation() // fresh, accurate fix while the user confirms
     }
 
     fun setNote(value: String) { handle[KEY_NOTE] = SosDraft(Category.OTHER).withNote(value).note }

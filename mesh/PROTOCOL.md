@@ -188,8 +188,9 @@ as `pending_checkins` in the `POST /v1/heartbeats` 202 body, and from `GET /v1/c
   `reminder` n, `overdue=true`) every `checkin_reminder_seconds` (server-info, default 300) while it is unanswered. Each delivery updates the single
   stored prompt and the single notification (stable notification id from the check-in id), and alerts again when the reminder count rises.
 * **Notification**: channel "Welfare check-ins" (high importance, own sound/vibration, public on the lock screen, category alarm, ongoing), title from the
-  server `title`/`message`, a live countdown to `deadline_at`, and up to three action buttons from `choices`: "I'm still here" `still_here`,
-  "I no longer need help" `no_longer_need_help`, "I need urgent help" `need_urgent_help`. Tapping it opens the in-app confirmation screen (same three buttons).
+  server `title`/`message`, a live countdown to `deadline_at`. The notification has NO answer buttons. Tapping it opens the in-app check-in screen, where the
+  person taps one of the `choices`: "I'm still here" `still_here`, "I no longer need help" `no_longer_need_help`, "I need urgent help" `need_urgent_help`.
+  Replies are sent only from that screen, never from the notification.
 * **Overdue**: after `deadline_at` the same notification says "Please confirm you're okay: your check-in is overdue.", has no countdown and is never
   auto-cancelled. While the service runs the phone also re-alerts locally every `checkin_reminder_seconds` (the notification is updated, never duplicated).
 * **Answer**: marked answered locally at once (notification removed), then `PATCH /v1/checkins/{id} {response, responded_at}` when online, else a

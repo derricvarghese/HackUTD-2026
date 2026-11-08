@@ -51,28 +51,12 @@ class AndroidWelfareNotifier(context: Context) : WelfareNotifier {
         try { if (nm.areNotificationsEnabled()) nm.notify(id, n) } catch (e: SecurityException) { /* POST_NOTIFICATIONS revoked */ }
     }
 
-    private fun answerIntent(checkinId: String, response: String): PendingIntent = PendingIntent.getBroadcast(
-        app, 0,
-        Intent(app, WelfareActionReceiver::class.java).setAction(WelfareIntents.ACTION_ANSWER)
-            .setData(Uri.parse("beacon://welfare/answer/$checkinId/$response"))
-            .putExtra(WelfareIntents.EXTRA_CHECKIN_ID, checkinId).putExtra(WelfareIntents.EXTRA_RESPONSE, response),
-        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-    )
-
     private fun openIntent(checkinId: String): PendingIntent = PendingIntent.getActivity(
         app, 0,
         Intent(app, MainActivity::class.java).setAction(WelfareIntents.ACTION_OPEN)
             .setData(Uri.parse("beacon://welfare/open/$checkinId")).putExtra(WelfareIntents.EXTRA_CHECKIN_ID, checkinId)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-    )
-
-    private fun label(response: String): String = app.getString(
-        when (response) {
-            WelfareResponse.NO_LONGER_NEED_HELP -> R.string.welfare_no_longer
-            WelfareResponse.NEED_URGENT_HELP -> R.string.welfare_urgent
-            else -> R.string.welfare_still_here
-        }
     )
 
     private fun deadlineText(deadlineMs: Long?): String? =
@@ -97,7 +81,7 @@ class AndroidWelfareNotifier(context: Context) : WelfareNotifier {
             .setOnlyAlertOnce(!alert)
             .setContentIntent(openIntent(m.checkinId))
         m.deadlineAtMs?.let { b.setWhen(it).setShowWhen(true).setUsesChronometer(true).setChronometerCountDown(true) }
-        m.actions.forEach { r -> b.addAction(0, label(r), answerIntent(m.checkinId, r)) }
+        // No action buttons on purpose: tapping the notification opens the in-app check-in screen where the person answers.
         return b.build()
     }
 

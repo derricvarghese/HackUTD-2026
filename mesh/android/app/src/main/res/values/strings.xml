@@ -88,9 +88,17 @@
     <string name="sos_send_now_desc">Send alert now</string>
 
     <!-- GPS -->
+    <string name="responder_mesh_group">Heard over Bluetooth (%d)</string>
+    <string name="responder_mesh_group_open">Expanded</string>
+    <string name="responder_mesh_group_closed">Collapsed</string>
     <string name="gps_denied">Location unavailable. The alert is sent without GPS.</string>
     <string name="gps_searching">Searching for GPS</string>
-    <string name="gps_fix">GPS fix, accurate to %d m</string>
+    <string name="gps_fix">%1$s, about %2$d m</string>
+    <string name="gps_fix_km">%1$s, about %2$.1f km</string>
+    <string name="gps_src_gps">GPS</string>
+    <string name="gps_src_fused">Fused location</string>
+    <string name="gps_src_network">Network location</string>
+    <string name="gps_src_other">Location</string>
     <string name="gps_fix_unknown">GPS fix</string>
 
     <!-- Mesh status -->

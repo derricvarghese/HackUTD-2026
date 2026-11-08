@@ -208,29 +208,32 @@ fun ProfileStatusChip(status: ProfileStatus, onOpen: () -> Unit, onRetry: () -> 
 @Composable
 fun ProfileBanner(hasProfile: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit, prominent: Boolean = false) {
     val haptics = LocalHaptics.current
-    ElevatedSection(container = if (prominent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer) {
+    // The content colour must be the on-colour of the SAME container role (it used onTertiaryContainer on primaryContainer: unreadable in dark mode).
+    val container = if (prominent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer
+    val content = if (prominent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer
+    ElevatedSection(container = container) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(Icons.Rounded.Person, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+            Icon(Icons.Rounded.Person, null, tint = content)
             Text(
                 stringResource(R.string.profile_banner_title),
                 style = MaterialTheme.typography.titleMediumEmphasized,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = content,
                 modifier = Modifier.weight(1f),
             )
             IconButton(onClick = haptics.onClick(HapticEvent.LightTap, onDismiss), modifier = Modifier.heightIn(min = 48.dp)) {
-                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.profile_banner_dismiss), tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.profile_banner_dismiss), tint = content)
             }
         }
         Text(
             stringResource(if (hasProfile) R.string.profile_banner_body else R.string.profile_banner_set_up),
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            color = content,
         )
         if (prominent) {
             Text(
                 stringResource(R.string.profile_banner_why),
                 style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = content,
             )
         }
         FilledTonalButton(onClick = haptics.onClick(HapticEvent.Navigate, onOpen), shapes = ButtonDefaults.shapes(), modifier = Modifier.heightIn(min = 48.dp)) {

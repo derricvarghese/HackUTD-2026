@@ -25,23 +25,25 @@ class ResponderLocationSource(context: Context) {
     fun start(onFix: (lat: Double, lng: Double) -> Unit): Boolean {
         stop()
         if (!hasFine() && !hasCoarse()) return false
+        val best = com.beacon.mesh.location.BestFix<Location>()
+        // Only a fix that beats the current one is shared: a coarse network fix never replaces a good GPS fix.
+        fun offer(location: Location) {
+            if (best.offer(com.beacon.mesh.location.LocationProviders.info(location), location)) onFix(location.latitude, location.longitude)
+        }
         val l = object : LocationListener {
-            override fun onLocationChanged(location: Location) { onFix(location.latitude, location.longitude) }
+            override fun onLocationChanged(location: Location) { offer(location) }
             @Deprecated("Deprecated in API 29") override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
         }
-        // Approximate-only grants cannot use GPS; the network provider still works.
-        val providers = buildList {
-            if (hasFine()) add(LocationManager.GPS_PROVIDER)
-            add(LocationManager.NETWORK_PROVIDER)
-        }
+        // Same provider logic as the mesh node: fused (API 31+), then GPS (fine permission only), then network.
+        val providers = com.beacon.mesh.location.LocationProviders.chooseProviders(lm, hasFine())
         var any = false
-        for (p in providers) {
-            try {
-                if (lm.isProviderEnabled(p)) { lm.requestLocationUpdates(p, INTERVAL_MS, 0f, l, Looper.getMainLooper()); any = true }
-            } catch (_: SecurityException) { } catch (_: IllegalArgumentException) { }
-        }
+        try {
+            for (p in providers) {
+                try { com.beacon.mesh.location.LocationProviders.request(lm, p, INTERVAL_MS, l); any = true } catch (_: IllegalArgumentException) { }
+            }
+        } catch (_: SecurityException) { }
         if (any) listener = l
         return any
     }
@@ -51,5 +53,5 @@ class ResponderLocationSource(context: Context) {
         listener = null
     }
 
-    private companion object { const val INTERVAL_MS = 10_000L }
+    private companion object { const val INTERVAL_MS = 5_000L }
 }

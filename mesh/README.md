@@ -112,8 +112,7 @@ The iOS app sends the **automatic heartbeat** itself (`POST /v1/heartbeats` with
 `heartbeat_interval_seconds` (default 300) while the app runs, with or without an event and while an SOS is open, plus at once when connectivity returns and when an SOS is
 created. It carries `network` (NWPath interface), `peers_nearby`, `gateway` and `open_sos_ids` (max 20). Nobody presses anything for it; there is no "I'm OK" button.
 A person with an open SOS gets **welfare check-ins** (heartbeat 202 `pending_checkins`, `GET /v1/checkins/pending`, mesh `checkin_request`) as ONE local notification per
-`checkin_id` with the buttons "I'm still here", "I no longer need help" (both answered in the background) and "I need urgent help" (opens the app); a tap opens a sheet with the
-same three large buttons. Answers go by `PATCH /v1/checkins/{id}` or a mesh `checkin_reply`; `no_longer_need_help` also shows the case as resolved. A missed check-in stays the same
+`checkin_id` with no answer buttons: a tap on the notification opens the in-app check-in screen, where the person taps one of the three answers ("I'm still here", "I no longer need help", "I need urgent help"). Answers go by `PATCH /v1/checkins/{id}` or a mesh `checkin_reply`; `no_longer_need_help` also shows the case as resolved. A missed check-in stays the same
 one: the notification becomes "overdue" and is replaced and re-alerted (same identifier, never a pile) on every re-delivery, by one repeating local request (iOS floors repeating triggers at 60 s, so a shorter server value is honoured only while the app is in the foreground) and by the foreground timer; a late answer is accepted. No alarm. Limitation: a repeating request can only start once the app runs after the deadline, so until then a sleeping phone shows just the one notification scheduled for `deadline_at`.
 **iOS limits (be honest):** iOS only runs the app in the background for Bluetooth (the `bluetooth-central/peripheral` modes) and short wakeups, so a check-in can only be shown when the
 app runs (BLE wake, foreground, heartbeat reply); local reminders then keep coming. Real push (APNs) is NOT set up: it needs the Push Notifications capability plus APNs credentials on the
@@ -126,7 +125,7 @@ A phone with internet registers once (`POST /v1/devices`), signs every call (`X-
 `POST /v1/sos/batch` (per-item results, `Retry-After` honoured), injects returned receipts and backend messages into the mesh, polls `GET /v1/mesh/outbox`
 every 30 s, and keeps keys and hop table fresh from `/v1/server-info`. If the sender itself is online it uses `POST /v1/sos` and polls `GET /v1/sos/{id}/status`.
 The foreground service sends the automatic heartbeat (`POST /v1/heartbeats`, or a heartbeat envelope over the mesh) whenever it runs, event or not. A person with
-an open SOS may get a welfare check-in: one notification with "I'm still here" / "I no longer need help" / "I need urgent help" buttons (answered by PATCH or a mesh
+an open SOS may get a welfare check-in: one notification with no answer buttons; tapping it opens the in-app check-in screen with the three answers ("I'm still here" / "I no longer need help" / "I need urgent help", answered by PATCH or a mesh
 `checkin_reply`); if missed it stays the same notification, turns "overdue" and re-alerts until answered. There is no alarm. Details: [`PROTOCOL.md`](PROTOCOL.md).
 
 **Debug and demo (Settings -> Debug):** "Test welfare check-in notification" posts a fake local check-in with a 20 s deadline (no server call). "Reset device identity" deletes
@@ -145,3 +144,6 @@ reports from one phone, since the server merges reports from the same device. Th
 * A phone without a location fix cannot create an SOS (the server requires coordinates).
 * Receipts and backend messages travel as plain JSON objects over the same data frames (frame type 0x02 is now the BLE HELLO, see PROTOCOL.md).
 * Full phone-to-server upload needs a deployed server plus keys (`server-info` or the Gradle properties above).
+* Android map and location notes: osmdroid's own tile downloader has no timeouts and stalls on networks where one IP family black-holes (VPN, NAT64), so the
+  responder map downloads tiles with OkHttp (`OkHttpTileProvider`). Location uses the fused provider (API 31+) then GPS then network, and a worse fix never
+  replaces a better one (`location/LocationSelector`); the UI shows the source and the rounded 68 % radius.

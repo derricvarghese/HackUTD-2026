@@ -91,6 +91,10 @@ import com.beacon.mesh.ui.components.EmptyState
 import com.beacon.mesh.ui.components.Pill
 import com.beacon.mesh.ui.components.categoryLabel
 import com.beacon.mesh.ui.components.categoryStyle
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.ui.semantics.stateDescription
 import com.beacon.mesh.ui.components.rememberNow
 import com.beacon.mesh.ui.haptics.HapticEvent
 import com.beacon.mesh.ui.haptics.LocalHaptics
@@ -115,6 +119,7 @@ fun ResponderDashboard(
     val showMesh by vm.showMesh.collectAsStateWithLifecycle()
     val detail by vm.detail.collectAsStateWithLifecycle()
     val fitToken by vm.fitToken.collectAsStateWithLifecycle()
+    val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val now = rememberNow()
 
     val meshTitleFmt = stringResource(R.string.responder_mesh_title, "%s")
@@ -214,6 +219,7 @@ fun ResponderDashboard(
                     modifier = m, state = state, visible = visible, meshTargets = meshTargets, filter = filter,
                     selectedId = selectedId, account = account, now = now,
                     onFilter = vm::setFilter, onSelect = vm::select, onDismissError = vm::clearError,
+                    refreshing = refreshing, onRefresh = vm::refresh,
                 )
             }
             val map: @Composable (Modifier) -> Unit = { m ->
@@ -251,9 +257,12 @@ fun ResponderDashboard(
                 }
                 selectedMesh?.let { MeshInfoDialog(it) { vm.select(null) } }
             } else {
+                // Fixed map height (a share of the window, within limits) so the list header and chips below are never covered,
+                // whatever the window size, keyboard or font scale.
+                val mapHeight = (maxHeight * 0.4f).coerceIn(150.dp, 400.dp).coerceAtMost(maxHeight * 0.5f)
                 Column(Modifier.fillMaxSize()) {
-                    map(Modifier.weight(0.5f).fillMaxWidth())
-                    listPanel(Modifier.weight(0.5f).fillMaxWidth())
+                    map(Modifier.fillMaxWidth().height(mapHeight))
+                    listPanel(Modifier.weight(1f).fillMaxWidth())
                 }
                 if (selectedCase != null) {
                     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -331,10 +340,13 @@ private fun CasePanel(
     onFilter: (CaseFilter) -> Unit,
     onSelect: (String?) -> Unit,
     onDismissError: () -> Unit,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
 ) {
     val haptics = LocalHaptics.current
+    var meshOpen by rememberSaveable { mutableStateOf(false) }
     Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 10.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(openCasesText(state.cases.size), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             state.lastUpdatedMs?.let {
                 Text(stringResource(R.string.responder_updated, agoText(it, now)), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -362,6 +374,7 @@ private fun CasePanel(
                 }
             }
         }
+        androidx.compose.material3.pulltorefresh.PullToRefreshBox(isRefreshing = refreshing, onRefresh = { haptics.perform(HapticEvent.LightTap); onRefresh() }, modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
@@ -377,9 +390,13 @@ private fun CasePanel(
             items(visible, key = { it.id }) { c ->
                 CaseRow(c, c.isMine(account), c.id == selectedId, now) { haptics.perform(HapticEvent.LightTap); onSelect(c.id) }
             }
-            items(meshTargets, key = { it.id }) { t ->
-                MeshRow(t, t.id == selectedId) { haptics.perform(HapticEvent.LightTap); onSelect(t.id) }
+            if (meshTargets.isNotEmpty()) {
+                item(key = "mesh-group") { MeshGroupHeader(meshTargets.size, meshOpen) { haptics.toggle(!meshOpen); meshOpen = !meshOpen } }
+                if (meshOpen) items(meshTargets, key = { it.id }) { t ->
+                    MeshRow(t, t.id == selectedId) { haptics.perform(HapticEvent.LightTap); onSelect(t.id) }
+                }
             }
+        }
         }
     }
 }
@@ -449,22 +466,42 @@ private fun CaseRow(c: ResponderCase, mine: Boolean, selected: Boolean, now: Lon
 }
 
 @Composable
-private fun MeshRow(t: MapTarget, selected: Boolean, onClick: () -> Unit) {
-    val (toneBg, _) = toneColors(t.tone)
+private fun MeshGroupHeader(count: Int, open: Boolean, onToggle: () -> Unit) {
+    val label = stringResource(R.string.responder_mesh_group, count)
+    val stateText = stringResource(if (open) R.string.responder_mesh_group_open else R.string.responder_mesh_group_closed)
     Card(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .semantics(mergeDescendants = true) { contentDescription = label; stateDescription = stateText }
+            .clickable(role = Role.Button, onClick = onToggle),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(Icons.Rounded.Bluetooth, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.responder_mesh_row_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null)
+        }
+    }
+}
+
+@Composable
+private fun MeshRow(t: MapTarget, selected: Boolean, onClick: () -> Unit) {
+    val (toneBg, toneFg) = toneColors(t.tone)
+    val style = categoryStyle(t.category ?: "other")
+    Card(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
             .semantics(mergeDescendants = true) { this.selected = selected }
             .clickable(role = Role.Button, onClick = onClick),
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        border = BorderStroke(1.dp, toneBg),
+        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, toneBg.copy(alpha = 0.6f)),
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(Icons.Rounded.Bluetooth, null, Modifier.size(32.dp), tint = toneBg)
-            Column(Modifier.weight(1f)) {
-                Text(t.title, style = MaterialTheme.typography.titleMedium)
-                Text(stringResource(R.string.responder_mesh_row_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            com.beacon.mesh.ui.components.BadgeIcon(style.icon, toneBg, toneFg, size = 36.dp)
+            Text(t.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
         }
     }
 }

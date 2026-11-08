@@ -214,7 +214,14 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
     }
 
     fun retryDetail() { retry.value += 1 }
-    fun refresh() { viewModelScope.launch { controller.fullRefresh() } }
+    private val _refreshing = MutableStateFlow(false)
+    /** True while a manual refresh (button or pull-to-refresh) is running. */
+    val refreshing: StateFlow<Boolean> = _refreshing
+    fun refresh() {
+        if (_refreshing.value) return
+        _refreshing.value = true
+        viewModelScope.launch { try { controller.fullRefresh() } finally { _refreshing.value = false } }
+    }
     fun select(id: String?) { handle[KEY_SELECTED] = id }
     fun setFilter(f: CaseFilter) { handle[KEY_FILTER] = f.name }
     fun setShowMesh(on: Boolean) { handle[KEY_MESH] = on }

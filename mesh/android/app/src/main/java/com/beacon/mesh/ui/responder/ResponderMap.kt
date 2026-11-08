@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Remove
@@ -33,6 +34,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -46,6 +48,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.beacon.mesh.R
+import com.beacon.mesh.responder.MapFraming
 import com.beacon.mesh.responder.MapTarget
 import com.beacon.mesh.responder.PinTone
 import com.beacon.mesh.ui.haptics.HapticEvent
@@ -70,6 +73,14 @@ import org.osmdroid.views.overlay.Polygon
 import org.osmdroid.views.overlay.TilesOverlay
 import java.io.File
 import kotlin.math.cos
+
+/** Dark map: invert luminance, then rotate the hue back 180 degrees so roads and water keep their colours instead of turning purple. */
+private val DARK_TILES: android.graphics.ColorMatrixColorFilter by lazy {
+    val invert = android.graphics.ColorMatrix(floatArrayOf(-1f, 0f, 0f, 0f, 255f, 0f, -1f, 0f, 0f, 255f, 0f, 0f, -1f, 0f, 255f, 0f, 0f, 0f, 1f, 0f))
+    val hue = android.graphics.ColorMatrix(floatArrayOf(-0.574f, 1.430f, 0.144f, 0f, 0f, 0.426f, 0.430f, 0.144f, 0f, 0f, 0.426f, 1.430f, -0.856f, 0f, 0f, 0f, 0f, 0f, 1f, 0f))
+    invert.postConcat(hue)
+    android.graphics.ColorMatrixColorFilter(invert)
+}
 
 private data class PinPalette(val critical: Int, val high: Int, val normal: Int, val safe: Int, val mine: Int, val onPin: Int) {
     fun of(t: PinTone) = when (t) { PinTone.CRITICAL -> critical; PinTone.HIGH -> high; PinTone.NORMAL -> normal; PinTone.SAFE -> safe }
@@ -107,7 +118,7 @@ fun ResponderMap(
 
     val map = remember {
         configureOsm(context)
-        MapView(context).apply {
+        MapView(context, OkHttpTileProvider(context, TileSourceFactory.MAPNIK)).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             isTilesScaledToDpi = true
@@ -148,9 +159,10 @@ fun ResponderMap(
     }
 
     fun fit(list: List<MapTarget>) {
-        if (list.isEmpty()) return
+        val box = MapFraming.frame(list) ?: return
         val doFit = {
-            map.zoomToBoundingBox(boundsOf(list), true, (48 * density).toInt())
+            map.zoomToBoundingBox(BoundingBox(box.north, box.east, box.south, box.west), false, (MapFraming.PADDING_DP * density).toInt())
+            if (map.zoomLevelDouble > MapFraming.MAX_FIT_ZOOM) map.controller.setZoom(MapFraming.MAX_FIT_ZOOM)
             saveCamera(map) { saved = it }
         }
         if (map.width > 0 && map.height > 0) doFit() else map.addOnFirstLayoutListener { _, _, _, _, _ -> doFit() }
@@ -180,7 +192,7 @@ fun ResponderMap(
     val description = stringResource(R.string.responder_map_description, targets.size)
     val attribution = stringResource(R.string.responder_map_attribution)
 
-    Box(modifier.semantics { contentDescription = description }) {
+    Box(modifier.clipToBounds().semantics { contentDescription = description }) {
         AndroidView(
             factory = { map },
             modifier = Modifier,
@@ -189,7 +201,7 @@ fun ResponderMap(
                 v.overlayManager.tilesOverlay.apply {
                     loadingBackgroundColor = surface
                     loadingLineColor = surface
-                    setColorFilter(if (dark) TilesOverlay.INVERT_COLORS else null)
+                    setColorFilter(if (dark) DARK_TILES else null)
                 }
                 val key = Triple(targets, selectedId, dark to palette)
                 if (v.tag != key) {
@@ -215,6 +227,7 @@ private fun ZoomButton(plus: Boolean, label: String, onClick: () -> Unit) {
     IconButton(
         onClick = onClick,
         colors = IconButtonDefaults.filledTonalIconButtonColors(),
+        modifier = Modifier.size(48.dp),
     ) { Icon(if (plus) Icons.Rounded.Add else Icons.Rounded.Remove, label) }
 }
 
@@ -227,22 +240,13 @@ private fun saveCamera(map: MapView, set: (List<Double>) -> Unit) {
 
 private fun configureOsm(context: Context) {
     val cfg = Configuration.getInstance()
+    // load() derives the *normalized* user agent. Without it the Mapnik tile policy sees a null User-Agent and
+    // the downloader silently refuses every request ("Please configure a relevant user agent"): blank map.
+    cfg.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
     cfg.userAgentValue = context.packageName // OSM tile policy needs an identifying User-Agent
     val base = File(context.cacheDir, "osmdroid")
     cfg.osmdroidBasePath = base // cache dir: no storage permission, and Android may reclaim it
     cfg.osmdroidTileCache = File(base, "tiles")
-}
-
-internal fun boundsOf(list: List<MapTarget>): BoundingBox {
-    var n = -90.0; var s = 90.0; var e = -180.0; var w = 180.0
-    for (t in list) {
-        val r = maxOf(t.radiusM, 500.0)
-        val dLat = r / 111_320.0
-        val dLng = r / (111_320.0 * cos(Math.toRadians(t.lat)).coerceAtLeast(0.1))
-        n = maxOf(n, t.lat + dLat); s = minOf(s, t.lat - dLat)
-        e = maxOf(e, t.lng + dLng); w = minOf(w, t.lng - dLng)
-    }
-    return BoundingBox(n.coerceAtMost(85.0), e.coerceAtMost(180.0), s.coerceAtLeast(-85.0), w.coerceAtLeast(-180.0))
 }
 
 private fun rebuild(
@@ -250,21 +254,25 @@ private fun rebuild(
     density: Float, reduceMotion: Boolean, onSelect: (String) -> Unit,
 ) {
     v.overlays.clear()
-    // Biggest circles first so smaller (more precise) ones sit on top, as on iOS.
+    // Biggest circles first so smaller (more precise) ones sit on top. Thin outline and a light fill keep the map readable.
     for (t in targets.sortedByDescending { it.radiusM }) {
         val color = p.of(t.tone)
+        val selected = t.id == selectedId
         v.overlays.add(Polygon(v).apply {
             points = Polygon.pointsAsCircle(GeoPoint(t.lat, t.lng), t.radiusM)
-            fillPaint.color = withAlpha(color, if (t.exact) 90 else 40)
-            outlinePaint.color = if (t.mine) p.mine else color
-            outlinePaint.strokeWidth = (if (t.mine) 3f else 2f) * density
-            if (t.source == MapTarget.Source.MESH) outlinePaint.pathEffect = DashPathEffect(floatArrayOf(6f * density, 5f * density), 0f)
+            val light = t.source == MapTarget.Source.MESH || !t.exact
+            fillPaint.color = withAlpha(color, if (selected) 56 else if (t.exact) 44 else if (light) 20 else 28)
+            outlinePaint.color = if (t.mine) p.mine else withAlpha(color, if (light && !selected) 170 else 235)
+            outlinePaint.strokeWidth = (if (selected) 2.5f else if (t.mine) 2f else 1.25f) * density
+            if (t.source == MapTarget.Source.MESH) outlinePaint.pathEffect = DashPathEffect(floatArrayOf(5f * density, 5f * density), 0f)
             infoWindow = null
             setOnClickListener { _, _, _ -> false }
         })
     }
     val pulsing = targets.filter { it.attention }
     if (pulsing.isNotEmpty()) v.overlays.add(PulseOverlay(v, pulsing, p, density, reduceMotion))
+    // A full pin only where the exact spot is known (or for a Bluetooth report, so its category shows); an approximate
+    // server case gets a small dot so it is not mistaken for a precise position.
     for (t in targets) {
         v.overlays.add(Marker(v).apply {
             position = GeoPoint(t.lat, t.lng)
@@ -308,34 +316,50 @@ private fun withAlpha(color: Int, alpha: Int) = (color and 0x00FFFFFF) or (alpha
 
 private val bitmapCache = HashMap<String, Bitmap>()
 
-/** Round pin: tone colour, white rim, glyph by tone; dashed rim for Bluetooth-only reports; blue ring for "mine". */
+private fun glyphOf(t: MapTarget): String = when (t.category) {
+    "trapped" -> "!"
+    "injured", "medical" -> "+"
+    "water_meds" -> "W"
+    "safe" -> "\u2713"
+    "checkin" -> "?"
+    else -> when (t.tone) { PinTone.CRITICAL, PinTone.HIGH -> "!"; PinTone.SAFE -> "\u2713"; PinTone.NORMAL -> "\u2022" }
+}
+
+/**
+ * Exact server case: round pin in the tone colour with a white rim and a glyph. Approximate server case: a small dot.
+ * Bluetooth report: smaller dashed pin with the category glyph. A blue ring marks "mine".
+ */
 private fun pinBitmap(t: MapTarget, selected: Boolean, p: PinPalette, density: Float): Bitmap {
-    val key = "${t.tone}|${t.source}|${t.mine}|$selected|${p.of(t.tone)}|$density"
+    val dot = !t.exact && t.source == MapTarget.Source.SERVER
+    val glyph = glyphOf(t)
+    val key = "${t.tone}|${t.source}|${t.mine}|$selected|$dot|$glyph|${p.of(t.tone)}|$density"
     return bitmapCache.getOrPut(key) {
-        val size = ((if (selected) 40 else 32) * density).toInt()
+        val base = if (dot) 14 else if (t.source == MapTarget.Source.MESH) 26 else 32
+        val size = ((if (selected) base + 8 else base) * density).toInt()
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         val cx = size / 2f
-        val r = size / 2f - 3f * density
+        val r = size / 2f - 2.5f * density
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         val tone = p.of(t.tone)
         paint.style = Paint.Style.FILL
-        paint.color = if (t.source == MapTarget.Source.MESH) withAlpha(tone, 200) else tone
+        paint.color = if (t.source == MapTarget.Source.MESH) withAlpha(tone, 215) else tone
         c.drawCircle(cx, cx, r, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2.5f * density
+        paint.strokeWidth = (if (dot) 2f else 2.25f) * density
         paint.color = if (t.mine) p.mine else p.onPin
         if (t.source == MapTarget.Source.MESH) paint.pathEffect = DashPathEffect(floatArrayOf(4f * density, 3f * density), 0f)
         c.drawCircle(cx, cx, r, paint)
         paint.pathEffect = null
-        paint.style = Paint.Style.FILL
-        paint.color = p.onPin
-        paint.textAlign = Paint.Align.CENTER
-        paint.isFakeBoldText = true
-        paint.textSize = r * 1.2f
-        val glyph = when (t.tone) { PinTone.CRITICAL -> "!"; PinTone.HIGH -> "!"; PinTone.SAFE -> "✓"; PinTone.NORMAL -> "•" }
-        val y = cx - (paint.descent() + paint.ascent()) / 2
-        c.drawText(glyph, cx, y, paint)
+        if (!dot) {
+            paint.style = Paint.Style.FILL
+            paint.color = p.onPin
+            paint.textAlign = Paint.Align.CENTER
+            paint.isFakeBoldText = true
+            paint.textSize = r * 1.2f
+            val y = cx - (paint.descent() + paint.ascent()) / 2
+            c.drawText(glyph, cx, y, paint)
+        }
         bmp
     }
 }

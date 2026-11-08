@@ -128,12 +128,20 @@ fun SosSheet(
     }
 }
 
+/** "GPS, about 8 m": source plus the rounded 68 % radius (Android's Location.accuracy), never a made-up precision. */
+@Composable
+fun gpsFixText(gps: GpsFix): String {
+    val src = stringResource(when (gps.source) { "gps" -> R.string.gps_src_gps; "fused" -> R.string.gps_src_fused; "network" -> R.string.gps_src_network; else -> R.string.gps_src_other })
+    val m = com.beacon.mesh.location.LocationSelector.displayMeters(gps.accuracyM ?: return src)
+    return if (m >= 1000) stringResource(R.string.gps_fix_km, src, m / 1000f) else stringResource(R.string.gps_fix, src, m)
+}
+
 @Composable
 fun GpsLine(gps: GpsFix?, locationAllowed: Boolean, modifier: Modifier = Modifier) {
     val (icon, text) = when {
         !locationAllowed -> Icons.Rounded.GpsOff to stringResource(R.string.gps_denied)
         gps == null -> Icons.Rounded.GpsNotFixed to stringResource(R.string.gps_searching)
-        gps.accuracyM != null -> Icons.Rounded.GpsFixed to stringResource(R.string.gps_fix, gps.accuracyM.toInt())
+        gps.accuracyM != null -> Icons.Rounded.GpsFixed to gpsFixText(gps)
         else -> Icons.Rounded.GpsFixed to stringResource(R.string.gps_fix_unknown)
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
