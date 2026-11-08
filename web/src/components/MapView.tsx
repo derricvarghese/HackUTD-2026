@@ -3,7 +3,7 @@ import L from 'leaflet';
 import { contactChip } from '../lib/contact';
 import { triageInfo } from '../lib/triage';
 import 'leaflet/dist/leaflet.css';
-import type { Deadzone, HeatCell, Responder, Sos } from '../api/models';
+import type { Deadzone, Facility, HeatCell, Responder, Sos } from '../api/models';
 import { FLAG_META, displayName, sortFlags } from '../lib/profile';
 import { hopChips, hopSummary } from '../lib/hops';
 import { formatRadius, resolveLocation } from '../lib/privacy';
@@ -147,11 +147,14 @@ const LAYER_LABELS: [LayerKey, string][] = [
   ['responders', 'Responders'],
   ['deadzones', 'Dead Zones'],
   ['geofence', 'Event geofence'],
+  ['facilities', 'Facilities'],
 ];
 
 export interface MapViewProps {
   cases: Sos[];
   responders?: Responder[];
+  facilities?: Facility[];
+  canAct?: boolean;
   deadzones?: Deadzone[];
   /** Heat input; undefined hides nothing by itself (the layer toggle does). `cells: null` falls back to the open cases' approximate locations. */
   heat?: { cells: HeatCell[] | null; cellKm: number };
@@ -201,6 +204,7 @@ export function MapView(p: MapViewProps) {
     tiles.addTo(map);
     groups.current = {
       geofence: L.layerGroup().addTo(map),
+      facilities: L.layerGroup().addTo(map),
       deadzones: L.layerGroup().addTo(map),
       approx: L.layerGroup().addTo(map),
       responders: L.layerGroup().addTo(map),
@@ -362,17 +366,55 @@ export function MapView(p: MapViewProps) {
     }
   }, [p.deadzones]);
 
-  // responders
+  // facilities
+  useEffect(() => {
+    const g = groups.current;
+    if (!g) return;
+    g.facilities.clearLayers();
+    for (const f of p.facilities ?? []) {
+      const color = f.kind === 'hospital' ? '#DC2626' : f.kind === 'shelter' ? '#059669' : '#D97706';
+      const badgeChar = f.kind === 'hospital' ? 'H' : f.kind === 'shelter' ? 'S' : 'F';
+      const icon = L.divIcon({
+        className: 'facility-marker',
+        html: `<div style="background:${color}; color:#fff; width:26px; height:26px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; font-family:Inter,sans-serif">${badgeChar}</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+      const m = L.marker([f.lat, f.lng], { icon, title: `${f.name} (${f.kind})` });
+      m.bindPopup(() => {
+        const root = el('div', 'pop', undefined, { padding: '10px 12px' });
+        root.append(el('div', 'hd', f.name, { fontWeight: '700', fontSize: '13px' }));
+        root.append(el('div', undefined, f.kind.replace('_', ' '), { color: 'var(--muted)', fontSize: '11.5px', marginTop: '2px', textTransform: 'capitalize' }));
+        if (f.synthetic) {
+          root.append(el('div', undefined, 'Demo synthetic infrastructure', { color: '#D97706', fontSize: '11px', fontWeight: '600', marginTop: '4px' }));
+        }
+        root.append(el('div', undefined, `${f.lat.toFixed(4)}, ${f.lng.toFixed(4)}`, { color: '#64748B', fontSize: '11px', marginTop: '4px' }));
+        return root;
+      }, { closeButton: false, minWidth: 160 });
+      m.addTo(g.facilities);
+    }
+  }, [p.facilities]);
+
+  // responders (only for non-volunteers, pin only when in_app and location set, grey when location_updated_at > 15m)
   useEffect(() => {
     const g = groups.current;
     if (!g) return;
     g.responders.clearLayers();
+    if (p.canAct === false) return; // volunteers never see responder positions
+    const now = Date.now();
     for (const r of p.responders ?? []) {
-      if (!r.location) continue;
+      if (!r.location || !r.in_app) continue; // pin only when location set and in_app
+      const isStale = !r.location_updated_at || (now - Date.parse(r.location_updated_at)) > 15 * 60 * 1000;
       const initials = r.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
-      L.marker([r.location.lat, r.location.lng], { icon: dotIcon('#2563EB', initials), title: `${r.name}${r.available ? ' (available)' : ''}` }).bindTooltip(`${r.name}${r.organization ? ` · ${r.organization}` : ''}`).addTo(g.responders);
+      const color = isStale ? '#94A3B8' : r.available ? '#16A34A' : '#2563EB';
+      const m = L.marker([r.location.lat, r.location.lng], {
+        icon: dotIcon(color, initials),
+        title: `${r.name}${r.available ? ' (available)' : ''}${isStale ? ' · stale location (>15m)' : ''}`,
+      });
+      m.bindTooltip(`${r.name}${r.organization ? ` · ${r.organization}` : ''} (${r.available ? 'Available' : 'Assigned'})${isStale ? ' [stale location]' : ''}`);
+      m.addTo(g.responders);
     }
-  }, [p.responders]);
+  }, [p.responders, p.canAct]);
 
   const fit = () => {
     fittedFor.current = null;

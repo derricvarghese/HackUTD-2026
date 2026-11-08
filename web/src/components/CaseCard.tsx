@@ -10,7 +10,7 @@ import { useUi } from '../state/ui';
 import { nameLine } from '../lib/profile';
 import { PersonLine } from './Person';
 import { StatusTrail, useScoreMarker } from './ui';
-import { CameraChip, ContactChip } from './chips';
+import { AgentChip, CameraChip, ContactChip } from './chips';
 import { lastHeardText } from '../lib/contact';
 
 /** Sum of score added by silence/heartbeat detectors, shown as the "+20" under a silent badge. */
@@ -100,12 +100,18 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
         <div className="why">
           {why} {c.confidence && <em>Confidence: {c.confidence}</em>}
         </div>
+        {c.agent_summary && (
+          <div className="agent-sum" title={c.agent_summary} data-testid="agent-summary">
+            <span className="agent-tag">Dispatch Agent</span> {c.agent_summary}
+          </div>
+        )}
         {c.assignment && c.status !== 'reported' && <StatusTrail status={c.status} eta={c.assignment.eta_minutes} />}
         <div className="cfoot">
           <span className="chan">{channelLabel(c.channel, c.hop)}</span>
           {c.has_voice_note && <span className="chan">Voice note</span>}
           <CameraChip count={c.image_count} />
           <ContactChip c={c} now={now} />
+          <AgentChip status={c.agent_status} summary={c.agent_summary} />
           <span className="ago">{lastHeardText(c, now)}</span>
           {selected && onOpen && (
             <button className="claim ghost" onClick={(e) => { e.stopPropagation(); onOpen(); }}>

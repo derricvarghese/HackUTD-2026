@@ -5,7 +5,7 @@ import { makeSos } from '../test/fixtures';
 import { useAuth } from '../state/auth';
 import { useUi } from '../state/ui';
 import { CaseCard } from './CaseCard';
-import { AiChip, CameraChip, ContactChip } from './chips';
+import { AgentChip, AiChip, CameraChip, ContactChip } from './chips';
 import { buildCasePopup } from './MapView';
 import { ScoreSq } from './ui';
 
@@ -84,5 +84,29 @@ describe('connectivity chips', () => {
   it('camera chip is hidden at zero', () => {
     const { container } = render(<CameraChip count={0} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('AgentChip', () => {
+  it('renders nothing when status is none or undefined', () => {
+    const { container, rerender } = render(<AgentChip status="none" />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<AgentChip status={undefined} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders running, queued, failed, and complete states', () => {
+    const { rerender } = render(<AgentChip status="running" />);
+    expect(screen.getByTestId('agent-chip')).toHaveTextContent('Agent running');
+
+    rerender(<AgentChip status="queued" />);
+    expect(screen.getByTestId('agent-chip')).toHaveTextContent('Agent queued');
+
+    rerender(<AgentChip status="failed" />);
+    expect(screen.getByTestId('agent-chip')).toHaveTextContent('Agent failed');
+
+    rerender(<AgentChip status="complete" summary="Dispatched boat unit to island" />);
+    expect(screen.getByTestId('agent-chip')).toHaveTextContent('Agent assessed');
+    expect(screen.getByTestId('agent-chip')).toHaveAttribute('title', 'Dispatch agent: Dispatched boat unit to island');
   });
 });

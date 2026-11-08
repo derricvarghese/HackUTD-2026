@@ -98,6 +98,18 @@ header{flex-wrap:wrap}
 .pin svg{display:block;overflow:visible;filter:drop-shadow(0 2px 3px rgba(15,23,42,.35))}
 .pin.sel svg{transform:scale(1.18);transform-origin:50% 100%}
 .pin .sring{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border:3px dashed var(--red);border-radius:50%;animation:ringp 1.8s infinite}
+
+/* dispatch agent & facilities */
+.agent-sum{margin-top:6px;padding:5px 8px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;font-size:12px;line-height:1.35;color:#0369A1}
+.agent-tag{background:#0284C7;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;text-transform:uppercase;margin-right:4px}
+.aichip.agent.complete{background:#DCFCE7;color:#166534;border-color:#86EFAC}
+.aichip.agent.complete i{background:#16A34A}
+.facility-marker{background:none;border:0}
+.proposal-card.approved{border-color:#16A34A;background:#F0FDF4}
+.proposal-card.rejected{border-color:#94A3B8;background:#F8FAFC;opacity:.85}
+.proposal-card.superseded{border-color:#CBD5E1;background:#F8FAFC;opacity:.7}
+.trace-turn{border:1px solid var(--line)}
+.step-item.err{background:#FEF2F2}
 @keyframes ringp{0%{transform:scale(.7);opacity:.9}100%{transform:scale(1.35);opacity:0}}
 .dot-marker{background:none;border:0}
 .dot-marker i{display:block;width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(15,23,42,.4)}

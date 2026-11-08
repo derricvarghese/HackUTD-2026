@@ -8,8 +8,8 @@ describe('socket helpers', () => {
     expect(backoffMs(10, () => 1)).toBe(30000);
     expect(backoffMs(10, () => 0)).toBe(15000);
   });
-  it('builds a same-origin ws url with an encoded token', () => {
-    expect(wsUrl('a b', { protocol: 'https:', host: 'x.test' })).toBe('wss://x.test/v1/ws?token=a%20b');
-    expect(wsUrl('t', { protocol: 'http:', host: 'localhost:5173' })).toBe('ws://localhost:5173/v1/ws?token=t');
+  it('builds a same-origin ws url with an encoded token and client=dashboard', () => {
+    expect(wsUrl('a b', { protocol: 'https:', host: 'x.test' })).toBe('wss://x.test/v1/ws?token=a%20b&client=dashboard');
+    expect(wsUrl('t', { protocol: 'http:', host: 'localhost:5173' })).toBe('ws://localhost:5173/v1/ws?token=t&client=dashboard');
   });
 });

@@ -7,22 +7,25 @@ import { IcHelmet, IcLayers, IcOpenSos, IcSilent, IcWarn } from '../components/i
 import { MapView } from '../components/MapView';
 import { QueueList, mergeQueue, queueDevices } from '../components/QueueCard';
 import { ErrorBox, StatCard, Tabs } from '../components/ui';
-import { useDeadzones, useHeat, useMeshStats, useOpenCases, useResponders, useServerInfo, useSilent } from '../hooks/data';
+import { useDeadzones, useEventFacilities, useHeat, useMeshStats, useOpenCases, useResponders, useServerInfo, useSilent } from '../hooks/data';
 import { useNow } from '../hooks/useNow';
 import type { QueueTab } from '../lib/query';
 import { matchesTab } from '../lib/query';
 import { overviewStats } from '../lib/stats';
+import { useCanAct } from '../state/auth';
 import { useUi } from '../state/ui';
 import { useMapActions } from './mapActions';
 
 export function Overview() {
   const nav = useNavigate();
   const now = useNow();
+  const canAct = useCanAct();
   const cases = useOpenCases();
   const responders = useResponders();
   const silentDevs = useSilent();
   const mesh = useMeshStats();
   const info = useServerInfo();
+  const facilities = useEventFacilities(info.data?.event?.id ?? null);
   const dz = useDeadzones();
   const layers = useUi((s) => s.layers);
   const mapBounds = useUi((s) => s.mapBounds);
@@ -53,6 +56,8 @@ export function Overview() {
         <MapView
           cases={list}
           responders={responders.data}
+          facilities={facilities.data?.data}
+          canAct={canAct}
           deadzones={dz.data}
           heat={layers.heat ? { cells: heat.isError ? null : heat.data?.cells ?? null, cellKm: heat.data?.cellKm ?? 1 } : undefined}
           region={info.data?.event?.region}

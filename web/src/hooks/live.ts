@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import * as api from '../api/endpoints';
-import type { Assignment, Checkin, Deadzone, MeshStats, Sos, SilentDevice, WsFrame } from '../api/models';
-import { describeFrame, mergeUpdated, removeCases, removeSilent, upsertCase, upsertSilent } from '../lib/live';
+import type { AgentRun, AgentStep, Assignment, Checkin, Deadzone, MeshStats, Responder, Sos, SilentDevice, WsEventAgentStep, WsEventAgentUpdated, WsFrame } from '../api/models';
+import { describeFrame, mergeUpdated, removeCases, removeSilent, upsertById, upsertCase, upsertSilent } from '../lib/live';
 import { LiveSocket } from '../lib/socket';
 import { isStaleFrame, scoreChange } from '../lib/triage';
 import { useAuth } from '../state/auth';
@@ -89,6 +89,42 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
     case 'mesh.stats':
       qc.setQueryData<MeshStats>(qk.mesh, f.data as MeshStats);
       break;
+    case 'agent.step': {
+      const s = f.data as WsEventAgentStep;
+      qc.setQueryData<AgentRun>(qk.agent(s.sos_id), (prev) => {
+        if (!prev) return prev;
+        const exists = prev.steps.some((x) => x.index === s.index);
+        if (exists) return prev;
+        const raw = s as unknown as { turn?: number; cached?: boolean };
+        const newStep: AgentStep = {
+          index: s.index,
+          turn: raw.turn ?? 0,
+          type: s.type,
+          tool: s.tool,
+          summary: s.summary,
+          ok: s.ok,
+          ms: s.ms,
+          synthetic: s.synthetic ?? false,
+          cached: raw.cached ?? false,
+          at: f.ts,
+        };
+        return { ...prev, steps: [...prev.steps, newStep] };
+      });
+      break;
+    }
+    case 'agent.updated': {
+      const u = f.data as WsEventAgentUpdated;
+      void qc.invalidateQueries({ queryKey: qk.agent(u.sos_id) });
+      void qc.invalidateQueries({ queryKey: qk.detail(u.sos_id) });
+      void qc.invalidateQueries({ queryKey: qk.open });
+      void qc.invalidateQueries({ queryKey: ['cases', 'list'] });
+      break;
+    }
+    case 'responder.updated': {
+      const r = f.data as Responder;
+      qc.setQueryData<Responder[]>(qk.responders, (list) => (list ? upsertById(list, r) : list));
+      break;
+    }
   }
 }
 

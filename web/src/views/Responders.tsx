@@ -8,13 +8,13 @@ import type { Assignment, Responder, Role } from '../api/models';
 import { IcSearch } from '../components/icons';
 import { ConfirmDialog, Empty, ErrorBox, Modal, Pill, Seg, StatCard } from '../components/ui';
 import { errorMessage, qk, useAction, useActiveAssignments, useAssignmentActions, useCaseEvents, useOpenCases, useResponders } from '../hooks/data';
-import { formatClock, formatDateTime } from '../lib/time';
+import { formatAge, formatDateTime } from '../lib/time';
 import { shortId } from '../lib/tier';
 import { useAuth, useIsAdmin } from '../state/auth';
 import { useUi } from '../state/ui';
 import { useNow } from '../hooks/useNow';
 
-type F = 'all' | 'responder' | 'volunteer' | 'available';
+type F = 'all' | 'responder' | 'volunteer' | 'available' | 'in_app';
 
 function ResponderForm({ initial, onClose }: { initial?: Responder; onClose: () => void }) {
   const edit = !!initial;
@@ -163,6 +163,7 @@ export function Responders() {
     if (f === 'responder' && r.role === 'volunteer') return false;
     if (f === 'volunteer' && r.role !== 'volunteer') return false;
     if (f === 'available' && !(r.available && !byResp.has(r.id))) return false;
+    if (f === 'in_app' && !r.in_app) return false;
     const s = q.trim().toLowerCase();
     return !s || [r.name, r.username, r.organization ?? '', ...(r.skills ?? [])].some((x) => x.toLowerCase().includes(s));
   });
@@ -180,27 +181,34 @@ export function Responders() {
       <div className="rgrid">
         <div className="card">
           <div className="toolbar">
-            <Seg<F> label="Responder filter" value={f} onChange={setF} options={[{ v: 'all', label: 'All teams' }, { v: 'responder', label: 'Responders' }, { v: 'volunteer', label: 'Volunteers' }, { v: 'available', label: 'Available' }]} />
+            <Seg<F> label="Responder filter" value={f} onChange={setF} options={[{ v: 'all', label: 'All teams' }, { v: 'responder', label: 'Responders' }, { v: 'volunteer', label: 'Volunteers' }, { v: 'available', label: 'Available' }, { v: 'in_app', label: 'In app' }]} />
             <label className="search"><IcSearch width={16} height={16} /><span className="sr-only">Find a team or skill</span><input type="search" placeholder="Find a team or skill" value={q} onChange={(e) => setQ(e.target.value)} /></label>
             {isAdmin && <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={() => setForm('new')}>Add responder</button>}
           </div>
           {resp.isError && <ErrorBox error={resp.error} onRetry={() => void resp.refetch()} />}
           <div className="tbl-wrap">
             <table className="tbl" aria-label="Responders">
-              <thead><tr><th>Team</th><th>Type</th><th>Skills</th><th>Status</th><th>Case</th><th>ETA</th><th>Since</th>{isAdmin && <th><span className="sr-only">Admin</span></th>}</tr></thead>
+              <thead><tr><th>Team</th><th>Presence</th><th>Type</th><th>Skills</th><th>Status</th><th>Case</th><th>ETA</th><th>Last seen</th>{isAdmin && <th><span className="sr-only">Admin</span></th>}</tr></thead>
               <tbody>
-                {resp.isLoading && Array.from({ length: 4 }, (_, i) => <tr key={i}><td colSpan={8}><div className="skel" style={{ height: 34 }} /></td></tr>)}
+                {resp.isLoading && Array.from({ length: 4 }, (_, i) => <tr key={i}><td colSpan={9}><div className="skel" style={{ height: 34 }} /></td></tr>)}
                 {rows.map((r) => {
                   const a = byResp.get(r.id);
+                  const lastSeen = r.last_app_seen_at ?? r.last_seen_at;
                   return (
                     <tr key={r.id} tabIndex={0} className={`row-click${r.id === sel ? ' sel' : ''}`} onClick={() => setSel(r.id)} onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); setSel(r.id); } }}>
                       <td><b>{r.name}{r.id === me?.id ? ' (you)' : ''}</b><p>{r.organization ?? `@${r.username}`}</p></td>
+                      <td>
+                        <span className={`cchip ${r.in_app ? 'green' : 'gray'}`} title={r.in_app ? 'Online in mobile app' : 'Offline'}>
+                          <i aria-hidden="true" />
+                          <span>{r.in_app ? 'In app' : 'Offline'}</span>
+                        </span>
+                      </td>
                       <td style={{ textTransform: 'capitalize' }}>{r.role}</td>
                       <td><span className="tags sm">{(r.skills ?? []).length ? r.skills?.map((s) => <span key={s}>{s}</span>) : <span>-</span>}</span></td>
                       <td>{a ? <span className={`st ${a.status === 'on_scene' ? 'os' : a.status === 'en_route' ? 'enr' : 'asg'}`}>{a.status === 'on_scene' ? 'On scene' : a.status === 'en_route' ? 'En route' : 'Assigned'}</span> : <span className={`st ${r.available ? 'av' : 'new'}`}>{r.available ? 'Available' : 'Off duty'}</span>}</td>
                       <td>{a ? shortId(a.sos_id) : '-'}</td>
                       <td>{a?.eta_minutes ? `${a.eta_minutes} min` : '-'}</td>
-                      <td>{a ? formatClock(a.updated_at ?? a.created_at) : r.last_seen_at ? formatClock(r.last_seen_at) : '-'}</td>
+                      <td>{lastSeen ? formatAge(lastSeen, now) : '-'}</td>
                       {isAdmin && (
                         <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
                           <button className="btn sm" onClick={() => setForm(r)} aria-label={`Edit ${r.name}`}>Edit</button>{' '}

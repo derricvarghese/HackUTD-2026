@@ -42,3 +42,21 @@ export function AiChip({ status }: { status: Sos['triage_status'] | undefined })
     </span>
   );
 }
+
+/** Text chip for the Dispatch Agent state on queue cards and panel. */
+export function AgentChip({ status, summary }: { status?: Sos['agent_status']; summary?: string | null }) {
+  if (!status || status === 'none') return null;
+  const isRunning = status === 'running';
+  const isQueued = status === 'queued';
+  const isFailed = status === 'failed';
+  const label = isRunning ? 'Agent running' : isQueued ? 'Agent queued' : isFailed ? 'Agent failed' : 'Agent assessed';
+  const cls = isRunning ? 'pending pulse' : isQueued ? 'pending' : isFailed ? 'failed' : 'complete';
+  const title = summary ? `Dispatch agent: ${summary}` : label;
+  return (
+    <span className={`aichip agent ${cls}`} title={title} data-testid="agent-chip" data-status={status}>
+      <i aria-hidden="true" />
+      <span aria-hidden="true">{label}</span>
+      <span className="sr-only">{`: ${title}`}</span>
+    </span>
+  );
+}

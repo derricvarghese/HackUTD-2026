@@ -14,7 +14,7 @@ export const backoffMs = (attempt: number, rand = Math.random): number => {
 };
 
 export function wsUrl(token: string, loc: Pick<Location, 'protocol' | 'host'> = window.location): string {
-  return `${loc.protocol === 'https:' ? 'wss:' : 'ws:'}//${loc.host}/v1/ws?token=${encodeURIComponent(token)}`;
+  return `${loc.protocol === 'https:' ? 'wss:' : 'ws:'}//${loc.host}/v1/ws?token=${encodeURIComponent(token)}&client=dashboard`;
 }
 
 export class LiveSocket {

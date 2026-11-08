@@ -21,8 +21,9 @@ import { useAuth, useCanAct, useIsAdmin } from '../state/auth';
 import { useUi } from '../state/ui';
 import { matchesSearch } from '../lib/query';
 import { PersonSection } from './Person';
-import { AiChip, CameraChip, ContactChip } from './chips';
+import { AgentChip, AiChip, CameraChip, ContactChip } from './chips';
 import { PhotosSection } from './Photos';
+import { AgentPanel } from './AgentPanel';
 import { AiStatus, ReasonGroups } from './TriagePanel';
 import { WelfareList } from './Welfare';
 import { askedUrgentHelp, eventLabel, isSelfResolved, lastHeardText } from '../lib/contact';
@@ -281,6 +282,7 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
             </p>
             <div className="chip-row" data-testid="panel-chips">
               <AiChip status={c.triage?.triage_status ?? c.triage_status} />
+              <AgentChip status={c.agent_status} summary={c.agent_summary} />
               <ContactChip c={c} />
               <CameraChip count={c.image_count} />
               {askedUrgentHelp(c) && <span className="cchip red strong" data-testid="urgent-chip"><i aria-hidden="true" />Asked for urgent help</span>}
@@ -387,6 +389,17 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
 
           {/* Right Column: Dispatcher Command & Operations */}
           <div className="case-col-right">
+            {/* Dispatch Agent Panel (hidden for volunteers) */}
+            {canAct && (
+              <AgentPanel
+                sosId={c.id}
+                caseData={c}
+                isAdmin={isAdmin}
+                canAct={canAct}
+                responders={activeResponders}
+              />
+            )}
+
             {/* Primary Dispatch Card */}
             <div className="sd-dispatch-card">
               <h3>

@@ -8,7 +8,7 @@ import { MapView } from './MapView';
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  useUi.setState({ heatOpacity: 0.85, heatRadius: 'medium', layers: { sos: true, approx: true, responders: true, deadzones: true, heat: true, geofence: true } });
+  useUi.setState({ heatOpacity: 0.85, heatRadius: 'medium', layers: { sos: true, approx: true, responders: true, deadzones: true, heat: true, geofence: true, facilities: true } });
 });
 
 describe('MapView layers panel', () => {

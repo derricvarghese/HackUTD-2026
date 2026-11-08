@@ -1,7 +1,8 @@
 // One function per endpoint the dashboard uses. Paths and shapes follow ../../openapi.yaml.
 import { ApiError, http, requestRaw, type Body, type Query, type Res, type Schemas } from './client';
 import type {
-  AppEvent, Assignment, CaseImage, ProfileFull, ProfilePublic, Checkin, Deadzone, HeatCell, MeshStats, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
+  AgentProposal, AgentProposalApprove, AgentProposalDecision, AgentProposalReject, AgentRun, AgentRunSummary,
+  AppEvent, Assignment, CaseImage, ProfileFull, ProfilePublic, Checkin, Deadzone, FacilityList, HeatCell, MeshStats, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
 } from './models';
 
 export interface Page<T> {
@@ -111,6 +112,18 @@ export const deleteEvent = (id: string) => http.del(`/events/${id}`);
 export const seedDemo = (b: Body<'/mesh/seed', 'post'>) => http.post<{ created: number }>('/mesh/seed', b);
 export const clearDemo = () => http.del('/mesh/seed');
 export const simulateRelay = (b: Body<'/mesh/simulate', 'post'>) => http.post<Sos>('/mesh/simulate', b);
+
+// ---- dispatch agent (tag Agent)
+export const getCaseAgent = (sosId: string) => http.get<AgentRun>(`/sos/${sosId}/agent`);
+export const listCaseAgentRuns = (sosId: string) => http.get<{ data: AgentRunSummary[] }>(`/sos/${sosId}/agent/runs`);
+export const runCaseAgent = (sosId: string) => http.post<AgentRun>(`/sos/${sosId}/agent/run`);
+export const approveAgentProposal = (sosId: string, proposalId: string, b: AgentProposalApprove = {}) =>
+  http.post<AgentProposalDecision>(`/sos/${sosId}/agent/proposals/${proposalId}/approve`, b);
+export const rejectAgentProposal = (sosId: string, proposalId: string, b: AgentProposalReject = {}) =>
+  http.post<AgentProposal>(`/sos/${sosId}/agent/proposals/${proposalId}/reject`, b);
+
+// ---- facilities
+export const getEventFacilities = (eventId: string) => http.get<FacilityList>(`/events/${eventId}/facilities`);
 
 /**
  * Does this server expose the demo endpoints? They answer 404 outside DEMO_MODE. Seeding zero cases is a

@@ -23,6 +23,8 @@ export const qk = {
   assignments: ['assignments'] as const,
   events: ['events'] as const,
   health: ['health'] as const,
+  agent: (id: string) => ['sos-agent', id] as const,
+  facilities: (eventId: string) => ['facilities', eventId] as const,
 };
 
 /** All open cases, ranked. The single source of truth for the overview, map, queue counts and feed. */
@@ -75,12 +77,27 @@ export const useActiveAssignments = () =>
   useQuery({ queryKey: [...qk.assignments, 'active'], queryFn: () => api.fetchAll((cursor) => api.listAssignments({ status: ['assigned', 'en_route', 'on_scene'], cursor, limit: 200 })) });
 export const useEvents = () => useQuery({ queryKey: qk.events, queryFn: async () => (await api.listEvents()).data });
 export const useHealth = () => useQuery({ queryKey: qk.health, queryFn: api.getHealth, refetchInterval: 60_000, staleTime: 30_000 });
+export const useCaseAgent = (id: string | null, enabled = true) =>
+  useQuery({
+    queryKey: qk.agent(id ?? ''),
+    queryFn: () => api.getCaseAgent(id as string),
+    enabled: !!id && enabled,
+    retry: (n, e) => !(e instanceof ApiError && (e.status === 404 || e.status === 403)) && n < 2,
+  });
+export const useEventFacilities = (eventId: string | null) =>
+  useQuery({
+    queryKey: qk.facilities(eventId ?? ''),
+    queryFn: () => api.getEventFacilities(eventId as string),
+    enabled: !!eventId,
+    staleTime: 60_000,
+  });
 
 export function invalidateCase(qc: QueryClient, id?: string) {
   void qc.invalidateQueries({ queryKey: ['cases'] });
   if (id) {
     void qc.invalidateQueries({ queryKey: qk.detail(id) });
     void qc.invalidateQueries({ queryKey: ['sos-events', id] });
+    void qc.invalidateQueries({ queryKey: qk.agent(id) });
   }
 }
 

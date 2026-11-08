@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import * as api from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { AppEvent } from '../api/models';
-import { ConfirmDialog, Empty, ErrorBox, Pill } from '../components/ui';
+import { ConfirmDialog, Empty, ErrorBox, Pill, Seg } from '../components/ui';
 import { qk, useAction, useEvents, useServerInfo } from '../hooks/data';
 import { formatDateTime } from '../lib/time';
 import { regionBox, regionCenter } from '../lib/region';
@@ -138,6 +138,34 @@ function DemoCard() {
   );
 }
 
+function PreferencesCard() {
+  const units = useUi((s) => s.units);
+  const setUnits = useUi((s) => s.setUnits);
+  return (
+    <div className="card">
+      <div className="card-h"><h2>Display and Units</h2></div>
+      <div style={{ padding: '14px 18px' }}>
+        <label style={{ display: 'block', fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+          Distance units preference
+        </label>
+        <Seg<'auto' | 'metric' | 'imperial'>
+          label="Distance units"
+          value={units}
+          onChange={setUnits}
+          options={[
+            { v: 'auto', label: 'Automatic (system)' },
+            { v: 'metric', label: 'Metric (km, m)' },
+            { v: 'imperial', label: 'Imperial (mi, ft)' },
+          ]}
+        />
+        <p className="note" style={{ marginTop: 10 }}>
+          Controls how search radii, travel distances, and facility distances are formatted across the dashboard.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function Settings() {
   const me = useAuth((s) => s.responder);
   const info = useServerInfo();
@@ -146,19 +174,22 @@ export function Settings() {
       <EventsCard />
       <div className="two">
         <DemoCard />
-        <div className="card">
-          <div className="card-h"><h2>Server and session</h2></div>
-          <div className="rules">
-            <div><span>Signed in as</span><b>{me?.name} (@{me?.username}, {me?.role})</b></div>
-            <div><span>Active event</span><b>{info.data?.event?.name ?? 'None'}</b></div>
-            <div><span>Check-in interval</span><b>{info.data?.checkin_interval_seconds ? `${info.data.checkin_interval_seconds} s` : '-'}</b></div>
-            <div><span>Heartbeat interval</span><b>{info.data?.heartbeat_interval_seconds ? `${info.data.heartbeat_interval_seconds} s` : '-'}</b></div>
-            <div><span>Silence threshold</span><b>{info.data?.silence_threshold_seconds ? `${info.data.silence_threshold_seconds} s` : '-'}</b></div>
-            <div><span>Gateway batch size</span><b>{info.data?.gateway_upload_max_batch ?? '-'}</b></div>
-            <div><span>Profile required at onboarding</span><b>{info.data?.profile_required === undefined ? '-' : info.data.profile_required ? 'Yes (user may skip explicitly)' : 'No'}</b></div>
-            <div><span>Profile consent version</span><b>{info.data?.profile_consent_version ?? '-'}</b></div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <PreferencesCard />
+          <div className="card">
+            <div className="card-h"><h2>Server and session</h2></div>
+            <div className="rules">
+              <div><span>Signed in as</span><b>{me?.name} (@{me?.username}, {me?.role})</b></div>
+              <div><span>Active event</span><b>{info.data?.event?.name ?? 'None'}</b></div>
+              <div><span>Check-in interval</span><b>{info.data?.checkin_interval_seconds ? `${info.data.checkin_interval_seconds} s` : '-'}</b></div>
+              <div><span>Heartbeat interval</span><b>{info.data?.heartbeat_interval_seconds ? `${info.data.heartbeat_interval_seconds} s` : '-'}</b></div>
+              <div><span>Silence threshold</span><b>{info.data?.silence_threshold_seconds ? `${info.data.silence_threshold_seconds} s` : '-'}</b></div>
+              <div><span>Gateway batch size</span><b>{info.data?.gateway_upload_max_batch ?? '-'}</b></div>
+              <div><span>Profile required at onboarding</span><b>{info.data?.profile_required === undefined ? '-' : info.data.profile_required ? 'Yes (user may skip explicitly)' : 'No'}</b></div>
+              <div><span>Profile consent version</span><b>{info.data?.profile_consent_version ?? '-'}</b></div>
+            </div>
+            <p className="note" style={{ padding: '0 18px 16px' }}>Exact victim locations are only shown to the assigned responder and admins. Everyone else sees an approximate area. Names, age ranges and coarse flags are visible to every dashboard user; medical and contact details only to the assigned responder and admins. Profile settings here are read-only and come from the server configuration.</p>
           </div>
-          <p className="note" style={{ padding: '0 18px 16px' }}>Exact victim locations are only shown to the assigned responder and admins. Everyone else sees an approximate area. Names, age ranges and coarse flags are visible to every dashboard user; medical and contact details only to the assigned responder and admins. Profile settings here are read-only and come from the server configuration.</p>
         </div>
       </div>
     </div>

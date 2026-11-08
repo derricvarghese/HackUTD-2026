@@ -3,6 +3,7 @@ import type { FeedItem } from '../lib/live';
 import { pushFeed } from '../lib/live';
 import type { HeatRadius } from '../lib/heat';
 import type { ScoreChange } from '../lib/triage';
+import { getStoredUnits, setStoredUnits, type UnitsPref } from '../lib/units';
 
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
@@ -41,9 +42,11 @@ interface UiState {
   mapZoom: number | null;
   navOpen: boolean;
   mapBounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null;
+  units: UnitsPref;
+  setUnits: (u: UnitsPref) => void;
 }
 
-export type LayerKey = 'sos' | 'approx' | 'responders' | 'deadzones' | 'heat' | 'geofence';
+export type LayerKey = 'sos' | 'approx' | 'responders' | 'deadzones' | 'heat' | 'geofence' | 'facilities';
 
 let toastSeq = 1;
 export const TRIAGE_NOTE_MS = 10_000;
@@ -68,7 +71,7 @@ export const useUi = create<UiState>((set) => ({
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   demo: null,
   setDemo: (demo) => set({ demo }),
-  layers: { sos: true, approx: true, responders: true, deadzones: true, heat: true, geofence: true },
+  layers: { sos: true, approx: true, responders: true, deadzones: true, heat: true, geofence: true, facilities: true },
   toggleLayer: (k) => set((s) => ({ layers: { ...s.layers, [k]: !s.layers[k] } })),
   heatOpacity: 0.85,
   setHeatOpacity: (heatOpacity) => set({ heatOpacity: Math.min(1, Math.max(0.1, heatOpacity)) }),
@@ -89,4 +92,9 @@ export const useUi = create<UiState>((set) => ({
   mapZoom: null,
   navOpen: false,
   mapBounds: null,
+  units: getStoredUnits(),
+  setUnits: (units) => {
+    setStoredUnits(units);
+    set({ units });
+  },
 }));

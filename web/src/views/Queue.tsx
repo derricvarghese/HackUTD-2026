@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useFlip } from '../hooks/useFlip';
-import { CameraChip, ContactChip } from '../components/chips';
+import { AgentChip, CameraChip, ContactChip } from '../components/chips';
 import * as api from '../api/endpoints';
 import type { Sos, SilentDevice } from '../api/models';
 import { ClaimButton } from '../components/CaseCard';
@@ -108,7 +108,7 @@ export function Queue() {
                       onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openCase(r.c.id); } }}
                     >
                       <td><ScoreSq c={r.c} /></td>
-                      <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)} <CameraChip count={r.c.image_count} /></p></td>
+                      <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)} <CameraChip count={r.c.image_count} /> <AgentChip status={r.c.agent_status} summary={r.c.agent_summary} /></p></td>
                       <td>{shortLocation(r.c)}</td>
                       <td className="c-hide">{r.c.people_count ?? "?"}</td>
                       <td>{channelLabel(r.c.channel, r.c.hop)}</td>
