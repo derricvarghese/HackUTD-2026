@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearPlaceCache, searchPlaces } from './geocode';
+import { clearPlaceCache, clearReverseCache, reverseGeocode, searchPlaces } from './geocode';
 
 const ok = (rows: unknown) => vi.fn(async () => new Response(JSON.stringify(rows), { status: 200 })) as unknown as typeof fetch;
 
@@ -22,5 +22,31 @@ describe('place search', () => {
     await expect(searchPlaces('Houston', undefined, vi.fn(async () => { throw new TypeError('Failed to fetch'); }) as unknown as typeof fetch)).rejects.toThrow();
     clearPlaceCache();
     await expect(searchPlaces('Austin', undefined, vi.fn(async () => new Response('x', { status: 503 })) as unknown as typeof fetch)).rejects.toThrow(/503/);
+  });
+});
+
+describe('reverse geocoding', () => {
+  beforeEach(() => clearReverseCache());
+
+  it('formats address from road and city, and caches by coordinate', async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({
+      display_name: '123 Main St, Dallas, Texas, USA',
+      address: { house_number: '123', road: 'Main St', city: 'Dallas', state: 'Texas' },
+    }), { status: 200 })) as unknown as typeof fetch;
+
+    const res = await reverseGeocode(32.7812, -96.8012, undefined, f);
+    expect(res).toBe('123 Main St, Dallas');
+
+    // cached call
+    const cached = await reverseGeocode(32.7812, -96.8012, undefined, f);
+    expect(cached).toBe('123 Main St, Dallas');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('gracefully returns null on invalid coordinates or network error', async () => {
+    expect(await reverseGeocode(NaN, 0)).toBeNull();
+
+    const failing = vi.fn(async () => { throw new Error('Network error'); }) as unknown as typeof fetch;
+    expect(await reverseGeocode(32.1, -96.1, undefined, failing)).toBeNull();
   });
 });

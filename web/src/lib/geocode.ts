@@ -33,3 +33,70 @@ export async function searchPlaces(query: string, signal?: AbortSignal, fetchImp
 }
 
 export const clearPlaceCache = () => { cache.clear(); lastAt = 0; };
+
+const revCache = new Map<string, string>();
+
+/**
+ * Reverse geocodes lat/lng into a human-readable address via Nominatim.
+ * Polite and cached per rounded coordinate (~10m). Gracefully returns null on network failure or offline.
+ */
+export async function reverseGeocode(
+  lat: number,
+  lng: number,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  const hit = revCache.get(key);
+  if (hit) return hit;
+
+  const wait = lastAt + MIN_GAP_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+  lastAt = Date.now();
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?${new URLSearchParams({
+      format: 'jsonv2',
+      lat: String(lat),
+      lon: String(lng),
+      zoom: '16',
+      'accept-language': 'en',
+    })}`;
+    const res = await fetchImpl(url, {
+      signal,
+      headers: { Accept: 'application/json' },
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      display_name?: string;
+      address?: Record<string, string>;
+    };
+    if (!data) return null;
+    const addr = data.address;
+    let label = '';
+    if (addr) {
+      const num = addr.house_number ? `${addr.house_number} ` : '';
+      const street = addr.road || addr.pedestrian || addr.street || addr.neighbourhood || addr.suburb;
+      const city = addr.city || addr.town || addr.village || addr.municipality || addr.county;
+      const state = addr.state;
+      if (street && city) label = `${num}${street}, ${city}`;
+      else if (street) label = `${num}${street}`;
+      else if (city) label = state ? `${city}, ${state}` : city;
+    }
+    if (!label && data.display_name) {
+      label = data.display_name.split(',').slice(0, 3).join(',').trim();
+    }
+    if (label) {
+      revCache.set(key, label);
+      return label;
+    }
+  } catch {
+    // Network or parse error: gracefully fall back to coordinates
+  }
+  return null;
+}
+
+export const clearReverseCache = () => { revCache.clear(); };

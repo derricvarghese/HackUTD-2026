@@ -28,7 +28,14 @@ const schema = z.object({
   RUN_MIGRATIONS_ON_START: bool(true),
   VALIDATE_RESPONSES: z.enum(['true', 'false', '']).optional().default(''),
   RETENTION_DEFAULT_DAYS: z.coerce.number().int().default(7),
-  CHECKIN_INTERVAL_S: z.coerce.number().int().default(900),
+  /** Welfare check-in interval for `normal` tier cases (seconds). `critical` and `high` have their own interval. */
+  CHECKIN_INTERVAL_S: z.coerce.number().int().default(1800),
+  CHECKIN_INTERVAL_CRITICAL_S: z.coerce.number().int().default(600),
+  CHECKIN_INTERVAL_HIGH_S: z.coerce.number().int().default(900),
+  /** How long the person has to answer a welfare check-in (deadline_at = sent_at + this). */
+  CHECKIN_WINDOW_S: z.coerce.number().int().default(300),
+  /** The phone sounds its final-try alarm at deadline_at minus this (alarm_at). */
+  CHECKIN_ALARM_LEAD_S: z.coerce.number().int().default(60),
   HEARTBEAT_INTERVAL_S: z.coerce.number().int().default(300),
   SILENCE_THRESHOLD_S: z.coerce.number().int().default(1200),
   SENDER_RATE_PER_HOUR: z.coerce.number().int().default(60),
@@ -51,6 +58,9 @@ const schema = z.object({
   PROFILE_REQUIRED: bool(true),
   PROFILE_CONSENT_VERSION: z.string().min(1).max(40).default('2026-11-v1'),
   PROFILE_WRITE_RATE_PER_MIN: z.coerce.number().int().default(10),
+  /** Optional FCM HTTP v1 push for welfare check-ins. Both must be set to enable it; otherwise a logging no-op provider is used. */
+  FCM_PROJECT_ID: z.string().optional().default(''),
+  FCM_SERVICE_ACCOUNT_JSON: z.string().optional().default(''),
   PUBLIC_DIR: z.string().optional().default(''),
   OPENAPI_PATH: z.string().optional().default(''),
 });
@@ -58,7 +68,7 @@ const schema = z.object({
 export type Config = Omit<z.infer<typeof schema>, 'VALIDATE_RESPONSES' | 'JOBS_ENABLED'> & { validateResponses: boolean; jobsEnabled: boolean };
 
 /** In DEMO_MODE the timers shrink so silence and dead zones show up inside a 3 minute demo (explicit env values still win). */
-const DEMO_TIMERS: Record<string, number> = { CHECKIN_INTERVAL_S: 30, SILENCE_THRESHOLD_S: 60, HEARTBEAT_INTERVAL_S: 15, DEADZONE_QUIET_S: 120 };
+const DEMO_TIMERS: Record<string, number> = { CHECKIN_INTERVAL_S: 30, CHECKIN_INTERVAL_CRITICAL_S: 20, CHECKIN_INTERVAL_HIGH_S: 25, CHECKIN_WINDOW_S: 30, CHECKIN_ALARM_LEAD_S: 10, SILENCE_THRESHOLD_S: 60, HEARTBEAT_INTERVAL_S: 15, DEADZONE_QUIET_S: 120 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = schema.safeParse(env);

@@ -8,6 +8,7 @@ const target = process.env.BEACON_API ?? 'http://localhost:3000';
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true,
     port: 5173,
     proxy: { '/v1': { target, changeOrigin: true, ws: true } },
   },

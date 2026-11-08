@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { countNeighbors, evaluateSilence, type SilenceInput } from '../../src/domain/silence';
-import { BOOST_PER_MISS, escalate, nextDueAt, windowSeconds, withBoosts } from '../../src/domain/checkinSchedule';
+import { alarmAt, connectivityOf, contactBoostFor, contactStateOf, tierOfScore, welfareDelta, welfareIntervalS, withBoosts } from '../../src/domain/liveness';
 
 const T0 = Date.parse('2026-11-07T12:00:00Z');
 const base: SilenceInput = { now: T0, lastHeartbeatAt: T0 - 600_000, thresholdS: 1200, neighborsActive: 0, neighborK: 3, hasOpenSos: false, batteryPct: 50, charging: false, moving: false, safeMessage: false };
@@ -14,7 +14,7 @@ describe('heartbeat silence state machine', () => {
     const v = evaluateSilence({ ...base, lastHeartbeatAt: T0 - 1200_000 });
     expect(v.state).toBe('quiet');
     expect(v.silentForS).toBe(1200);
-    expect(v.reason).toMatch(/No heartbeat for 20 min/);
+    expect(v.reason).toMatch(/Lost contact: no heartbeat for 20 min \(device probably has no connectivity\)/);
   });
   it('goes to distress when K neighbours still report', () => {
     const quiet = evaluateSilence({ ...base, lastHeartbeatAt: T0 - 1500_000, neighborsActive: 2 });
@@ -55,23 +55,41 @@ describe('heartbeat silence state machine', () => {
   });
 });
 
-describe('check-in escalation', () => {
-  it('adds 10 per miss, caps at 100, never lowers', () => {
-    expect(BOOST_PER_MISS).toBe(10);
-    expect(escalate(20)).toBe(30);
-    expect(escalate(95)).toBe(100);
-    expect(escalate(100)).toBe(100);
-    let s = 40;
-    for (let i = 0; i < 20; i++) { const n = escalate(s); expect(n).toBeGreaterThanOrEqual(s); s = n; }
-    expect(s).toBe(100);
+describe('liveness rules', () => {
+  it('derives connectivity from the gap to the last contact', () => {
+    const n = T0;
+    expect(connectivityOf(null, n, 300, 1200)).toBe('unknown');
+    expect(connectivityOf(n - 599_000, n, 300, 1200)).toBe('connected');
+    expect(connectivityOf(n - 600_000, n, 300, 1200)).toBe('quiet');
+    expect(connectivityOf(n - 1199_000, n, 300, 1200)).toBe('quiet');
+    expect(connectivityOf(n - 1200_000, n, 300, 1200)).toBe('lost_contact');
   });
-  it('doubles the response window per attempt up to 8x', () => {
-    expect([1, 2, 3, 4, 5, 9].map((a) => windowSeconds(900, a))).toEqual([900, 1800, 3600, 7200, 7200, 7200]);
+  it('contact state: lost_contact wins, unanswered check-ins mean unresponsive', () => {
+    expect(contactStateOf('lost_contact', 3)).toBe('lost_contact');
+    expect(contactStateOf('connected', 2)).toBe('unresponsive');
+    expect(contactStateOf('quiet', 1)).toBe('unresponsive');
+    expect(contactStateOf('connected', 0)).toBe('connected');
   });
-  it('schedules the first check-in from arrival and later ones from the last reply', () => {
-    const arrived = new Date('2026-11-07T12:00:00Z');
-    expect(nextDueAt(900, arrived, null).toISOString()).toBe('2026-11-07T12:15:00.000Z');
-    expect(nextDueAt(900, arrived, new Date('2026-11-07T13:00:00Z')).toISOString()).toBe('2026-11-07T13:15:00.000Z');
+  it('gap boost: 0 below the threshold, +10 at it, +10 per further heartbeat interval, capped at +30', () => {
+    expect([1199, 1200, 1499, 1500, 1800, 2100, 99999].map((g) => contactBoostFor(g, 1200, 300))).toEqual([0, 10, 10, 20, 30, 30, 30]);
+  });
+  it('welfare boost: +10 per miss, +20 when unresponsive, capped at +30 in total', () => {
+    expect(welfareDelta(0, false)).toBe(10);
+    expect(welfareDelta(0, true)).toBe(20);
+    expect(welfareDelta(20, true)).toBe(10);
+    expect(welfareDelta(30, true)).toBe(0);
+  });
+  it('tier thresholds, intervals and alarm time', () => {
+    expect(tierOfScore(85, {})).toBe('critical');
+    expect(tierOfScore(10, { trapped: true })).toBe('critical');
+    expect(tierOfScore(55, {})).toBe('high');
+    expect(tierOfScore(20, { category: 'need_water_meds' })).toBe('high');
+    expect(tierOfScore(20, {})).toBe('normal');
+    const cfg = { CHECKIN_INTERVAL_S: 1800, CHECKIN_INTERVAL_CRITICAL_S: 600, CHECKIN_INTERVAL_HIGH_S: 900 };
+    expect([welfareIntervalS(cfg, 'critical'), welfareIntervalS(cfg, 'high'), welfareIntervalS(cfg, 'normal')]).toEqual([600, 900, 1800]);
+    const sent = new Date(T0), dl = new Date(T0 + 300_000);
+    expect(alarmAt(sent, dl, 60).getTime()).toBe(T0 + 240_000);
+    expect(alarmAt(sent, dl, 999).getTime()).toBe(T0);
   });
   it('final score = triage + boosts, capped', () => {
     expect(withBoosts(50, 10, 15)).toBe(75);

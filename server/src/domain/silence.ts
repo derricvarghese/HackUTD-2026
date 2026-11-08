@@ -1,6 +1,9 @@
 import { haversineM } from './geo';
 
-/** Heartbeat silence state machine (design 6.4). Pure: all inputs are explicit, `now` is injected. */
+/**
+ * Lost-heartbeat state machine for the silent-device list (design 6.4). Pure: all inputs are explicit, `now` is injected.
+ * quiet = threshold missed, probably no connectivity; distress = threshold missed while neighbours still report, or an open SOS exists.
+ */
 export type HbState = 'active' | 'quiet' | 'distress';
 
 export interface SilenceInput {
@@ -45,7 +48,7 @@ export function evaluateSilence(i: SilenceInput): SilenceVerdict {
   if (lowBattery) priority -= 30;
   priority = Math.max(0, Math.min(100, priority));
   const mins = Math.round(silentForS / 60);
-  const parts = [`No heartbeat for ${mins} min`];
+  const parts = [`Lost contact: no heartbeat for ${mins} min (device probably has no connectivity)`];
   if (i.neighborsActive > 0) parts.push(`${i.neighborsActive} neighbour${i.neighborsActive === 1 ? '' : 's'} in the area still reporting`);
   if (i.hasOpenSos) parts.push('has an open SOS');
   if (i.batteryPct != null) parts.push(`battery was ${i.batteryPct}%${i.charging ? ' (charging)' : ''}`);

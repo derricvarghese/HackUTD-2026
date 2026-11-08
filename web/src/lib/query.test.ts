@@ -26,6 +26,12 @@ describe('query building', () => {
     expect(matchesTab(makeSos(), 'assigned')).toBe(false);
     expect(matchesTab(makeSos({ assignment: { id: 'a', responder_id: 'r', status: 'en_route' } }), 'assigned')).toBe(true);
   });
+  it('excludes safe category and low scores (<20) from all queue tabs', () => {
+    expect(matchesTab(makeSos({ category: 'safe', score: 5 }), 'all')).toBe(false);
+    expect(matchesTab(makeSos({ category: 'safe', score: 90 }), 'all')).toBe(false);
+    expect(matchesTab(makeSos({ category: 'trapped', score: 10 }), 'all')).toBe(false);
+    expect(matchesTab(makeSos({ category: 'safe' }), 'silent')).toBe(false);
+  });
   it('searches visible text', () => {
     expect(matchesSearch(makeSos(), 'WATER', 'x')).toBe(true);
     expect(matchesSearch(makeSos(), 'zzz', 'x')).toBe(false);

@@ -14,7 +14,7 @@ interface Job { name: string; key: number; everyS: number; run: (ctx: Ctx, now: 
 export function startJobs(ctx: Ctx): { stop(): void } {
   const demo = ctx.cfg.DEMO_MODE;
   const jobs: Job[] = [
-    { name: 'checkinTick', key: 727010, everyS: demo ? 10 : 30, run: checkinTick },
+    { name: 'checkinTick', key: 727010, everyS: demo ? 5 : 30, run: checkinTick },
     { name: 'silenceTick', key: 727011, everyS: demo ? 10 : 30, run: silenceTick },
     { name: 'deadzoneTick', key: 727012, everyS: demo ? 20 : 60, run: deadzoneTick },
     { name: 'meshStatsTick', key: 727013, everyS: 10, run: meshStatsTick },

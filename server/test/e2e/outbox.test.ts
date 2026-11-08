@@ -46,6 +46,9 @@ describe('mesh outbox', () => {
     expect(req).toMatchObject({ sos_id: env.id, checkin_id: ck.body.id });
     expect(req.body.message).toBe('Are you OK?');
     expect(req.body.deadline_at).toBe(ck.body.deadline_at);
+    expect(req.body.alarm_at).toBe(ck.body.alarm_at);
+    expect(req.body.choices).toEqual(['still_here', 'no_longer_need_help', 'need_urgent_help']);
+    expect(Date.parse(req.body.deadline_at) - Date.parse(req.body.alarm_at)).toBe(60_000);
     const su = out2.body.data.find((m: any) => m.kind === 'status_update');
     expect(su.body).toMatchObject({ status: 'assigned', eta_minutes: 40, message: 'Help is on the way, ETA 40 min' });
     // no personal data on the wire: no coordinates or text
@@ -63,7 +66,7 @@ describe('mesh outbox', () => {
     expect(verifyBackendMessage(signKey, piggy.body.messages[0])).toBe(true);
 
     // the phone answers / polls => those messages stop being served
-    await t.signed(dev, 'PATCH', `/v1/checkins/${ck.body.id}`, { response: 'ok' });
+    await t.signed(dev, 'PATCH', `/v1/checkins/${ck.body.id}`, { response: 'still_here' });
     await t.signed(dev, 'GET', `/v1/sos/${env.id}/status`);
     const out3 = (await sget(gw, '/v1/mesh/outbox')).body.data.map((m: any) => m.kind);
     expect(out3).toEqual(['delivered']);

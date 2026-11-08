@@ -393,7 +393,10 @@ export interface paths {
         /** List check-ins for a case */
         get: operations["listCheckins"];
         put?: never;
-        /** Send a check-in now (responder-triggered; the silence detector also creates these automatically) */
+        /**
+         * Send a welfare check-in now (responder-triggered; the server also creates them automatically on the tier interval)
+         * @description Creates a normal welfare check-in (same `choices`, `deadline_at`, `alarm_at`, notification delivery) outside the schedule.
+         */
         post: operations["createCheckin"];
         delete?: never;
         options?: never;
@@ -408,7 +411,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Check-ins awaiting a response for the calling device (app fetches when online) */
+        /**
+         * Welfare check-ins awaiting an answer for the calling device (app fetches when online)
+         * @description Unanswered, not-yet-missed check-ins of the device's open cases, earliest deadline first. The same objects also arrive as `pending_checkins` in the `POST /heartbeats` response, so a heartbeating app rarely needs to poll this.
+         */
         get: operations["listPendingCheckins"];
         put?: never;
         post?: never;
@@ -436,8 +442,11 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Respond to a check-in ("I'm OK" / needs help / free text).
-         * @description Setting `responded_at` resets the silence timer. Mesh-relayed replies arrive as normal-tier envelopes via `/sos/batch` with `kind=checkin_reply`.
+         * Answer a welfare check-in
+         * @description `still_here` confirms (timer restarts, no score change). `no_longer_need_help` resolves the case (assignment `outcome=self_resolved`, `status_update` back to the phone).
+         *     `need_urgent_help` adds +15 score (cap +30). Every answer ends silence (`contact_restored`) and counts as a heartbeat; scores are never lowered.
+         *     A late answer after `deadline_at` is still accepted. Legacy `ok` = `still_here`, `need_help` = `need_urgent_help`, `other` = `still_here` with free text.
+         *     Mesh-relayed answers arrive as normal-tier envelopes via `/sos/batch` with `kind=checkin_reply` (`checkin_id` + `response` + optional `text`).
          */
         patch: operations["respondCheckin"];
         trace?: never;
@@ -697,7 +706,9 @@ export interface paths {
         put?: never;
         /**
          * Send a heartbeat directly (phone is online)
-         * @description Mesh-relayed heartbeats arrive via `POST /sos/batch` instead. `sent_at` is the phone's own time; the server also records `received_at`. Returns `404` if no event is active.
+         * @description Sent AUTOMATICALLY by the app every `heartbeat_interval_seconds`; no user action. Receiving it is the check-in. Mesh-relayed heartbeats arrive via `POST /sos/batch` instead.
+         *     `sent_at` is the phone's own time; the server also records `received_at`. Accepted when an event is active OR the device has an open SOS (attached to the case's event);
+         *     `404` only when neither applies. The 202 body returns the device's `pending_checkins` (welfare check-ins to show as notifications right away).
          */
         post: operations["sendHeartbeat"];
         delete?: never;
@@ -713,7 +724,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Devices that stopped heartbeating (quiet or in distress) */
+        /**
+         * Devices that stopped heartbeating (lost contact; quiet or distress)
+         * @description Information list for the dashboard. `quiet` = missed the threshold, probably no connectivity. `distress` = missed it while neighbours still report, or the device has an open SOS. Listing a device here never creates a case.
+         */
         get: operations["listSilentDevices"];
         put?: never;
         post?: never;
@@ -831,7 +845,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Close the event (admin). Stops silence detection and check-ins; starts the retention countdown.
+         * Close the event (admin). Stops silence detection and welfare check-ins; starts the retention countdown.
          * @description Personal data (exact locations, text, voice notes, device links) is purged automatically after `retention_days`, or immediately via `/purge`. Aggregate stats are kept.
          */
         post: operations["closeEvent"];
@@ -868,7 +882,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Heat layer cells (coarse, privacy-safe) */
+        /**
+         * Heat layer cells (coarse, privacy-safe)
+         * @description Counts active cases only (reported, assigned, en_route, on_scene); resolved, closed and merged duplicates contribute nothing.
+         */
         get: operations["getHeat"];
         put?: never;
         post?: never;
@@ -989,15 +1006,37 @@ export interface components {
                 max_hops: number;
                 ttl_seconds: number;
             }[];
-            /** @example 900 */
-            checkin_interval_seconds?: number;
             /**
-             * @description Phones send a heartbeat this often while an event is active
+             * @description Welfare check-in interval of `normal` tier cases (see `checkin_intervals_seconds`)
+             * @example 1800
+             */
+            checkin_interval_seconds?: number;
+            /** @description Welfare check-in interval per case tier (measured from the last answer). `safe` cases get none. */
+            checkin_intervals_seconds?: {
+                /** @example 600 */
+                critical?: number;
+                /** @example 900 */
+                high?: number;
+                /** @example 1800 */
+                normal?: number;
+            };
+            /**
+             * @description Time to answer a check-in: deadline_at = sent_at + this
+             * @example 300
+             */
+            checkin_window_seconds?: number;
+            /**
+             * @description alarm_at = deadline_at - this; the app sounds its final-try alarm then
+             * @example 60
+             */
+            checkin_alarm_lead_seconds?: number;
+            /**
+             * @description Every installed app sends an automatic heartbeat this often (always present, also without an active event; keep sending while an SOS is open)
              * @example 300
              */
             heartbeat_interval_seconds?: number;
             /**
-             * @description Missed-heartbeat window before a device is considered quiet
+             * @description No contact for this long = lost contact (device probably has no connectivity); with an open SOS the case becomes silent
              * @example 1200
              */
             silence_threshold_seconds?: number;
@@ -1056,8 +1095,23 @@ export interface components {
             flag_reason?: string | null;
             sos_count?: number;
             heartbeat_status?: components["schemas"]["HeartbeatStatus"];
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Last automatic heartbeat (or legacy check-in reply) from this device
+             */
             last_heartbeat_at?: string | null;
+            connectivity?: components["schemas"]["Connectivity"];
+            /**
+             * @description How the last heartbeat arrived
+             * @enum {string|null}
+             */
+            last_transport?: "direct" | "mesh" | null;
+            /** @enum {string|null} */
+            last_network?: "wifi" | "cellular" | "none" | "unknown" | null;
+            last_battery_pct?: number | null;
+            last_peers_nearby?: number | null;
+            /** @description Phone had internet and was relaying others at its last heartbeat */
+            last_gateway?: boolean | null;
             /** Format: date-time */
             last_seen_at?: string | null;
             /** @description Server copy's `profile_version`, null when the server holds no profile for this device */
@@ -1355,6 +1409,8 @@ export interface components {
              * @description For kind=checkin_reply
              */
             checkin_id?: string;
+            /** @description For kind=checkin_reply (default still_here) */
+            response?: components["schemas"]["CheckinResponse"];
             /** @description For kind=heartbeat */
             heartbeat?: components["schemas"]["HeartbeatCreate"];
             /** @description For kind=offer */
@@ -1378,8 +1434,11 @@ export interface components {
             signature: string;
         };
         TriageReason: {
-            /** @enum {string} */
-            source: "rule" | "llm" | "silence" | "heartbeat" | "manual";
+            /**
+             * @description `silence` = lost contact or unanswered welfare check-ins; `checkin` = the person asked for urgent help
+             * @enum {string}
+             */
+            source: "rule" | "llm" | "silence" | "heartbeat" | "checkin" | "manual";
             /** @example 2 people trapped with rising water */
             text: string;
             /** @description Score contribution */
@@ -1486,6 +1545,11 @@ export interface components {
          *       "silent": false,
          *       "silent_since": null,
          *       "last_heard_at": "2026-11-07T16:21:00Z",
+         *       "last_heartbeat_at": "2026-11-07T16:21:00Z",
+         *       "connectivity": "connected",
+         *       "contact_state": "connected",
+         *       "silent_for_seconds": 40,
+         *       "welfare_missed": 0,
          *       "hop": {
          *         "hop_count": 3,
          *         "max_hops": 10,
@@ -1538,12 +1602,26 @@ export interface components {
             /** Format: uuid */
             event_id?: string | null;
             has_voice_note?: boolean;
-            /** @description Silence detector tripped; priority already boosted */
+            /** @description Contact lost (no heartbeat/message for the silence threshold) or a welfare check-in deadline passed unanswered; priority already boosted. Only a recent heartbeat or an answer clears it, and never lowers the score. */
             silent?: boolean;
             /** Format: date-time */
             silent_since?: string | null;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Last message OR heartbeat OR check-in answer from the case's device
+             */
             last_heard_at: string;
+            /**
+             * Format: date-time
+             * @description The device's last automatic heartbeat
+             */
+            last_heartbeat_at?: string | null;
+            connectivity?: components["schemas"]["Connectivity"];
+            contact_state?: components["schemas"]["ContactState"];
+            /** @description Seconds since the device was last heard from (heartbeat or message) */
+            silent_for_seconds?: number;
+            /** @description Welfare check-ins missed since the person last answered (0 = none) */
+            welfare_missed?: number;
             hop?: components["schemas"]["HopInfo"];
             /** Format: uuid */
             merged_into?: string | null;
@@ -1604,7 +1682,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            type: "reported" | "received_via_gateway" | "triaged" | "merged" | "silent_flagged" | "heartbeat_silent" | "checkin_sent" | "checkin_responded" | "assigned" | "en_route" | "on_scene" | "resolved" | "released" | "note" | "edited" | "closed";
+            type: "reported" | "received_via_gateway" | "triaged" | "merged" | "silent_flagged" | "heartbeat_silent" | "contact_restored" | "checkin_sent" | "checkin_responded" | "checkin_missed" | "self_resolved" | "urgent_help_requested" | "assigned" | "en_route" | "on_scene" | "resolved" | "released" | "note" | "edited" | "closed";
             actor?: {
                 /** @enum {string} */
                 kind?: "system" | "responder" | "victim";
@@ -1617,17 +1695,44 @@ export interface components {
             at: string;
         };
         /**
+         * @description `still_here` = "I'm still here" (confirmed, no score change). `no_longer_need_help` = "I no longer need help" (case resolved by the requester, outcome `self_resolved`).
+         *     `need_urgent_help` = "I need help urgently" (+15 score). Legacy: `ok` = still_here, `need_help` = need_urgent_help, `other` = still_here with free text.
+         * @enum {string}
+         */
+        CheckinResponse: "still_here" | "no_longer_need_help" | "need_urgent_help" | "ok" | "need_help" | "other";
+        /**
+         * @description Derived from the last contact (automatic heartbeat, or any message from the device). `connected` = heard within 2 heartbeat intervals; `quiet` = later than that but under
+         *     `silence_threshold_seconds`; `lost_contact` = at or over the threshold (the device probably has no connectivity; NOT proof of distress); `unknown` = never heard.
+         * @enum {string}
+         */
+        Connectivity: "connected" | "quiet" | "lost_contact" | "unknown";
+        /**
+         * @description Interpretation for a case: `lost_contact` = heartbeats stopped (probably no connectivity); `unresponsive` = heartbeats still arrive but welfare check-ins go unanswered
+         *     (possible incapacitation, the stronger signal); `connected` = neither.
+         * @enum {string}
+         */
+        ContactState: "connected" | "lost_contact" | "unresponsive";
+        /**
+         * @description A welfare check-in: the server asks the person to confirm their status (see "Liveness, layer B"). Delivered as a push notification (when a `push_token` exists), a mesh
+         *     `BackendMessage` `checkin_request`, `pending_checkins` in the heartbeat response and `GET /checkins/pending`. The app sounds a local alarm at `alarm_at` if unanswered.
          * @example {
          *       "id": "0192a7f0-0000-7000-8000-0000000000c1",
          *       "sos_id": "0192a7d4-1c2e-7000-8a00-0000000000a1",
+         *       "kind": "welfare",
          *       "channel": "app",
          *       "sent_at": "2026-11-07T16:30:00Z",
          *       "responded_at": null,
          *       "response": null,
          *       "text": null,
-         *       "attempt": 2,
+         *       "choices": [
+         *         "still_here",
+         *         "no_longer_need_help",
+         *         "need_urgent_help"
+         *       ],
+         *       "attempt": 1,
          *       "missed": false,
-         *       "deadline_at": "2026-11-07T16:45:00Z"
+         *       "alarm_at": "2026-11-07T16:34:00Z",
+         *       "deadline_at": "2026-11-07T16:35:00Z"
          *     }
          */
         Checkin: {
@@ -1635,19 +1740,32 @@ export interface components {
             id: string;
             /** Format: uuid */
             sos_id: string;
+            /** @enum {string} */
+            kind?: "welfare";
             channel: components["schemas"]["Channel"];
             /** Format: date-time */
             sent_at: string;
             /** Format: date-time */
             responded_at?: string | null;
-            /** @enum {string|null} */
-            response?: "ok" | "need_help" | "other" | null;
+            response?: components["schemas"]["CheckinResponse"] | null;
             text?: string | null;
-            /** @description 1-based; escalates scoring after missed attempts */
+            /** @description Custom text when a responder triggered the check-in */
+            message?: string | null;
+            /** @description The replies the app should offer (render as notification action buttons) */
+            choices?: ("still_here" | "no_longer_need_help" | "need_urgent_help")[];
+            /** @description 1-based; grows while check-ins are missed */
             attempt?: number;
-            /** @description Deadline passed with no response */
+            /** @description Deadline passed with no response (the case became silent at that moment) */
             missed?: boolean;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description App-side final try: if still unanswered at this time, sound an alarm + vibration + full-screen alert. = deadline_at - checkin_alarm_lead_seconds.
+             */
+            alarm_at?: string;
+            /**
+             * Format: date-time
+             * @description Answer by this time; after it the check-in is missed and the case becomes silent (late answers are still accepted)
+             */
             deadline_at?: string;
         };
         AssignmentCreate: {
@@ -1667,10 +1785,10 @@ export interface components {
             responder_id?: string;
             note?: string;
             /**
-             * @description Required when status=resolved
+             * @description Required when status=resolved. `self_resolved` is set by the server when the requester answers a check-in with `no_longer_need_help` (responders normally do not send it).
              * @enum {string}
              */
-            outcome?: "rescued" | "safe_on_arrival" | "false_alarm" | "unreachable" | "referred";
+            outcome?: "rescued" | "safe_on_arrival" | "false_alarm" | "unreachable" | "referred" | "self_resolved";
         };
         AssignmentSummary: {
             /** Format: uuid */
@@ -1686,6 +1804,7 @@ export interface components {
             sos_id: string;
             /** Format: date-time */
             eta_at?: string | null;
+            /** @description rescued, safe_on_arrival, false_alarm, unreachable, referred, or `self_resolved` (the requester said they no longer need help) */
             outcome?: string | null;
             /** @description Exact victim location, only for the assignee/admin */
             location?: components["schemas"]["LatLng"] | null;
@@ -1787,11 +1906,13 @@ export interface components {
             created_at?: string;
         };
         /**
-         * @description `active` heard recently; `quiet` missed the threshold; `distress` quiet while neighbours report or with an open SOS; `stopped` event closed or user opted out; `unknown` never heartbeated
+         * @description `active` heartbeats arriving; `quiet` missed the threshold (probably no connectivity); `distress` missed it while neighbours still report or with an open SOS; `stopped` event closed or user opted out; `unknown` never heartbeated. Prefer `Device.connectivity`.
          * @enum {string}
          */
         HeartbeatStatus: "active" | "quiet" | "distress" | "stopped" | "unknown";
         /**
+         * @description The automatic liveness beacon. Apps send it in the background every `heartbeat_interval_seconds`, with no user interaction; receiving it IS the check-in.
+         *     Optional fields are backwards compatible: older apps omit them.
          * @example {
          *       "sent_at": "2026-11-07T16:25:00Z",
          *       "approx": {
@@ -1802,7 +1923,11 @@ export interface components {
          *       "battery_pct": 41,
          *       "charging": false,
          *       "moving": false,
-         *       "seq": 17
+         *       "seq": 17,
+         *       "transport": "direct",
+         *       "network": "wifi",
+         *       "peers_nearby": 3,
+         *       "gateway": true
          *     }
          */
         HeartbeatCreate: {
@@ -1815,6 +1940,22 @@ export interface components {
             moving?: boolean;
             /** @description Monotonic counter so the server can spot gaps */
             seq?: number;
+            /**
+             * @description How this heartbeat was sent: `direct` = REST, `mesh` = relayed envelope (server infers `mesh` when hop_count > 0)
+             * @enum {string}
+             */
+            transport?: "direct" | "mesh";
+            /**
+             * @description Phone's own network state when it created the heartbeat
+             * @enum {string}
+             */
+            network?: "wifi" | "cellular" | "none" | "unknown";
+            /** @description Mesh peers currently in range */
+            peers_nearby?: number;
+            /** @description Phone currently has internet and is relaying other phones' messages */
+            gateway?: boolean;
+            /** @description Optional hint listing this phone's own unresolved SOS ids; the server does not rely on it */
+            open_sos_ids?: string[];
         };
         Heartbeat: components["schemas"]["HeartbeatCreate"] & {
             /** Format: uuid */
@@ -1831,8 +1972,13 @@ export interface components {
             /** Format: uuid */
             device_id: string;
             sender_hash: string;
-            /** @enum {string} */
+            /**
+             * @description `quiet` = missed the threshold, probably no connectivity. `distress` = missed it while neighbours still report, or an open SOS exists.
+             * @enum {string}
+             */
             status: "quiet" | "distress";
+            /** @description `lost_contact` while flagged; `connected` in the `heartbeat.resumed` payload */
+            connectivity?: components["schemas"]["Connectivity"];
             /** Format: date-time */
             last_heartbeat_at: string;
             silent_for_seconds?: number;
@@ -1844,7 +1990,7 @@ export interface components {
             /** Format: uuid */
             open_sos_id?: string | null;
             priority_score?: number;
-            /** @example No heartbeat for 35 min; 12 neighbours in the area still reporting; battery was 9% */
+            /** @example Lost contact: no heartbeat for 35 min (device probably has no connectivity); 12 neighbours in the area still reporting; battery was 9% */
             reason?: string;
             acknowledged?: boolean;
             /** Format: date-time */
@@ -1875,7 +2021,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /**
-             * @description `delivered` = your SOS reached responders; `checkin_request` = respond via PATCH /checkins/{id} or a checkin_reply envelope; `status_update` = assignment progress
+             * @description `delivered` = your SOS reached responders; `checkin_request` = a welfare check-in: show a notification with the `choices`, sound the alarm at `body.alarm_at`, answer via PATCH /checkins/{id} or a `checkin_reply` envelope; `status_update` = assignment progress (also 'Marked as resolved. Stay safe.')
              * @enum {string}
              */
             kind: "delivered" | "checkin_request" | "status_update";
@@ -1888,8 +2034,23 @@ export interface components {
                 eta_minutes?: number | null;
                 /** @example Help is on the way, ETA 40 min */
                 message?: string | null;
-                /** Format: date-time */
+                /**
+                 * Format: date-time
+                 * @description checkin_request: answer by
+                 */
                 deadline_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description checkin_request: sound the local final-try alarm at this time if unanswered
+                 */
+                alarm_at?: string | null;
+                /** @description checkin_request: the replies to offer */
+                choices?: ("still_here" | "no_longer_need_help" | "need_urgent_help")[];
+                /** @description checkin_request: notification title */
+                title?: string;
+                attempt?: number;
+                /** @enum {string} */
+                tier?: "critical" | "high" | "normal";
             };
             /** @example 5 */
             max_hops: number;
@@ -2033,9 +2194,19 @@ export interface components {
             heartbeats?: {
                 /** @description Devices heard from within the threshold */
                 active?: number;
+                /** @description Missed the threshold (probably no connectivity) */
                 quiet?: number;
                 distress?: number;
                 stopped?: number;
+                /** @description Heartbeats received in the window */
+                received?: number;
+                /** @description Devices by derived connectivity */
+                connectivity?: {
+                    connected?: number;
+                    quiet?: number;
+                    lost_contact?: number;
+                    unknown?: number;
+                };
             };
             rejected?: {
                 bad_signature?: number;
@@ -2090,7 +2261,7 @@ export interface components {
             /** @description Open cases of that device */
             sos_ids: string[];
         };
-        /** @description Payload for `heartbeat.silent` and `heartbeat.resumed` (`SilentDevice`; on resume `status` is omitted semantics = back to active) */
+        /** @description Payload for `heartbeat.silent` (`connectivity=lost_contact`) and `heartbeat.resumed` (`connectivity=connected`); both are a `SilentDevice`. Informational, no case is implied */
         WsEventSilentDevice: components["schemas"]["SilentDevice"];
         /** @description Payload for `sos.merged` */
         WsEventSosMerged: {
@@ -2098,7 +2269,7 @@ export interface components {
             primary_id: string;
             merged_ids: string[];
         };
-        /** @description Payload for `checkin.sent` / `checkin.responded` */
+        /** @description Payload for `checkin.sent` / `checkin.responded` (a welfare `Checkin`) */
         WsEventCheckin: components["schemas"]["Checkin"];
         /** @description Payload for `assignment.created` / `assignment.updated` */
         WsEventAssignment: components["schemas"]["Assignment"];
@@ -3224,8 +3395,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @enum {string} */
-                    response: "ok" | "need_help" | "other";
+                    response: components["schemas"]["CheckinResponse"];
                     text?: string;
                     /**
                      * Format: date-time
@@ -3955,7 +4125,10 @@ export interface operations {
                 content: {
                     "application/json": {
                         next_heartbeat_in_seconds?: number;
+                        /** @description False when accepted only because the device has an open SOS */
                         event_active?: boolean;
+                        /** @description Welfare check-ins awaiting an answer (same as GET /checkins/pending) */
+                        pending_checkins?: components["schemas"]["Checkin"][];
                     };
                 };
             };

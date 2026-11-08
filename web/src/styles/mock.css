@@ -13,13 +13,13 @@
   .app{display:flex;min-height:100vh}
 
   /* Sidebar */
-  .side{width:264px;flex:none;position:sticky;top:0;height:100vh;align-self:flex-start;background:var(--navy);color:#fff;display:flex;flex-direction:column;padding:26px 18px 0;position:relative;overflow:hidden}
+  .side{width:264px;flex:none;position:sticky;top:0;height:100vh;align-self:flex-start;background:var(--navy);color:#fff;display:flex;flex-direction:column;padding:26px 18px 0;overflow-y:auto}
   .logo{display:flex;align-items:center;gap:10px;padding:0 6px}
   .logo svg{flex:none}
   .logo b{font-size:34px;font-weight:900;letter-spacing:-.5px}
   .tag{font-size:11px;letter-spacing:.12em;color:#9FB0D0;font-weight:600;margin:6px 6px 26px;line-height:1.5}
   .nav a{display:flex;align-items:center;gap:14px;padding:13px 16px;border-radius:8px;color:#D6DEEE;text-decoration:none;font-weight:500;font-size:15.5px;margin-bottom:4px}
-  .nav a.on{background:var(--blue);color:#fff;font-weight:600;box-shadow:0 6px 16px rgba(37,99,235,.35)}
+  .nav a.on{background:var(--blue);color:#fff;font-weight:600;box-shadow:none}
   .nav a .ct{margin-left:auto;background:#D32F2F;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px}
   .nav svg{width:20px;height:20px;flex:none}
   .assist{margin-top:auto;margin-bottom:20px;display:flex;align-items:center;gap:12px;padding:12px;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.04)}

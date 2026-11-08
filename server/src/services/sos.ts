@@ -11,6 +11,7 @@ import { loadInputs, viewsFor, getRowOrThrow, addEvent, broadcastSos } from './s
 import { awaitWithin, ingestSos, startPostIngest } from './ingest';
 import { fullTriage, persistTriage } from './triage';
 import { HOP_TABLE } from '../domain/hops';
+import { CHECKIN_CHOICES } from '../domain/liveness';
 import { matchesForSos } from './offers';
 import { queueStatusUpdate } from './outbox';
 import { canSeeFullProfile, toProfileView } from '../domain/privacy';
@@ -154,8 +155,9 @@ const canSeeText = (v: Viewer) => v.kind === 'responder';
 export function checkinDto(c: import('../db/types').CheckinRow): components['schemas']['Checkin'] {
   return {
     id: c.id, sos_id: c.sos_id, channel: c.channel as 'mesh' | 'app', sent_at: c.sent_at.toISOString(),
-    responded_at: c.responded_at ? c.responded_at.toISOString() : null, response: (c.response as 'ok' | 'need_help' | 'other' | null) ?? null,
+    responded_at: c.responded_at ? c.responded_at.toISOString() : null, response: (c.response as components['schemas']['Checkin']['response']) ?? null,
     text: c.response_text, attempt: c.attempt, missed: c.missed, deadline_at: c.deadline_at.toISOString(),
+    alarm_at: (c.alarm_at ?? c.deadline_at).toISOString(), kind: 'welfare', choices: [...CHECKIN_CHOICES], message: c.message,
   };
 }
 

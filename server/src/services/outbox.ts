@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { components } from '../generated/api';
 import type { Ctx } from '../ctx';
 import { signBackendMessage, type BackendMessageWire } from '../crypto/receipts';
+import { CHECKIN_CHOICES } from '../domain/liveness';
 import { buildPublicStatus } from './sos';
 
 export type BackendMessage = components['schemas']['BackendMessage'];
@@ -29,16 +30,23 @@ export async function enqueue(ctx: Ctx, e: Enqueue): Promise<BackendMessageWire>
   return msg;
 }
 
-/** status_update for the victim's phone after an assignment/status change. */
-export async function queueStatusUpdate(ctx: Ctx, sosId: string, now = new Date()) {
+/** status_update for the victim's phone after an assignment/status change. `message` overrides the generated text (e.g. self-resolution). */
+export async function queueStatusUpdate(ctx: Ctx, sosId: string, now = new Date(), message?: string) {
   const row = await ctx.db.selectFrom('sos').selectAll().where('id', '=', sosId).executeTakeFirst();
   if (!row || row.status === 'merged' || !row.device_id) return;
   const st = await buildPublicStatus(ctx, row);
-  await enqueue(ctx, { kind: 'status_update', sosId, body: { status: st.status, eta_minutes: st.eta_minutes ?? null, message: st.message ?? null }, now });
+  await enqueue(ctx, { kind: 'status_update', sosId, body: { status: st.status, eta_minutes: st.eta_minutes ?? null, message: message ?? st.message ?? null }, now });
 }
 
-export async function queueCheckinRequest(ctx: Ctx, c: { id: string; sos_id: string; deadline_at: Date; message: string | null }, now = new Date()) {
-  await enqueue(ctx, { kind: 'checkin_request', sosId: c.sos_id, checkinId: c.id, body: { message: c.message ?? 'Are you OK? Please reply.', deadline_at: c.deadline_at.toISOString() }, now });
+/**
+ * Welfare check-in for an offline phone. Body: `title`/`body` (notification text), `message` (= body, legacy name), `choices`, `deadline_at`, `alarm_at`,
+ * `attempt`, `tier`. The message stays servable until the deadline plus 10 minutes (a late answer is still accepted).
+ */
+export async function queueCheckinRequest(ctx: Ctx, c: { id: string; sos_id: string; deadline_at: Date; alarm_at: Date | null; attempt: number }, text: { title: string; body: string; tier: string }, now = new Date()) {
+  await enqueue(ctx, {
+    kind: 'checkin_request', sosId: c.sos_id, checkinId: c.id, now, ttlMs: Math.max(60_000, c.deadline_at.getTime() - now.getTime() + 600_000),
+    body: { title: text.title, message: text.body, choices: [...CHECKIN_CHOICES], deadline_at: c.deadline_at.toISOString(), alarm_at: (c.alarm_at ?? c.deadline_at).toISOString(), attempt: c.attempt, tier: text.tier },
+  });
 }
 
 /** The phone answered / the check-in was cancelled: stop serving its request. */

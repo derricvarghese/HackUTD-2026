@@ -1,11 +1,12 @@
 import type { KeyboardEvent } from 'react';
 import type { Sos, SilentDevice } from '../api/models';
-import { useAssignmentActions } from '../hooks/data';
 import { channelLabel } from '../lib/hops';
-import { shortLocation } from '../lib/privacy';
+import { resolveLocation, shortLocation } from '../lib/privacy';
+import { useReverseGeocode } from '../hooks/useReverseGeocode';
 import { CATEGORY_LABEL, TIER_LABEL, TIER_TEXT, TIER_VAR, caseKind, caseTitle, deviceShortId, shortId, whyText } from '../lib/tier';
 import { formatAge, formatDuration, silentForMinutes } from '../lib/time';
-import { useAuth, useCanAct } from '../state/auth';
+import { useCanAct } from '../state/auth';
+import { useUi } from '../state/ui';
 import { nameLine } from '../lib/profile';
 import { PersonLine } from './Person';
 import { StatusTrail } from './ui';
@@ -29,13 +30,11 @@ function keyActivate(fn: () => void) {
 
 export function ClaimButton({ c }: { c: Sos }) {
   const canAct = useCanAct();
-  const me = useAuth((s) => s.responder?.id);
-  const { claim } = useAssignmentActions();
   const a = c.assignment;
   if (a && ['assigned', 'en_route', 'on_scene'].includes(a.status)) {
     return (
       <span className="claim done" style={{ cursor: 'default' }} title={`Assigned to ${a.responder_name ?? 'a responder'}`}>
-        {a.responder_id === me ? 'Yours' : (a.responder_name ?? 'Assigned')}
+        {a.responder_name ?? 'Assigned'}
       </span>
     );
   }
@@ -43,14 +42,13 @@ export function ClaimButton({ c }: { c: Sos }) {
   return (
     <button
       className="claim"
-      disabled={claim.isPending}
       onClick={(e) => {
         e.stopPropagation();
-        claim.mutate({ sos: c });
+        useUi.getState().setOpenCaseId(c.id);
       }}
       aria-label={`Claim ${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)}`}
     >
-      {claim.isPending ? 'Claiming…' : 'Claim'}
+      Assign
     </button>
   );
 }
@@ -61,6 +59,8 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
   const sm = silentForMinutes(c, now);
   const why = whyText(c);
   const people = c.people_count ? `${c.people_count} ${c.people_count === 1 ? 'person' : 'people'}` : null;
+  const loc = resolveLocation(c);
+  const address = useReverseGeocode(loc.lat, loc.lng);
   return (
     <div
       tabIndex={0}
@@ -88,7 +88,7 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
           {shortId(c.id)} · {caseTitle(c)}
         </div>
         <div className="meta">
-          <span>{shortLocation(c)}</span>
+          <span>{address ? `${address} · ` : ''}{shortLocation(c)}</span>
           {people && <span>{people}</span>}
           {c.silent && sm !== null && <span className="redt">{sm < 1 ? 'Silent just now' : `Silent ${formatDuration(sm * 60)}`}</span>}
           {!!c.duplicate_count && <span>{c.duplicate_count} merged</span>}

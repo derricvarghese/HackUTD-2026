@@ -9,6 +9,16 @@ import { useUi } from '../state/ui';
 import { buildSosQuery } from '../lib/query';
 import { qk } from './data';
 
+let heatTimer: ReturnType<typeof setTimeout> | null = null;
+/** Heat refetch, trailing-throttled so a burst of case events makes one request and resolved cases fade out within ~1 s. */
+export function invalidateHeat(qc: QueryClient, ms = 800) {
+  if (heatTimer) return;
+  heatTimer = setTimeout(() => {
+    heatTimer = null;
+    void qc.invalidateQueries({ queryKey: qk.heat });
+  }, ms);
+}
+
 /** Apply one websocket frame to the query caches. Exported for tests. */
 export function applyFrame(qc: QueryClient, f: WsFrame) {
   switch (f.event) {
@@ -18,6 +28,7 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
       const c = f.data as Sos;
       qc.setQueryData<Sos[]>(qk.open, (l) => (l ? upsertCase(l, c) : l));
       void qc.invalidateQueries({ queryKey: ['cases', 'list'] });
+      invalidateHeat(qc);
       void qc.invalidateQueries({ queryKey: qk.detail(c.id) });
       break;
     }
@@ -25,6 +36,7 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
       const m = f.data as { primary_id: string; merged_ids: string[] };
       qc.setQueryData<Sos[]>(qk.open, (l) => (l ? removeCases(l, m.merged_ids) : l));
       void qc.invalidateQueries({ queryKey: ['cases'] });
+      invalidateHeat(qc);
       void qc.invalidateQueries({ queryKey: qk.detail(m.primary_id) });
       break;
     }
@@ -47,6 +59,7 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
     case 'assignment.updated': {
       const a = f.data as Assignment;
       void qc.invalidateQueries({ queryKey: qk.assignments });
+      invalidateHeat(qc);
       void qc.invalidateQueries({ queryKey: qk.responders });
       void qc.invalidateQueries({ queryKey: qk.detail(a.sos_id) });
       void qc.invalidateQueries({ queryKey: ['sos-events', a.sos_id] });
@@ -68,7 +81,7 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
       const d = (f.data as { data?: Deadzone[] } | undefined)?.data;
       if (d) qc.setQueryData(qk.deadzones, d);
       else void qc.invalidateQueries({ queryKey: qk.deadzones });
-      void qc.invalidateQueries({ queryKey: qk.heat });
+      invalidateHeat(qc);
       break;
     }
     case 'mesh.stats':

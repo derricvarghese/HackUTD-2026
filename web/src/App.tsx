@@ -8,7 +8,6 @@ import { useAuth } from './state/auth';
 import { Assist } from './views/Assist';
 import { Checkins } from './views/Checkins';
 import { Login } from './views/Login';
-import { MapPage } from './views/MapPage';
 import { Mesh } from './views/Mesh';
 import { Overview } from './views/Overview';
 import { Queue } from './views/Queue';
@@ -44,7 +43,7 @@ function Gate() {
     <Routes>
       <Route element={<Shell />}>
         <Route index element={<Overview />} />
-        <Route path="map" element={<MapPage />} />
+        <Route path="map" element={<Navigate to="/" replace />} />
         <Route path="queue" element={<Queue />} />
         <Route path="checkins" element={<Checkins />} />
         <Route path="mesh" element={<Mesh />} />

@@ -7,10 +7,10 @@ import { approxCell } from '../domain/geo';
 import { HOP_TABLE, tierFor, type Tier } from '../domain/hops';
 import { NotFoundDemo } from './demoGuard';
 import { uuidv7 } from '../testing/uuid';
-import { createEvent } from './events';
-import { activeEventRow } from './events';
+import { createEvent, activeEventRow, eventTimers } from './events';
+import { connectivityOf } from '../domain/liveness';
 import { bboxOfRing, geofenceRing, pointInRing, type Ring } from '../domain/geofence';
-import { ingestHeartbeat } from './heartbeats';
+import { ingestHeartbeat, silenceTick } from './heartbeats';
 import { ingestSos, startPostIngest } from './ingest';
 import { broadcastSos } from './sosView';
 import { senderHash } from './devices';
@@ -57,7 +57,7 @@ export async function meshStats(ctx: Ctx, windowMinutes = 60, now = new Date()):
     longest_chain: longest ? { hops: longest.hop_count, hop_path: longest.hop_path, sos_id: longest.sos_id } : { hops: 0, hop_path: [], sos_id: null },
     max_hops_seen: Number(agg.max), waiting_offline: Number(waiting.n) + Number(unanswered.n), active_gateways: Number(gateways.n), by_tier,
     median_delivery_delay_seconds: Math.round(Number(delay.med)),
-    heartbeats: { active: hs.active ?? 0, quiet: hs.quiet ?? 0, distress: hs.distress ?? 0, stopped: hs.stopped ?? 0 },
+    heartbeats: { active: hs.active ?? 0, quiet: hs.quiet ?? 0, distress: hs.distress ?? 0, stopped: hs.stopped ?? 0, received: Number(hbCount.n), connectivity: await connectivityCounts(ctx, now) },
     rejected: { bad_signature: rj.bad_signature ?? 0, expired: rj.expired ?? 0, hop_limit_exceeded: rj.hop_limit_exceeded ?? 0, rate_limited: rj.rate_limited ?? 0, ...(rj.invalid_limits ? { invalid_limits: rj.invalid_limits } : {}), ...(rj.undecryptable ? { undecryptable: rj.undecryptable } : {}), ...(rj.malformed ? { malformed: rj.malformed } : {}) },
   };
 }
@@ -74,6 +74,15 @@ export async function cachedMeshStats(ctx: Ctx, windowMinutes: number): Promise<
   const hit = ctx.cache.get('mesh.stats');
   if (windowMinutes === 60 && hit && Date.now() - hit.at < 10_000) return hit.v as MeshStats;
   return meshStats(ctx, windowMinutes);
+}
+
+/** Devices by derived connectivity (connected | quiet | lost_contact | unknown) from their last heartbeat. */
+async function connectivityCounts(ctx: Ctx, now: Date) {
+  const { heartbeatS, silenceS } = eventTimers(ctx.cfg, await activeEventRow(ctx));
+  const rows = await ctx.db.selectFrom('devices').select('last_heartbeat_at').execute();
+  const out = { connected: 0, quiet: 0, lost_contact: 0, unknown: 0 };
+  for (const r of rows) out[connectivityOf(r.last_heartbeat_at?.getTime() ?? null, now.getTime(), heartbeatS, silenceS)]++;
+  return out;
 }
 
 // ----------------------------------------------------------------------------- demo mode
@@ -122,6 +131,30 @@ const SEED_TEXTS: [string, 'trapped' | 'injured' | 'need_water_meds' | 'other' |
   ['Stranded on second floor, house surrounded by water', 'trapped'], ['Need a ride to the shelter, road flooded', 'other'], ['We are safe at the high school gym', 'safe'],
 ];
 
+/**
+ * Gives a seeded device a heartbeat history so the dashboard shows a natural connectivity mix: ~70% heard within the last interval (connected),
+ * ~15% a bit late (quiet), ~15% silent for longer than the silence threshold (lost contact, case turns silent on the next tick).
+ */
+async function seedHeartbeatHistory(ctx: Ctx, deviceId: string, sosId: string, lat: number, lng: number, now: Date) {
+  const { heartbeatS, silenceS } = eventTimers(ctx.cfg, await activeEventRow(ctx));
+  const roll = Math.random();
+  const lastAgoS = roll < 0.7 ? Math.random() * heartbeatS * 0.8 : roll < 0.85 ? heartbeatS * 2 + Math.random() * Math.max(1, silenceS - heartbeatS * 2) * 0.8 : silenceS * (1.2 + Math.random() * 2);
+  const beats = 3 + Math.floor(Math.random() * 3);
+  const network = (['wifi', 'cellular', 'none'] as const)[Math.floor(Math.random() * 3)];
+  let battery = 30 + Math.floor(Math.random() * 70);
+  for (let k = beats - 1; k >= 0; k--) {
+    const at = new Date(now.getTime() - (lastAgoS + k * heartbeatS) * 1000);
+    await ingestHeartbeat(ctx, deviceId, {
+      sent_at: at.toISOString(), approx: approxCell(lat, lng), battery_pct: battery, charging: false, moving: Math.random() < 0.2, seq: beats - k,
+      transport: network === 'none' ? 'mesh' : 'direct', network, peers_nearby: Math.floor(Math.random() * 6), gateway: network !== 'none' && Math.random() < 0.3,
+    }, { hop_count: 0, hop_path: [] }, at);
+    battery = Math.max(2, battery - Math.floor(Math.random() * 3));
+  }
+  // the case itself was last heard when its device last spoke
+  const last = new Date(now.getTime() - lastAgoS * 1000);
+  await ctx.db.updateTable('sos').set({ last_heard_at: last }).where('id', '=', sosId).execute();
+}
+
 /** POST /mesh/seed: N synthetic cases clustered around a centre, each from its own synthetic device that also heartbeats. */
 export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number; radius_km?: number; count?: number }) {
   requireDemo(ctx);
@@ -147,9 +180,10 @@ export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number
       water_rising: /water rising|surrounded/.test(text), created_at: new Date(now.getTime() - hops * 20_000 - Math.random() * 600_000), hop: { hop_count: hops, max_hops: HOP_TABLE[tier].max_hops, hop_path: hopPath(Math.min(hops, HOP_TABLE[tier].max_hops)) },
       gatewayDeviceId: null, synthetic: true,
     });
-    await ingestHeartbeat(ctx, dev.id, { sent_at: new Date(now.getTime() - Math.floor(Math.random() * 30_000)).toISOString(), approx: approxCell(lat, lng), battery_pct: 10 + Math.floor(Math.random() * 90), charging: false, moving: Math.random() < 0.2, seq: 1 }, { hop_count: 0, hop_path: [] }, now);
+    await seedHeartbeatHistory(ctx, dev.id, id, lat, lng, now);
     ids.push(id);
   }
+  await silenceTick(ctx, now); // flags the seeded lost-contact cases exactly like the scheduled job would
   for (const id of ids) await broadcastSos(ctx, 'sos.created', id);
   return { created: count };
 }

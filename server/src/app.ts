@@ -12,6 +12,7 @@ import { createDb, type Db } from './db';
 import { migrate } from './db/migrate';
 import { makeLogger, type Logger } from './logger';
 import { loadBackendKeys, type BackendKeys } from './crypto/keys';
+import { createPush, type PushProvider } from './services/push';
 import { createLlm, type TriageLlm } from './llm/nemotron';
 import { TokenBuckets } from './domain/rateLimit';
 import { Hub } from './ws/hub';
@@ -23,7 +24,7 @@ import { tooMany } from './errors';
 import { seedResponders } from './services/responders';
 import { verifyAccess } from './services/auth';
 
-export interface AppOverrides { db?: Db; llm?: TriageLlm; keys?: BackendKeys; logger?: Logger }
+export interface AppOverrides { db?: Db; llm?: TriageLlm; push?: PushProvider; keys?: BackendKeys; logger?: Logger }
 export interface BeaconApp {
   app: express.Express;
   server: http.Server;
@@ -56,7 +57,7 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
   const DEDUPE_LOCK_KEY = 727002;
   const hubRef: { hub?: Hub } = {};
   const ctx: Ctx = {
-    cfg, db: dbh.db, pool: dbh.pool, log, keys, llm: o.llm ?? createLlm(cfg),
+    cfg, db: dbh.db, pool: dbh.pool, log, keys, llm: o.llm ?? createLlm(cfg), push: o.push ?? createPush(cfg, log),
     hub: { publish: (e, render) => hubRef.hub?.publish(e, render) },
     limiters: {
       login: new TokenBuckets(cfg.LOGIN_RATE_PER_MIN, cfg.LOGIN_RATE_PER_MIN / 60),

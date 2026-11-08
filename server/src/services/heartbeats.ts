@@ -9,70 +9,88 @@ import { conflict, forbidden, invalid, notFound, tooMany } from '../errors';
 import { uuidv7 } from '../testing/uuid';
 import { activeEventRow, eventTimers } from './events';
 import { addEvent, broadcastSos } from './sosView';
+import { noteContact, caseSilenceTick } from './contact';
 
 export type SilentDevice = components['schemas']['SilentDevice'];
 export type HeartbeatDto = components['schemas']['Heartbeat'];
-type HbIn = { sent_at: string; approx: { lat: number; lng: number; radius_m?: number }; battery_pct?: number; charging?: boolean; moving?: boolean; seq?: number };
+type HbIn = {
+  sent_at: string; approx: { lat: number; lng: number; radius_m?: number }; battery_pct?: number; charging?: boolean; moving?: boolean; seq?: number;
+  transport?: 'direct' | 'mesh'; network?: 'wifi' | 'cellular' | 'none' | 'unknown'; peers_nearby?: number; gateway?: boolean; open_sos_ids?: string[];
+};
 const OPEN = ['reported', 'assigned', 'en_route', 'on_scene'] as const;
 
-/** Stores a heartbeat (idempotent on device + sent_at). Returns false when this exact heartbeat was already stored. */
+/**
+ * Stores a heartbeat (idempotent on device + sent_at). Returns false when this exact heartbeat was already stored.
+ * A heartbeat IS the check-in: it ends "lost contact" for the device and its open cases. Works with or without an active event.
+ */
 export async function ingestHeartbeat(ctx: Ctx, deviceId: string, hb: HbIn, hop = { hop_count: 0, hop_path: [] as string[] }, now = new Date()): Promise<boolean> {
   const sentAt = new Date(hb.sent_at);
   const dup = await ctx.db.selectFrom('heartbeats').select('id').where('device_id', '=', deviceId).where('sent_at', '=', sentAt).executeTakeFirst();
   if (dup) return false;
   const ev = await activeEventRow(ctx);
+  const caseEvent = ev ? undefined : await ctx.db.selectFrom('sos').select('event_id').where('device_id', '=', deviceId).where('status', 'in', [...OPEN]).where('event_id', 'is not', null).orderBy('received_at', 'desc').executeTakeFirst();
+  const transport = hb.transport ?? (hop.hop_count > 0 ? 'mesh' : undefined);
   await ctx.db.insertInto('heartbeats').values({
-    device_id: deviceId, event_id: ev?.id ?? null, sent_at: sentAt, received_at: now, approx_lat: hb.approx.lat, approx_lng: hb.approx.lng,
+    device_id: deviceId, event_id: ev?.id ?? caseEvent?.event_id ?? null, sent_at: sentAt, received_at: now, approx_lat: hb.approx.lat, approx_lng: hb.approx.lng,
     radius_m: Math.round(hb.approx.radius_m ?? 1000), battery_pct: hb.battery_pct ?? null, charging: hb.charging ?? null, moving: hb.moving ?? null,
-    seq: hb.seq ?? null, hop_count: hop.hop_count, hop_path: hop.hop_path,
+    seq: hb.seq ?? null, transport: transport ?? null, network: hb.network ?? null, peers_nearby: hb.peers_nearby ?? null, gateway: hb.gateway ?? null,
+    open_sos_ids: hb.open_sos_ids?.length ? (JSON.stringify(hb.open_sos_ids.slice(0, 20)) as unknown as object) : null, hop_count: hop.hop_count, hop_path: hop.hop_path,
   }).execute();
-  await ctx.db.updateTable('devices').set({ last_seen_at: now }).where('id', '=', deviceId).execute();
   // a heartbeat only proves liveness if it is recent (mesh heartbeats can arrive late); never move the clock backwards
   const alive = sentAt > now ? now : sentAt;
   const threshold = eventTimers(ctx.cfg, ev).silenceS * 1000;
   const prior = await ctx.db.selectFrom('devices').select('last_heartbeat_at').where('id', '=', deviceId).executeTakeFirst();
-  if (!prior?.last_heartbeat_at || prior.last_heartbeat_at < alive) {
-    await ctx.db.updateTable('devices').set({ last_heartbeat_at: alive, ...(now.getTime() - alive.getTime() < threshold ? { heartbeat_status: 'active' } : {}) }).where('id', '=', deviceId).execute();
-    if (ev && now.getTime() - alive.getTime() < threshold) await markDeviceAlive(ctx, deviceId, alive);
+  const newest = !prior?.last_heartbeat_at || prior.last_heartbeat_at <= alive;
+  await ctx.db.updateTable('devices').set({
+    last_seen_at: now,
+    ...(newest ? {
+      last_transport: transport ?? 'direct', last_network: hb.network ?? null, last_battery: hb.battery_pct ?? null, last_peers_nearby: hb.peers_nearby ?? null, last_gateway: hb.gateway ?? null,
+    } : {}),
+  }).where('id', '=', deviceId).execute();
+  if (newest) {
+    const recent = now.getTime() - alive.getTime() < threshold;
+    await markDeviceAlive(ctx, deviceId, alive, { source: 'heartbeat', recent, now });
   }
   return true;
 }
 
-/** POST /heartbeats (direct). 404 without an active event, 429 above the per-device rate. */
+/**
+ * POST /heartbeats (direct). Accepted while an event is active OR the device has an open SOS (then the heartbeat is attached to the
+ * case's event); otherwise 404. 429 above the per-device rate. Returns the device's pending welfare check-ins so an online phone gets them at once.
+ */
 export async function postHeartbeat(ctx: Ctx, deviceId: string, hb: HbIn) {
   const ev = await activeEventRow(ctx);
-  if (!ev) throw notFound('No active event: heartbeats are not collected');
+  if (!ev) {
+    const open = await ctx.db.selectFrom('sos').select('id').where('device_id', '=', deviceId).where('status', 'in', [...OPEN]).limit(1).executeTakeFirst();
+    if (!open) throw notFound('No active event and no open SOS: heartbeats are not collected');
+  }
   const rl = ctx.limiters.heartbeat.take(deviceId);
   if (!rl.ok) throw tooMany(rl.retryAfterS);
   await ingestHeartbeat(ctx, deviceId, hb);
-  return { next_heartbeat_in_seconds: eventTimers(ctx.cfg, ev).heartbeatS, event_active: true };
+  const { listPending } = await import('./checkins');
+  return { next_heartbeat_in_seconds: eventTimers(ctx.cfg, ev).heartbeatS, event_active: !!ev, pending_checkins: await listPending(ctx, deviceId) };
 }
 
 /**
- * Liveness evidence (heartbeat or check-in reply): ends the device's silent flag (`heartbeat.resumed`) and, unless the
- * caller already handled it, un-silences its cases whose latest check-in is not an unanswered miss. Scores keep their boost.
+ * Liveness evidence (heartbeat, or a check-in reply which counts as one): ends the device's silent-device flag (`heartbeat.resumed`), moves
+ * `last_heard_at` of its open cases and, when `recent`, restores cases that were silent from a heartbeat gap (see noteContact). Scores keep their boost.
  */
-export async function markDeviceAlive(ctx: Ctx, deviceId: string, at: Date, o: { clearCases?: boolean } = {}) {
-  const now = new Date();
-  const sd = await ctx.db.updateTable('silent_devices').set({ resolved_at: now, updated_at: now }).where('device_id', '=', deviceId).where('resolved_at', 'is', null).returningAll().executeTakeFirst();
+export async function markDeviceAlive(ctx: Ctx, deviceId: string, at: Date, o: { source?: 'heartbeat' | 'message' | 'checkin_reply'; recent?: boolean; now?: Date } = {}) {
+  const now = o.now ?? new Date();
+  const recent = o.recent ?? true;
   const dev = await ctx.db.updateTable('devices').set((eb) => ({
-    heartbeat_status: eb.case().when('heartbeat_status', 'in', ['quiet', 'distress']).then('active').else(eb.ref('heartbeat_status')).end(),
+    heartbeat_status: recent ? eb.case().when('heartbeat_status', 'in', ['quiet', 'distress']).then('active').else(eb.ref('heartbeat_status')).end() : eb.ref('heartbeat_status'),
     last_heartbeat_at: sql<Date>`greatest(coalesce(last_heartbeat_at, ${at}), ${at})`,
   })).where('id', '=', deviceId).returning('id').executeTakeFirst();
   if (!dev) return;
-  if (sd) {
-    const [dto] = await silentDtos(ctx, [sd], now);
-    if (dto) ctx.hub.publish('heartbeat.resumed', () => dto);
-  }
-  if (o.clearCases !== false) {
-    const rows = await ctx.db.selectFrom('sos').select(['id', 'silent']).where('device_id', '=', deviceId).where('silent', '=', true).where('status', 'in', [...OPEN]).execute();
-    for (const r of rows) {
-      const last = await ctx.db.selectFrom('checkins').select(['missed', 'responded_at']).where('sos_id', '=', r.id).where('cancelled', '=', false).orderBy('sent_at', 'desc').limit(1).executeTakeFirst();
-      if (last && last.missed && !last.responded_at) continue;
-      await ctx.db.updateTable('sos').set((eb) => ({ silent: false, silent_since: null, version: eb('version', '+', 1), updated_at: now })).where('id', '=', r.id).execute();
-      await broadcastSos(ctx, 'sos.updated', r.id);
+  if (recent) {
+    const sd = await ctx.db.updateTable('silent_devices').set({ resolved_at: now, updated_at: now }).where('device_id', '=', deviceId).where('resolved_at', 'is', null).returningAll().executeTakeFirst();
+    if (sd) {
+      const [dto] = await silentDtos(ctx, [sd], now);
+      if (dto) ctx.hub.publish('heartbeat.resumed', () => dto);
     }
   }
+  await noteContact(ctx, deviceId, at, { recent, source: o.source ?? 'heartbeat', now });
 }
 
 // ------------------------------------------------------------------------------------------- reads
@@ -91,7 +109,9 @@ export async function listHeartbeats(ctx: Ctx, q: { limit: number; cursor?: stri
       id: h.id, device_id: h.device_id, sender_hash: h.sender_hash, sent_at: h.sent_at.toISOString(), received_at: h.received_at.toISOString(),
       approx: approxCell(h.approx_lat, h.approx_lng), // coarse on purpose: history never exposes what the phone sent
       ...(h.battery_pct != null ? { battery_pct: h.battery_pct } : {}), ...(h.charging != null ? { charging: h.charging } : {}), ...(h.moving != null ? { moving: h.moving } : {}),
-      ...(h.seq != null ? { seq: h.seq } : {}), hop_count: h.hop_count, hop_path: h.hop_path,
+      ...(h.seq != null ? { seq: h.seq } : {}),
+      ...(h.transport ? { transport: h.transport as 'direct' | 'mesh' } : {}), ...(h.network ? { network: h.network as 'wifi' | 'cellular' | 'none' | 'unknown' } : {}),
+      ...(h.peers_nearby != null ? { peers_nearby: h.peers_nearby } : {}), ...(h.gateway != null ? { gateway: h.gateway } : {}), hop_count: h.hop_count, hop_path: h.hop_path,
     })),
     next_cursor: rows.length > q.limit && last ? encodeCursor('heartbeats', [last.received_at.toISOString(), last.id]) : null,
   };
@@ -115,7 +135,7 @@ export async function silentDtos(ctx: Ctx, rows: SilentDeviceRow[], now = new Da
       silent_for_seconds: Math.max(0, Math.floor((now.getTime() - last.getTime()) / 1000)),
       last_approx: h ? approxCell(h.approx_lat, h.approx_lng) : { lat: 0, lng: 0, radius_m: 1000 },
       last_battery_pct: h?.battery_pct ?? null, was_moving: h?.moving ?? false, neighbors_active: r.neighbors_active, open_sos_id: r.open_sos_id,
-      priority_score: r.priority_score, reason: r.reason ?? '', acknowledged: r.acknowledged, flagged_at: r.flagged_at.toISOString(),
+      connectivity: r.resolved_at ? 'connected' : 'lost_contact', priority_score: r.priority_score, reason: r.reason ?? '', acknowledged: r.acknowledged, flagged_at: r.flagged_at.toISOString(),
     });
   }
   return out;
@@ -189,11 +209,15 @@ export async function promoteSilent(ctx: Ctx, deviceId: string, actor: { id: str
 
 // ------------------------------------------------------------------------------------------ detector
 
-export interface SilenceTickResult { checked: number; flagged: number; escalated: number; resumed: number }
+export interface SilenceTickResult { checked: number; flagged: number; escalated: number; resumed: number; cases: { checked: number; flagged: number; escalated: number } }
 
-/** Silence detector (design 6.4). Only runs for the active event; `now` is injectable so tests never sleep. */
+/**
+ * Lost-contact detector (design 6.4). (1) Cases: every open case whose device went quiet for the silence threshold becomes silent (any event state).
+ * (2) Device list: devices of the ACTIVE event that stopped heartbeating are listed as `quiet`/`distress` silent devices; this is information for
+ * the dashboard and never creates or escalates a case. `now` is injectable so tests never sleep.
+ */
 export async function silenceTick(ctx: Ctx, now = new Date()): Promise<SilenceTickResult> {
-  const out: SilenceTickResult = { checked: 0, flagged: 0, escalated: 0, resumed: 0 };
+  const out: SilenceTickResult = { checked: 0, flagged: 0, escalated: 0, resumed: 0, cases: await caseSilenceTick(ctx, now) };
   const ev = await activeEventRow(ctx);
   if (!ev) return out;
   const { silenceS } = eventTimers(ctx.cfg, ev);
@@ -244,20 +268,7 @@ export async function silenceTick(ctx: Ctx, now = new Date()): Promise<SilenceTi
       if (escalated) { out.escalated++; announce = true; }
     }
     if (dm.get(l.device_id)?.heartbeat_status !== state) await ctx.db.updateTable('devices').set({ heartbeat_status: state, updated_at: now }).where('id', '=', l.device_id).execute();
-    if (state === 'distress' && open) await flagOpenCase(ctx, open.id, v.priority, v.reason, now);
     if (announce) { const [d] = await silentDtos(ctx, [row], now); if (d) ctx.hub.publish('heartbeat.silent', () => d); }
   }
   return out;
-}
-
-/** The device behind an open case went silent while others still report: mark it silent and boost it once. */
-async function flagOpenCase(ctx: Ctx, sosId: string, priority: number, reason: string, now: Date) {
-  const s = await ctx.db.selectFrom('sos').select(['heartbeat_boost', 'silent', 'score']).where('id', '=', sosId).executeTakeFirst();
-  if (!s || s.heartbeat_boost > 0) return;
-  const inc = Math.max(10, Math.min(25, priority - s.score));
-  await ctx.db.updateTable('sos').set((eb) => ({
-    silent: true, silent_since: eb.fn.coalesce('silent_since', eb.val(now)), heartbeat_boost: inc, score: Math.min(100, s.score + inc), version: eb('version', '+', 1), updated_at: now,
-  })).where('id', '=', sosId).execute();
-  await addEvent(ctx.db, sosId, 'heartbeat_silent', { kind: 'system' }, { reason });
-  await broadcastSos(ctx, s.silent ? 'sos.updated' : 'sos.silent', sosId);
 }

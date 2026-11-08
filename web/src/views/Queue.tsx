@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import * as api from '../api/endpoints';
 import type { Sos, SilentDevice } from '../api/models';
 import { ClaimButton } from '../components/CaseCard';
-import { CasePanel } from '../components/CasePanel';
 import { IcSearch } from '../components/icons';
 import { Empty, ErrorBox, Confidence_, ScoreSq, Seg, StatusChip } from '../components/ui';
 import { qk, useAction, useCaseList, useOpenCases, useSilent } from '../hooks/data';
@@ -40,7 +39,7 @@ export function Queue() {
 
   const rows = useMemo<Row[]>(() => {
     // The API's `q` only searches notes, so names are matched here over the open set and merged in.
-    const byName = q ? (open.data ?? []).filter((c) => matchesSearch(c, q, `${shortId(c.id)} ${caseTitle(c, 80)}`)) : [];
+    const byName = q ? (open.data ?? []).filter((c) => matchesTab(c, 'all') && matchesSearch(c, q, `${shortId(c.id)} ${caseTitle(c, 80)}`)) : [];
     const seen = new Set((list.data ?? []).map((c) => c.id));
     const cs: Row[] = [...(list.data ?? []), ...byName.filter((c) => !seen.has(c.id))].filter((c) => matchesTab(c, tab)).map((c) => ({ kind: 'case', c }));
     const showDevs = !q && !resolved && (tab === 'all' || tab === 'silent');
@@ -49,12 +48,17 @@ export function Queue() {
     return [...cs, ...ds].sort((a, b) => score(b) - score(a));
   }, [list.data, open.data, devices, tab, q, resolved]);
 
-  const all = open.data ?? [];
+  const all = (open.data ?? []).filter((c) => matchesTab(c, 'all'));
   const n = (t: QueueTab) => all.filter((c) => matchesTab(c, t)).length + (t === 'all' || t === 'silent' ? devices.length : 0);
+
+  const openCase = (id: string) => {
+    select(id);
+    useUi.getState().setOpenCaseId(id);
+  };
 
   return (
     <div className="view on">
-      <div className="qgrid">
+      <div className="qgrid" style={{ gridTemplateColumns: '1fr' }}>
         <div className="card">
           <div className="toolbar">
             <Seg<QueueTab>
@@ -94,8 +98,8 @@ export function Queue() {
                       tabIndex={0}
                       aria-selected={r.c.id === selectedId}
                       className={`row-click${r.c.id === selectedId ? ' sel' : ''}${r.c.silent ? ' silent' : ''}`}
-                      onClick={() => select(r.c.id)}
-                      onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); select(r.c.id); } }}
+                      onClick={() => openCase(r.c.id)}
+                      onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openCase(r.c.id); } }}
                     >
                       <td><ScoreSq c={r.c} /></td>
                       <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)}</p></td>
@@ -105,7 +109,7 @@ export function Queue() {
                       <td className={r.c.silent ? 'redt' : ''}>{formatAge(r.c.last_heard_at, now)}</td>
                       <td className="c-hide2"><Confidence_ value={r.c.confidence} /></td>
                       <td><StatusChip status={r.c.status} silent={r.c.silent} /></td>
-                      <td>{r.c.assignment && ['assigned', 'en_route', 'on_scene'].includes(r.c.assignment.status) ? <span className="team">{r.c.assignment.responder_name}</span> : <ClaimButton c={r.c} />}</td>
+                      <td>{r.c.assignment && ['assigned', 'en_route', 'on_scene'].includes(r.c.assignment.status) ? <span className="team" style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); openCase(r.c.id); }}>{r.c.assignment.responder_name}</span> : <ClaimButton c={r.c} />}</td>
                     </tr>
                   ) : (
                     <tr key={r.d.device_id} className="silent">
@@ -126,7 +130,6 @@ export function Queue() {
           </div>
           {!list.isLoading && rows.length === 0 && !list.isError && <Empty>{q ? `No cases match "${q}".` : 'No cases in this filter.'}</Empty>}
         </div>
-        {selectedId ? <CasePanel key={selectedId} id={selectedId} onClose={() => select(null)} /> : <div className="card"><Empty>Select a case to see how its score was built, the relay path, check-ins and actions.</Empty></div>}
       </div>
     </div>
   );

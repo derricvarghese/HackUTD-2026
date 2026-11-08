@@ -15,7 +15,7 @@ export function parseBbox(v: string): [number, number, number, number] {
   return p as [number, number, number, number];
 }
 
-/** Heat layer from approximate (1 km) coordinates only; cells are at least 1 km wide. */
+/** Heat layer from approximate (1 km) coordinates only; cells are at least 1 km wide. Active cases only (resolved, closed and merged duplicates are not counted). */
 export async function heat(ctx: Ctx, bbox: string, cellKm = 1) {
   const [minLng, minLat, maxLng, maxLat] = parseBbox(bbox);
   const km = Math.max(1, cellKm);
@@ -23,7 +23,7 @@ export async function heat(ctx: Ctx, bbox: string, cellKm = 1) {
   const rows = await ctx.db.selectFrom('sos')
     .select([sql<number>`floor(approx_lat / ${dLat})`.as('r'), sql<number>`floor(approx_lng / ${dLat / Math.max(Math.cos(((minLat + maxLat) / 2) * Math.PI / 180), 0.01)})`.as('c'),
       (eb) => eb.fn.countAll<number>().as('count'), sql<number>`max(coalesce(score_override, score))`.as('max_score')])
-    .where('status', '!=', 'merged').where('approx_lat', '>=', minLat).where('approx_lat', '<=', maxLat).where('approx_lng', '>=', minLng).where('approx_lng', '<=', maxLng)
+    .where('status', 'in', ['reported', 'assigned', 'en_route', 'on_scene']).where('approx_lat', '>=', minLat).where('approx_lat', '<=', maxLat).where('approx_lng', '>=', minLng).where('approx_lng', '<=', maxLng)
     .groupBy(['r', 'c']).execute();
   const dLng = dLat / Math.max(Math.cos(((minLat + maxLat) / 2) * Math.PI / 180), 0.01);
   return rows.map((x) => ({ lat: +((Number(x.r) + 0.5) * dLat).toFixed(5), lng: +((Number(x.c) + 0.5) * dLng).toFixed(5), count: Number(x.count), max_score: Number(x.max_score) }));

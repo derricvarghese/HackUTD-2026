@@ -18,11 +18,12 @@ export interface OverviewStats {
 export function overviewStats(cases: Sos[], responders: Responder[], now = Date.now()): OverviewStats {
   const since = now - HOUR;
   const recent = (iso?: string | null) => !!iso && Date.parse(iso) >= since;
-  const crit = cases.filter((c) => c.score >= CRITICAL_MIN);
-  const silent = cases.filter((c) => c.silent);
+  const triage = cases.filter((c) => c.category !== 'safe' && c.score >= 20);
+  const crit = triage.filter((c) => c.score >= CRITICAL_MIN);
+  const silent = triage.filter((c) => c.silent);
   return {
-    open: cases.length,
-    openNewHour: cases.filter((c) => recent(c.received_at ?? c.created_at)).length,
+    open: triage.length,
+    openNewHour: triage.filter((c) => recent(c.received_at ?? c.created_at)).length,
     critical: crit.length,
     criticalNewHour: crit.filter((c) => recent(c.received_at ?? c.created_at)).length,
     silent: silent.length,

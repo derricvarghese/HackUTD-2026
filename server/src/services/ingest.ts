@@ -13,6 +13,7 @@ import { createDeviceRow } from './devices';
 import { dedupeNew } from './merge';
 import { llmPass, rulesOutcome, triageRow } from './triage';
 import { ingestHeartbeat } from './heartbeats';
+import { noteContact } from './contact';
 import { replyFromMesh } from './checkins';
 import { createOffer, matchSosToOffers } from './offers';
 import { enqueue, listOutbox } from './outbox';
@@ -91,6 +92,7 @@ export async function ingestSos(ctx: Ctx, i: IngestInput): Promise<{ created: bo
     return { created: true, row: ins };
   });
   if (result.created && i.deviceId && !i.synthetic) await flagIfAbusive(ctx, i.deviceId, now);
+  if (result.created && i.deviceId) await noteContact(ctx, i.deviceId, now, { recent: true, source: 'message', now });
   return result;
 }
 
@@ -133,7 +135,7 @@ const payloadSchema = z.object({
   text: z.string().max(1000).optional(), voice_note_ref: z.string().nullable().optional(),
   people_count: z.number().int().min(1).optional(),
   trapped: z.boolean().optional(), water_rising: z.boolean().optional(), injured: z.boolean().optional(),
-  checkin_id: z.string().uuid().optional(), response: z.enum(['ok', 'need_help', 'other']).optional(),
+  checkin_id: z.string().uuid().optional(), response: z.enum(['still_here', 'no_longer_need_help', 'need_urgent_help', 'ok', 'need_help', 'other']).optional(),
   profile_summary: summarySchema.optional().catch(undefined),
   offer: z.object({
     kind: z.enum(['boat', 'water', 'food', 'medical', 'shelter', 'transport', 'other']), description: z.string().max(500).optional(), capacity: z.number().int().min(1).optional(),
@@ -143,6 +145,9 @@ const payloadSchema = z.object({
     sent_at: z.string().datetime({ offset: true }),
     approx: z.object({ lat: z.number(), lng: z.number(), radius_m: z.number().optional() }),
     battery_pct: z.number().int().min(0).max(100).optional(), charging: z.boolean().optional(), moving: z.boolean().optional(), seq: z.number().int().optional(),
+    transport: z.enum(['direct', 'mesh']).optional().catch(undefined), network: z.enum(['wifi', 'cellular', 'none', 'unknown']).optional().catch(undefined),
+    peers_nearby: z.number().int().min(0).optional().catch(undefined), gateway: z.boolean().optional().catch(undefined),
+    open_sos_ids: z.array(z.string().uuid()).max(20).optional().catch(undefined),
   }).optional(),
 }).passthrough();
 // heartbeats only need the heartbeat block; allow lat/lng/category to be absent for them

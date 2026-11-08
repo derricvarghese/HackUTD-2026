@@ -27,7 +27,8 @@ export function Overview() {
   const dz = useDeadzones();
   const layers = useUi((s) => s.layers);
   const mapBounds = useUi((s) => s.mapBounds);
-  const heat = useHeat(layers.heat, mapBounds);
+  const mapZoom = useUi((s) => s.mapZoom);
+  const heat = useHeat(layers.heat, mapBounds, mapZoom);
   const selectedId = useUi((s) => s.selectedId);
   const select = useUi((s) => s.select);
   const [tab, setTab] = useState<QueueTab>('all');
@@ -38,7 +39,7 @@ export function Overview() {
   const devices = queueDevices(silentDevs.data);
   const items = useMemo(() => mergeQueue(list, devices, tab), [list, devices, tab]);
   const count = (t: QueueTab) => list.filter((c) => matchesTab(c, t)).length + (t === 'all' || t === 'silent' ? devices.length : 0);
-  const openCase = (id: string) => { select(id); nav('/queue'); };
+  const openCase = (id: string) => { select(id); useUi.setState({ openCaseId: id }); };
 
   return (
     <div className="view on">
@@ -55,7 +56,7 @@ export function Overview() {
           responders={responders.data}
           offers={offers.data}
           deadzones={dz.data}
-          heat={layers.heat ? heat.data : []}
+          heat={layers.heat ? { cells: heat.isError ? null : heat.data?.cells ?? null, cellKm: heat.data?.cellKm ?? 1 } : undefined}
           region={info.data?.event?.region}
           selectedId={selectedId}
           onSelect={select}

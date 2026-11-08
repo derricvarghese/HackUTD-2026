@@ -1,5 +1,6 @@
 import type { components } from '../generated/api';
 import type { ProfileRow, SosRow } from '../db/types';
+import { connectivityOf, contactStateOf } from './liveness';
 import { allFlags, ageOf, ageRangeOf, type ProfileFullDto, type ProfilePublicDto, type Sensitive, type VulnerabilityFlag, type AgeRange } from './profile';
 
 export type Sos = components['schemas']['Sos'];
@@ -32,6 +33,16 @@ export interface SosViewInput {
   assignment: (AssignmentSummary & { status: string }) | null;
   /** public-only identity source (synced profile columns or a mesh summary); never carries sensitive data */
   profile?: ProfilePublicSource | null;
+  /** liveness context; defaults (no heartbeat known, 300 s / 1200 s timers, now) when absent */
+  liveness?: { lastHeartbeatAt: Date | null; now: Date; heartbeatS: number; silenceS: number };
+}
+
+/** Last contact = latest of the case's last message/heartbeat/reply and the device's last heartbeat. */
+export function livenessOf(row: Pick<SosRow, 'last_heard_at' | 'welfare_missed'>, l: SosViewInput['liveness']) {
+  const now = l?.now ?? new Date();
+  const contact = Math.max(row.last_heard_at.getTime(), l?.lastHeartbeatAt?.getTime() ?? 0);
+  const connectivity = connectivityOf(contact, now.getTime(), l?.heartbeatS ?? 300, l?.silenceS ?? 1200);
+  return { connectivity, contact_state: contactStateOf(connectivity, row.welfare_missed), silent_for_seconds: Math.max(0, Math.floor((now.getTime() - contact) / 1000)), contactAt: new Date(contact) };
 }
 
 // ------------------------------------------------------------------------------------------ profiles
@@ -97,6 +108,7 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
  */
 export function toSosView(input: SosViewInput, viewer: Viewer): Sos {
   const { row, reasons, assignment } = input;
+  const live = livenessOf(row, input.liveness);
   const activeAssignee = assignment && isActiveAssignment(assignment.status) ? assignment.responder_id : null;
   const exact = canSeeExact(viewer, activeAssignee) && row.lat != null && row.lng != null;
   return {
@@ -116,7 +128,12 @@ export function toSosView(input: SosViewInput, viewer: Viewer): Sos {
     has_voice_note: row.has_voice_note,
     silent: row.silent,
     silent_since: iso(row.silent_since),
-    last_heard_at: row.last_heard_at.toISOString(),
+    last_heard_at: new Date(live.contactAt).toISOString(),
+    last_heartbeat_at: input.liveness?.lastHeartbeatAt ? input.liveness.lastHeartbeatAt.toISOString() : null,
+    connectivity: live.connectivity,
+    contact_state: live.contact_state,
+    silent_for_seconds: live.silent_for_seconds,
+    welfare_missed: row.welfare_missed,
     hop: {
       hop_count: row.hop_count,
       max_hops: row.max_hops,

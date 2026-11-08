@@ -167,6 +167,11 @@ describe('dead zones, heat and mesh stats', () => {
     expect(heat.status).toBe(200);
     expect(heat.body.data.reduce((n: number, x: any) => n + x.count, 0)).toBe(8);
     expect(heat.body.data[0]).toMatchObject({ count: expect.any(Number), max_score: expect.any(Number) });
+    // heat counts active cases only: resolved / closed / merged cases drop out
+    const ids = (await t.ctx.db.selectFrom('sos').select('id').where('approx_lng', '>=', -96.2).where('approx_lng', '<=', -95.8).where('approx_lat', '>=', 31.8).where('approx_lat', '<=', 32.2).execute()).map((r) => r.id);
+    for (const [i, st] of (['resolved', 'closed', 'merged'] as const).entries()) await t.ctx.db.updateTable('sos').set({ status: st }).where('id', '=', ids[i]).execute();
+    const heat2 = await t.request.get('/v1/map/heat?bbox=-96.2,31.8,-95.8,32.2&cell_km=1').set(auth(alice));
+    expect(heat2.body.data.reduce((n: number, x: any) => n + x.count, 0)).toBe(5);
     expect((await t.request.get('/v1/map/heat').set(auth(alice))).status).toBe(422);
     expect((await t.request.get('/v1/map/heat?bbox=1,2,3').set(auth(alice))).status).toBe(422);
     ws.close();

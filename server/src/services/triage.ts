@@ -1,7 +1,7 @@
 import type { Ctx } from '../ctx';
 import type { SosRow } from '../db/types';
 import { applyLlm, downgrade, rulesTriage, summarize, type Confidence, type Reason, type RulesResult } from '../domain/triage/rules';
-import { withBoosts } from '../domain/checkinSchedule';
+import { withBoosts } from '../domain/liveness';
 import { hasSignal, llmProfileContext, type ProfileTriageCtx } from '../domain/profile';
 import { addEvent, broadcastSos } from './sosView';
 import { triageCtxFor } from './profileStore';
@@ -54,11 +54,11 @@ export function triageRow(sosId: string, o: TriageOutcome) {
 
 /** Persists a triage outcome (history kept) and syncs the case row. Returns true if the visible score/confidence changed. */
 export async function persistTriage(ctx: Ctx, sosId: string, o: TriageOutcome, actor: { kind: 'system' | 'responder'; id?: string }): Promise<boolean> {
-  const before = await ctx.db.selectFrom('sos').select(['score', 'confidence', 'silence_boost', 'heartbeat_boost']).where('id', '=', sosId).executeTakeFirst();
+  const before = await ctx.db.selectFrom('sos').select(['score', 'confidence', 'silence_boost', 'heartbeat_boost', 'contact_boost', 'urgent_boost']).where('id', '=', sosId).executeTakeFirst();
   if (!before) return false;
   await ctx.db.insertInto('triage_results').values(triageRow(sosId, o)).execute();
   // silence boosts live on the case (reasons are added when it is rendered), so a re-triage can never erase them
-  const score = withBoosts(o.score, before.silence_boost, before.heartbeat_boost);
+  const score = withBoosts(o.score, before.silence_boost, before.heartbeat_boost, before.contact_boost, before.urgent_boost);
   const changed = before.score !== score || before.confidence !== o.confidence;
   await ctx.db.updateTable('sos').set((eb) => ({ score, confidence: o.confidence, version: eb('version', '+', 1), updated_at: new Date() })).where('id', '=', sosId).execute();
   await addEvent(ctx.db, sosId, 'triaged', actor, { score: o.score, confidence: o.confidence, llm_used: o.llm_used, model: o.model });

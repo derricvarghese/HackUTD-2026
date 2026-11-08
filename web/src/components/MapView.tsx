@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Deadzone, HeatCell, Offer, Responder, Sos } from '../api/models';
 import { FLAG_META, displayName, sortFlags } from '../lib/profile';
 import { hopChips, hopSummary } from '../lib/hops';
 import { formatRadius, resolveLocation } from '../lib/privacy';
+import { reverseGeocode } from '../lib/geocode';
 import { regionBox } from '../lib/region';
 import { geofenceRing } from '../lib/geofence';
-import { CATEGORY_LABEL, TIER_HEX, TIER_LABEL, TIER_TEXT, caseKind, scoreTier, shortId } from '../lib/tier';
+import { CATEGORY_LABEL, TIER_HEX, TIER_LABEL, TIER_TEXT, caseKind, shortId } from '../lib/tier';
+import { RADIUS_LABEL, buildHeatPoints, geofenceCellKm, type HeatRadius } from '../lib/heat';
+import { HeatLayer } from './HeatLayer';
 import { formatAge } from '../lib/time';
 import { useUi, type LayerKey } from '../state/ui';
+import { IcLayers } from './icons';
 
 export interface MapBounds {
   min_lat: number;
@@ -60,15 +64,29 @@ export function buildCasePopup(c: Sos, onOpen: () => void): HTMLElement {
     });
     root.append(hops);
   }
+  const locText = loc.precision === 'exact' ? 'exact location (you are assigned)' : `approximate area, within ${formatRadius(loc.radius_m)}`;
+  const locDiv = el('div', 'pop-loc', locText, { marginTop: '6px', color: '#334155', fontWeight: '500', fontSize: '11.5px' });
+  root.append(locDiv);
+  reverseGeocode(loc.lat, loc.lng).then((addr) => {
+    if (addr && root.isConnected) {
+      locDiv.textContent = `${addr} · ${locText}`;
+    }
+  }).catch(() => {});
+
+  if (c.assignment && ['assigned', 'en_route', 'on_scene'].includes(c.assignment.status)) {
+    root.append(el('div', undefined, `Assigned: ${c.assignment.responder_name ?? 'Unit'} (${c.assignment.status.replace('_', ' ')})`, { marginTop: '5px', color: '#1D4ED8', fontWeight: '600', fontSize: '11.5px' }));
+  } else {
+    root.append(el('div', undefined, 'Awaiting Unit Dispatch', { marginTop: '5px', color: '#B45309', fontWeight: '600', fontSize: '11.5px' }));
+  }
+
   const foot = [
     c.hop?.max_hops !== undefined ? `Max hops ${c.hop.max_hops}` : null,
     c.silent ? 'went silent' : null,
     `heard ${formatAge(c.last_heard_at)}`,
-    loc.precision === 'exact' ? 'exact location (you are assigned)' : `approximate area, within ${formatRadius(loc.radius_m)}`,
   ].filter(Boolean);
-  root.append(el('div', undefined, foot.join(' · '), { marginTop: '8px', color: '#64748B', fontSize: '11.5px' }));
+  root.append(el('div', undefined, foot.join(' · '), { marginTop: '4px', color: '#64748B', fontSize: '11px' }));
   const btns = el('div', 'btns');
-  const open = el('button', 'p', 'Open case');
+  const open = el('button', 'p', c.assignment ? 'Open Dispatch Details' : 'Dispatch Unit');
   open.type = 'button';
   open.addEventListener('click', onOpen);
   btns.append(open);
@@ -119,7 +137,8 @@ export interface MapViewProps {
   responders?: Responder[];
   offers?: Offer[];
   deadzones?: Deadzone[];
-  heat?: HeatCell[];
+  /** Heat input; undefined hides nothing by itself (the layer toggle does). `cells: null` falls back to the open cases' approximate locations. */
+  heat?: { cells: HeatCell[] | null; cellKm: number };
   region?: unknown;
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -127,19 +146,27 @@ export interface MapViewProps {
   onBounds?: (b: MapBounds) => void;
   onDeadzone?: (d: Deadzone, status: Deadzone['status']) => void;
   className?: string;
+  defaultLayersOpen?: boolean;
 }
 
 export function MapView(p: MapViewProps) {
   const host = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const groups = useRef<Record<LayerKey, L.LayerGroup> | null>(null);
+  const groups = useRef<Record<Exclude<LayerKey, 'heat'>, L.LayerGroup> | null>(null);
+  const heatLayer = useRef<HeatLayer | null>(null);
   const markers = useRef(new Map<string, L.Marker>());
   const fittedFor = useRef<string | null>(null);
   const cb = useRef(p);
   cb.current = p;
   const layers = useUi((s) => s.layers);
   const toggle = useUi((s) => s.toggleLayer);
+  const heatOpacity = useUi((s) => s.heatOpacity);
+  const setHeatOpacity = useUi((s) => s.setHeatOpacity);
+  const heatRadius = useUi((s) => s.heatRadius);
+  const setHeatRadius = useUi((s) => s.setHeatRadius);
+  const uid = useId();
   const [tilesOk, setTilesOk] = useState(true);
+  const [layersOpen, setLayersOpen] = useState(p.defaultLayersOpen ?? true);
 
   // create the map once
   useEffect(() => {
@@ -158,7 +185,6 @@ export function MapView(p: MapViewProps) {
     tiles.addTo(map);
     groups.current = {
       geofence: L.layerGroup().addTo(map),
-      heat: L.layerGroup().addTo(map),
       deadzones: L.layerGroup().addTo(map),
       approx: L.layerGroup().addTo(map),
       offers: L.layerGroup().addTo(map),
@@ -168,9 +194,10 @@ export function MapView(p: MapViewProps) {
     const emit = () => {
       const b = map.getBounds();
       const nb = { min_lat: b.getSouth(), min_lng: b.getWest(), max_lat: b.getNorth(), max_lng: b.getEast() };
-      useUi.setState({ mapBounds: nb });
+      useUi.setState({ mapBounds: nb, mapZoom: map.getZoom() });
       cb.current.onBounds?.(nb);
     };
+    heatLayer.current = new HeatLayer();
     map.on('moveend', emit);
     mapRef.current = map;
     emit();
@@ -184,6 +211,7 @@ export function MapView(p: MapViewProps) {
       map.remove();
       mapRef.current = null;
       groups.current = null;
+      heatLayer.current = null;
       mk.clear();
     };
   }, []);
@@ -193,10 +221,15 @@ export function MapView(p: MapViewProps) {
     const map = mapRef.current;
     const g = groups.current;
     if (!map || !g) return;
-    (Object.keys(g) as LayerKey[]).forEach((k) => {
+    (Object.keys(g) as Exclude<LayerKey, 'heat'>[]).forEach((k) => {
       if (layers[k] && !map.hasLayer(g[k])) g[k].addTo(map);
       if (!layers[k] && map.hasLayer(g[k])) map.removeLayer(g[k]);
     });
+    const h = heatLayer.current;
+    if (h) {
+      if (layers.heat && !map.hasLayer(h)) h.addTo(map);
+      if (!layers.heat && map.hasLayer(h)) map.removeLayer(h);
+    }
   }, [layers]);
 
   // fit to the event region (once per region) or to the cases
@@ -268,17 +301,20 @@ export function MapView(p: MapViewProps) {
     markers.current.get(p.selectedId)?.openPopup();
   }, [p.selectedId, p.cases]);
 
-  // heat
+  // heat: smooth density surface from active cases only; kernel size is relative to event geofence size
+  const heatCells = p.heat?.cells;
+  const heatCellKm = p.heat?.cellKm ?? 1;
+  const effectiveCellKm = useMemo(() => geofenceCellKm(p.region, heatCellKm), [p.region, heatCellKm]);
+  const heatPoints = useMemo(() => buildHeatPoints({ cells: heatCells, cases: p.cases }), [heatCells, p.cases]);
   useEffect(() => {
-    const g = groups.current;
-    if (!g) return;
-    g.heat.clearLayers();
-    const max = Math.max(1, ...(p.heat ?? []).map((h) => h.count));
-    for (const h of p.heat ?? []) {
-      const color = TIER_HEX[scoreTier(h.max_score)];
-      L.circle([h.lat, h.lng], { radius: 700, stroke: false, fillColor: color, fillOpacity: 0.18 + 0.3 * (h.count / max), interactive: false }).addTo(g.heat);
-    }
-  }, [p.heat]);
+    heatLayer.current?.setData(heatPoints, effectiveCellKm);
+  }, [heatPoints, effectiveCellKm]);
+  useEffect(() => {
+    heatLayer.current?.setOpacity(heatOpacity);
+  }, [heatOpacity]);
+  useEffect(() => {
+    heatLayer.current?.setRadius(heatRadius);
+  }, [heatRadius]);
 
   // dead zones
   useEffect(() => {
@@ -358,14 +394,47 @@ export function MapView(p: MapViewProps) {
   return (
     <div className={`card map ${p.className ?? ''}`} role="region" aria-label="Incident map">
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
-      <div className="layers">
-        <div className="t">LAYERS</div>
-        {LAYER_LABELS.map(([k, label]) => (
-          <label key={k}>
-            <input type="checkbox" checked={layers[k]} onChange={() => toggle(k)} />
-            {label}
-          </label>
-        ))}
+      <div className={`layers ${layersOpen ? 'open' : 'collapsed'}`}>
+        <button
+          type="button"
+          className="layers-toggle-btn"
+          aria-expanded={layersOpen}
+          aria-controls={`${uid}-layers-body`}
+          aria-label="Layers menu"
+          onClick={() => setLayersOpen((o) => !o)}
+          title={layersOpen ? 'Collapse layers menu' : 'Expand layers menu'}
+        >
+          <span className="layers-toggle-hdr">
+            <IcLayers width={15} height={15} />
+            <span className="t">LAYERS</span>
+          </span>
+          <span className="layers-arrow" aria-hidden="true">{layersOpen ? '▲' : '▼'}</span>
+        </button>
+        {layersOpen && (
+          <div id={`${uid}-layers-body`} className="layers-body">
+            {LAYER_LABELS.map(([k, label]) => (
+              <label key={k}>
+                <input type="checkbox" checked={layers[k]} onChange={() => toggle(k)} />
+                {label}
+              </label>
+            ))}
+            <div className="heat-ctl" role="group" aria-label="Heat layer settings">
+              <label htmlFor={`${uid}-op`} className="heat-op">
+                <span>Heat opacity</span>
+                <input id={`${uid}-op`} type="range" min={10} max={100} step={5} value={Math.round(heatOpacity * 100)} disabled={!layers.heat} onChange={(e) => setHeatOpacity(Number(e.target.value) / 100)} aria-valuetext={`${Math.round(heatOpacity * 100)} percent`} />
+              </label>
+              <fieldset disabled={!layers.heat}>
+                <legend>Heat radius</legend>
+                {(['small', 'medium', 'large'] as HeatRadius[]).map((r) => (
+                  <label key={r} className="seg">
+                    <input type="radio" name={`${uid}-radius`} value={r} checked={heatRadius === r} onChange={() => setHeatRadius(r)} />
+                    <span>{RADIUS_LABEL[r]}</span>
+                  </label>
+                ))}
+              </fieldset>
+            </div>
+          </div>
+        )}
       </div>
       <div className="zoom">
         <button type="button" aria-label="Zoom in" onClick={() => mapRef.current?.zoomIn()}>+</button>

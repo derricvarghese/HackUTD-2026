@@ -147,3 +147,11 @@ export async function listAssignments(ctx: Ctx, q: { limit: number; cursor?: str
     next_cursor: rows.length > q.limit && last ? encodeCursor('assignments', [last.created_at.toISOString(), last.id]) : null,
   };
 }
+
+/** The person said "I no longer need help": closes the active claim (outcome `self_resolved`) and tells the assignee over WebSocket. */
+export async function selfResolveAssignments(ctx: Ctx, sosId: string, now = new Date()): Promise<string[]> {
+  const rows = await ctx.db.updateTable('assignments').set({ status: 'resolved', outcome: 'self_resolved', resolved_at: now, updated_at: now })
+    .where('sos_id', '=', sosId).where('status', 'in', ['assigned', 'en_route', 'on_scene']).returning('id').execute();
+  for (const r of rows) publishAssignment(ctx, 'assignment.updated', await load(ctx, r.id));
+  return rows.map((r) => r.id);
+}

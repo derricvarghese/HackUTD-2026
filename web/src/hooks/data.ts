@@ -3,6 +3,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClie
 import * as api from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { Assignment, Sos } from '../api/models';
+import { useDebounced } from './useDebounced';
+import { cellKmForZoom } from '../lib/heat';
 import { bboxParam, buildSosQuery, type QueueFilters } from '../lib/query';
 import { sortByPriority } from '../lib/live';
 import { useUi } from '../state/ui';
@@ -49,11 +51,14 @@ export const useCheckins = (id: string | null) =>
 export const useSilent = () => useQuery({ queryKey: qk.silent, queryFn: async () => (await api.listSilent()).data });
 export const useDeadzones = () => useQuery({ queryKey: qk.deadzones, queryFn: async () => (await api.getDeadzones()).data });
 /** Heat cells for the current map view (the endpoint requires a bbox). The box is padded and rounded so small pans reuse the cache. */
-export const useHeat = (enabled: boolean, bounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null) => {
-  const box = bounds ? padBox(bounds) : null;
+export const useHeat = (enabled: boolean, bounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null, zoom: number | null) => {
+  // debounced so a drag or a zoom burst makes one request; detail grows with zoom (cell_km shrinks to the API minimum of 1)
+  const view = useDebounced({ bounds, zoom }, 350);
+  const box = view.bounds ? padBox(view.bounds) : null;
+  const cellKm = cellKmForZoom(view.zoom ?? 11);
   return useQuery({
-    queryKey: [...qk.heat, box],
-    queryFn: async () => (await api.getHeat(box as string, 1)).data,
+    queryKey: [...qk.heat, box, cellKm],
+    queryFn: async () => ({ cells: (await api.getHeat(box as string, cellKm)).data, cellKm }),
     enabled: enabled && !!box,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
@@ -131,16 +136,16 @@ export function useAssignmentActions() {
   const claim = useMutation({
     mutationFn: (v: { sos: Sos; responderId?: string; eta?: number }) => api.createAssignment({ sos_id: v.sos.id, responder_id: v.responderId, eta_minutes: v.eta }),
     onSuccess: (_a, v) => {
-      toast('success', 'Case claimed');
+      toast('success', v.responderId ? 'Unit dispatched' : 'Case assigned');
       done(v.sos.id);
     },
     onError: (e, v) => onError(v.sos.id)(e),
   });
   const update = useMutation({
-    mutationFn: (v: { assignment: Pick<Assignment, 'id' | 'sos_id'>; status?: Assignment['status']; eta?: number; outcome?: 'rescued' | 'safe_on_arrival' | 'false_alarm' | 'unreachable' | 'referred'; note?: string }) =>
-      api.updateAssignment(v.assignment.id, { status: v.status, eta_minutes: v.eta, outcome: v.outcome, note: v.note }),
+    mutationFn: (v: { assignment: Pick<Assignment, 'id' | 'sos_id'>; status?: Assignment['status']; eta?: number; responderId?: string; outcome?: 'rescued' | 'safe_on_arrival' | 'false_alarm' | 'unreachable' | 'referred'; note?: string }) =>
+      api.updateAssignment(v.assignment.id, { status: v.status, eta_minutes: v.eta, responder_id: v.responderId, outcome: v.outcome, note: v.note }),
     onSuccess: (a, v) => {
-      toast('success', v.status === 'resolved' ? 'Case resolved' : 'Updated');
+      toast('success', v.status === 'resolved' ? 'Case resolved' : v.responderId ? 'Unit reassigned' : 'Updated');
       done(a.sos_id);
     },
     onError: (e, v) => onError(v.assignment.sos_id)(e),

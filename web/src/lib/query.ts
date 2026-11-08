@@ -38,6 +38,7 @@ export function buildSosQuery(f: QueueFilters, limit = 200): Query {
 
 /** Client-side tab predicate (also used for tab counts over the loaded open set). */
 export function matchesTab(c: Sos, tab: QueueTab): boolean {
+  if (c.category === 'safe' || c.score < 20) return false;
   switch (tab) {
     case 'all':
       return true;

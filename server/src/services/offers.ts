@@ -1,3 +1,4 @@
+import { noteContact } from './contact';
 import { sql } from 'kysely';
 import type { components } from '../generated/api';
 import type { Ctx } from '../ctx';
@@ -52,6 +53,7 @@ export async function createOffer(ctx: Ctx, b: Create, deviceId: string, id?: st
     capacity: b.capacity ?? null, lat: b.lat, lng: b.lng, approx_lat: a.lat, approx_lng: a.lng, radius_km: b.radius_km ?? 3, expires_at: b.expires_at ? new Date(b.expires_at) : null,
   }).onConflict((oc) => oc.column('id').doNothing()).returningAll().executeTakeFirst();
   if (!o) return { offer: (await toOffers(ctx, [await row(ctx, id!)]))[0], created: false };
+  await noteContact(ctx, deviceId, new Date(), { recent: true, source: 'message' });
   await matchOfferToCases(ctx, o);
   const dto = (await toOffers(ctx, [o]))[0];
   ctx.hub.publish('offer.created', () => dto);

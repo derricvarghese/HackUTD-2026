@@ -7,6 +7,7 @@ import type { Publisher } from './ws/hub';
 import type { BackendKeys } from './crypto/keys';
 import type { TriageLlm } from './llm/nemotron';
 import type { TokenBuckets } from './domain/rateLimit';
+import type { PushProvider } from './services/push';
 import type { KeyObject } from 'node:crypto';
 
 export interface DeviceAuth { id: string; publicKey: KeyObject; senderHash: string; flagged: boolean }
@@ -20,6 +21,8 @@ export interface Ctx {
   hub: Publisher;
   keys: BackendKeys;
   llm: TriageLlm;
+  /** notification delivery for welfare check-ins (noop unless FCM is configured) */
+  push: PushProvider;
   limiters: { login: TokenBuckets; register: TokenBuckets; sender: TokenBuckets; heartbeat: TokenBuckets; profile: TokenBuckets; ip: TokenBuckets };
   /** small TTL cache (health ping, mesh stats) */
   cache: Map<string, { at: number; v: unknown }>;

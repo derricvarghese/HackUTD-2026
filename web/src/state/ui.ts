@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { FeedItem } from '../lib/live';
 import { pushFeed } from '../lib/live';
+import type { HeatRadius } from '../lib/heat';
 
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
@@ -13,6 +14,8 @@ export interface Toast {
 interface UiState {
   selectedId: string | null;
   select: (id: string | null) => void;
+  openCaseId: string | null;
+  setOpenCaseId: (id: string | null) => void;
   connection: ConnectionState;
   setConnection: (c: ConnectionState) => void;
   lastEventAt: number | null;
@@ -27,6 +30,11 @@ interface UiState {
   setDemo: (v: boolean) => void;
   layers: Record<LayerKey, boolean>;
   toggleLayer: (k: LayerKey) => void;
+  heatOpacity: number;
+  setHeatOpacity: (v: number) => void;
+  heatRadius: HeatRadius;
+  setHeatRadius: (v: HeatRadius) => void;
+  mapZoom: number | null;
   navOpen: boolean;
   mapBounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null;
 }
@@ -38,6 +46,8 @@ let toastSeq = 1;
 export const useUi = create<UiState>((set) => ({
   selectedId: null,
   select: (selectedId) => set({ selectedId }),
+  openCaseId: null,
+  setOpenCaseId: (openCaseId) => set({ openCaseId }),
   connection: 'connecting',
   setConnection: (connection) => set({ connection }),
   lastEventAt: null,
@@ -55,6 +65,11 @@ export const useUi = create<UiState>((set) => ({
   setDemo: (demo) => set({ demo }),
   layers: { sos: true, approx: true, responders: true, offers: true, deadzones: true, heat: true, geofence: true },
   toggleLayer: (k) => set((s) => ({ layers: { ...s.layers, [k]: !s.layers[k] } })),
+  heatOpacity: 0.85,
+  setHeatOpacity: (heatOpacity) => set({ heatOpacity: Math.min(1, Math.max(0.1, heatOpacity)) }),
+  heatRadius: 'medium',
+  setHeatRadius: (heatRadius) => set({ heatRadius }),
+  mapZoom: null,
   navOpen: false,
   mapBounds: null,
 }));
