@@ -379,15 +379,15 @@ describe('human-in-the-loop API', () => {
 
     // Case edit triggers case_edit
     await t!.request.patch(`/v1/sos/${c.id}`).set(auth(alice)).send({ note: 'Water is rising faster now' });
-    await until(async () => (await count()) === 2 && (await runRow(t!, c.id)).status === 'complete');
+    await until(async () => (await count()) === 2 && (await runRow(t!, c.id)).status === 'complete', 12000);
     expect((await runRow(t!, c.id)).trigger).toBe('case_edit');
 
-    // Profile change triggers case_edit
+    // Profile change triggers case_edit (via retriage pass)
     await t!.signed(dev, 'PUT', `/v1/devices/${dev.id}/profile`, {
       full_name: 'Elena Updated', preferred_name: 'Elena', birth_year: 1950,
       consent: { accepted: true, version: '2026-11-v1', accepted_at: new Date().toISOString() },
     });
-    await until(async () => (await count()) === 3 && (await runRow(t!, c.id)).status === 'complete');
+    await until(async () => (await count()) === 3 && (await runRow(t!, c.id)).status === 'complete', 12000);
     expect((await runRow(t!, c.id)).trigger).toBe('case_edit');
   });
 

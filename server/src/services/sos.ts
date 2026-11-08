@@ -210,10 +210,11 @@ export async function updateSos(ctx: Ctx, id: string, b: SosUpdate & { score_ove
   if (changed.text !== undefined || changed.category !== undefined || changed.people_count !== undefined) {
     const fresh = await getRowOrThrow(ctx, id);
     await persistTriage(ctx, id, rulesOutcome(fresh, await triageCtxFor(ctx, fresh)), { kind: 'responder', id: actor.id });
+  } else {
+    void ctx.agent.trigger(id, 'case_edit');
   }
   await broadcastSos(ctx, 'sos.updated', id);
   if (changed.status !== undefined) await queueStatusUpdate(ctx, id);
-  void ctx.agent.trigger(id, 'case_edit');
   return (await viewsFor(ctx, [await getRowOrThrow(ctx, id)], viewer))[0];
 }
 
