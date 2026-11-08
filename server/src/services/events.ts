@@ -98,6 +98,7 @@ export async function createEvent(ctx: Ctx, b: Create): Promise<EventDto> {
       heartbeat_interval_s: b.heartbeat_interval_seconds ?? ctx.cfg.HEARTBEAT_INTERVAL_S, silence_threshold_s: b.silence_threshold_seconds ?? ctx.cfg.SILENCE_THRESHOLD_S,
       synthetic: b.synthetic ?? false,
     }).returningAll().executeTakeFirstOrThrow();
+    ctx.facilities.schedule(e.id); // hospitals / shelters / fire stations from OpenStreetMap, in the background
     return toEvent(ctx, e);
   } catch (err) {
     if ((err as { code?: string }).code === '23505') throw conflict('Another event is already active; close it first');
@@ -120,6 +121,7 @@ export async function updateEvent(ctx: Ctx, id: string, b: Update): Promise<Even
   if (b.heartbeat_interval_seconds !== undefined) patch.heartbeat_interval_s = b.heartbeat_interval_seconds;
   if (b.silence_threshold_seconds !== undefined) patch.silence_threshold_s = b.silence_threshold_seconds;
   const e = await ctx.db.updateTable('events').set(patch).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
+  if (b.region !== undefined) ctx.facilities.schedule(e.id);
   return toEvent(ctx, e);
 }
 
@@ -161,13 +163,14 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
     await trx.deleteFrom('sos_events').where('sos_id', 'in', sosIds).where('type', '=', 'note').execute();
     await trx.updateTable('sos_events').set({ data: '{}' }).where('sos_id', 'in', sosIds).execute();
     await trx.updateTable('checkins').set({ response_text: null, message: null }).where('sos_id', 'in', sosIds).execute();
+    const runs = await trx.deleteFrom('agent_runs').where('sos_id', 'in', sosIds).returning('id').execute(); // proposals go with them (cascade)
     await trx.deleteFrom('mesh_outbox').where('sos_id', 'in', sosIds).execute();
     await trx.deleteFrom('heartbeats').where('event_id', '=', id).execute();
     await trx.deleteFrom('silent_devices').where('event_id', '=', id).execute();
     // personal identity data goes with the cases it describes: profiles of devices that have no case left anywhere are deleted
     const profiles = await dropOrphanedProfiles({ db: trx }, devs.map((d) => d.device_id!));
     await trx.updateTable('events').set({ status: 'purged', purged_at: now, updated_at: now }).where('id', '=', id).execute();
-    return { purged_profiles: profiles, purged_cases: cases.length, purged_voice_notes: voice.length, purged_images: imgs.length, purged_at: now.toISOString() };
+    return { purged_profiles: profiles, purged_cases: cases.length, purged_voice_notes: voice.length, purged_agent_runs: runs.length, purged_images: imgs.length, purged_at: now.toISOString() };
   });
 }
 

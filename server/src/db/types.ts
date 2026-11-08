@@ -5,9 +5,9 @@ type Table<R, Req extends keyof R> = {
 };
 type TS = Date;
 
-export interface EventRow { id: string; name: string; status: 'active' | 'closed' | 'purged'; region: unknown | null; retention_days: number; heartbeat_interval_s: number; silence_threshold_s: number; synthetic: boolean; closed_at: TS | null; purge_at: TS | null; purged_at: TS | null; created_at: TS; updated_at: TS }
+export interface EventRow { facilities_bbox: string | null; facilities_fetched_at: TS | null; facilities_attempts: number; facilities_source: string | null; id: string; name: string; status: 'active' | 'closed' | 'purged'; region: unknown | null; retention_days: number; heartbeat_interval_s: number; silence_threshold_s: number; synthetic: boolean; closed_at: TS | null; purge_at: TS | null; purged_at: TS | null; created_at: TS; updated_at: TS }
 export interface DeviceRow { id: string; public_key: string; sender_hash: string; platform: string; app_version: string | null; display_name: string | null; push_token: string | null; flagged: boolean; flag_reason: string | null; synthetic: boolean; last_seen_at: TS | null; last_heartbeat_at: TS | null; heartbeat_status: string; last_transport: string | null; last_network: string | null; last_battery: number | null; last_peers_nearby: number | null; last_gateway: boolean | null; created_at: TS; updated_at: TS }
-export interface ResponderRow { id: string; username: string; password_hash: string; name: string; role: 'responder' | 'volunteer' | 'admin'; skills: string[]; organization: string | null; phone: string | null; available: boolean; active: boolean; lat: number | null; lng: number | null; last_seen_at: TS | null; created_at: TS; updated_at: TS }
+export interface ResponderRow { id: string; username: string; password_hash: string; name: string; role: 'responder' | 'volunteer' | 'admin'; skills: string[]; organization: string | null; phone: string | null; available: boolean; active: boolean; lat: number | null; lng: number | null; last_seen_at: TS | null; in_app: boolean; last_app_seen_at: TS | null; location_updated_at: TS | null; available_manual: boolean | null; presence_pinned: boolean; created_at: TS; updated_at: TS }
 export interface RefreshTokenRow { id: string; responder_id: string; token_hash: string; expires_at: TS; revoked: boolean; created_at: TS; updated_at: TS }
 export type TriageStatus = 'provisional' | 'pending' | 'complete' | 'failed';
 export interface SosRow {
@@ -36,6 +36,9 @@ export interface DeadzoneRow { id: string; event_id: string | null; center_lat: 
 export interface MeshOutboxRow { id: string; kind: 'delivered' | 'checkin_request' | 'status_update'; sos_id: string | null; checkin_id: string | null; body: unknown; envelope: unknown; max_hops: number; expires_at: TS; delivered: boolean; created_at: TS; updated_at: TS }
 export interface VoiceNoteRow { id: string; sos_id: string; mime: string; size_bytes: number; data: Buffer | null; transcript: string | null; created_at: TS; updated_at: TS }
 export interface CaseImageRow { id: string; sos_id: string; device_id: string | null; uploaded_by_kind: 'device' | 'responder'; responder_id: string | null; content_type: 'image/jpeg' | 'image/png'; bytes: number; width: number; height: number; caption: string | null; data: Buffer; created_at: TS }
+export interface FacilityRow { id: string; event_id: string; kind: 'hospital' | 'shelter' | 'fire_station'; name: string; lat: number; lng: number; osm_id: string | null; tags: unknown; created_at: TS }
+export interface AgentRunRow { id: string; sos_id: string; status: 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'; trigger: string; model: string | null; priority: number; attempts: number; steps: unknown; assessment: unknown | null; signals: unknown | null; error: string | null; tokens: unknown | null; claimed_at: TS | null; started_at: TS | null; finished_at: TS | null; duration_ms: number | null; created_at: TS; updated_at: TS }
+export interface AgentProposalRow { id: string; run_id: string; sos_id: string; kind: string; responder_id: string | null; eta_minutes: number | null; equipment: unknown; facility: unknown | null; victim_message: string | null; notes: string | null; status: 'proposed' | 'approved' | 'rejected' | 'superseded' | 'expired'; decided_by: string | null; decided_at: TS | null; decision_note: string | null; created_at: TS; updated_at: TS }
 
 export interface Database {
   events: Table<EventRow, 'name'>;
@@ -55,5 +58,8 @@ export interface Database {
   mesh_outbox: Table<MeshOutboxRow, 'kind' | 'envelope' | 'expires_at'>;
   voice_notes: Table<VoiceNoteRow, 'sos_id' | 'mime' | 'size_bytes'>;
   case_images: Table<CaseImageRow, 'id' | 'sos_id' | 'uploaded_by_kind' | 'content_type' | 'bytes' | 'width' | 'height' | 'data'>;
+  facilities: Table<FacilityRow, 'event_id' | 'kind' | 'name' | 'lat' | 'lng'>;
+  agent_runs: Table<AgentRunRow, 'sos_id' | 'trigger'>;
+  agent_proposals: Table<AgentProposalRow, 'run_id' | 'sos_id'>;
   profiles: Table<ProfileRow, 'device_id' | 'full_name' | 'name_norm' | 'enc' | 'consent_version' | 'consent_accepted_at'>;
 }

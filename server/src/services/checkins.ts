@@ -153,6 +153,7 @@ export async function applyResponse(ctx: Ctx, c: CheckinRow & { sos_device_id: s
   const dto = checkinDto(upd);
   ctx.hub.publish('checkin.responded', () => dto);
   await broadcastSos(ctx, 'sos.updated', c.sos_id);
+  if (kind === 'need_urgent_help') void ctx.agent.trigger(c.sos_id, 'checkin');
   return dto;
 }
 
@@ -238,6 +239,7 @@ export async function checkinTick(ctx: Ctx, now = new Date()): Promise<CheckinTi
       });
       if (newly) out.missed++;
       await broadcastSos(ctx, c.sos_silent ? 'sos.updated' : 'sos.silent', c.sos_id);
+      if (newly) void ctx.agent.trigger(c.sos_id, 'contact_change');
     }
     const since = (c.last_reminded_at ?? c.deadline_at).getTime();
     if (now.getTime() >= since + reminderCadenceS(ctx.cfg, c.reminder_count) * 1000) {

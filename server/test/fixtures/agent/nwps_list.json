@@ -1,0 +1,16 @@
+{
+ "gauges": [
+  {
+   "lid": "DALT2",
+   "name": "Trinity River at Dallas",
+   "latitude": 32.77,
+   "longitude": -96.82
+  },
+  {
+   "lid": "CART2",
+   "name": "Elm Fork Trinity River near Carrollton",
+   "latitude": 32.97,
+   "longitude": -96.89
+  }
+ ]
+}

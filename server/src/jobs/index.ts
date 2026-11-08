@@ -3,10 +3,11 @@ import { checkinTick } from '../services/checkins';
 import { silenceTick } from '../services/heartbeats';
 import { deadzoneTick } from '../services/map';
 import { meshStatsTick } from '../services/mesh';
+import { presenceTick } from '../services/responders';
 import { purgeTick } from '../services/purge';
 
 // the tick functions are the public job API: tests call them with an injected `now`
-export { checkinTick, silenceTick, deadzoneTick, meshStatsTick, purgeTick };
+export { checkinTick, silenceTick, deadzoneTick, meshStatsTick, purgeTick, presenceTick };
 
 interface Job { name: string; key: number; everyS: number; run: (ctx: Ctx, now: Date) => Promise<unknown> }
 
@@ -18,6 +19,7 @@ export function startJobs(ctx: Ctx): { stop(): void } {
     { name: 'silenceTick', key: 727011, everyS: demo ? 10 : 30, run: silenceTick },
     { name: 'deadzoneTick', key: 727012, everyS: demo ? 20 : 60, run: deadzoneTick },
     { name: 'meshStatsTick', key: 727013, everyS: 10, run: meshStatsTick },
+    { name: 'presenceTick', key: 727015, everyS: demo ? 10 : 30, run: presenceTick },
     { name: 'purgeTick', key: 727014, everyS: demo ? 60 : 3600, run: purgeTick },
   ];
   const timers: NodeJS.Timeout[] = [];

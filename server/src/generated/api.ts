@@ -109,6 +109,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/me/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set responder presence (app online/offline)
+         * @description The mobile app calls `online` when responder mode is active and every 60 s as a keepalive, and `offline` when it is left. Only `client=app` (default) changes `in_app` / `available`;
+         *     `client=dashboard` is accepted and changes nothing. Any signed-in responder or volunteer. See "Responder presence" in the API description.
+         */
+        put: operations["setMyPresence"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/devices": {
         parameters: {
             query?: never;
@@ -380,6 +401,121 @@ export interface paths {
         post?: never;
         /** Delete the voice note */
         delete: operations["deleteVoiceNote"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sos/{sosId}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Latest dispatch-agent run of a case (steps, assessment, current proposal)
+         * @description Admins and responders. Volunteers get `403`. `404` when the case never had a run. While a run is `running` the response already holds the steps
+         *     recorded so far (they also stream over the `agent.step` WebSocket event). The trace never contains exact coordinates, names, phone numbers,
+         *     addresses or contacts: tool results are summarised, and model-written text is scrubbed.
+         */
+        get: operations["getCaseAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sos/{sosId}/agent/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        /** Run history of a case (compact, newest first) */
+        get: operations["listCaseAgentRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sos/{sosId}/agent/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-run the dispatch agent now
+         * @description Queues a manual run (exempt from the 2-minute re-run throttle). If a run is already queued or running for the case, that run is returned (re-triggers coalesce).
+         *     `409` when the agent is disabled or the case is not open. Follow progress through `agent.step` / `agent.updated` or `GET /sos/{sosId}/agent`.
+         */
+        post: operations["runCaseAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sos/{sosId}/agent/proposals/{proposalId}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+                proposalId: components["parameters"]["ProposalId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a dispatch proposal (creates the assignment)
+         * @description Human-in-the-loop gate. An admin may approve any open proposal; a responder only a proposal that names themselves (otherwise `403`), and approving claims the case for them.
+         *     The assignment is created through the normal assignment rules (`409` if the case is already claimed or closed; the proposal then stays `proposed`) and the usual
+         *     `status_update` for the person's phone is queued as always. With `send_victim_message: true` the proposal's `victim_message` is additionally queued to the person as a `status_update`,
+         *     only after the assignment succeeded. `409` when the proposal was already decided or superseded. A proposal that names no responder needs `responder_id` from an admin.
+         */
+        post: operations["approveAgentProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sos/{sosId}/agent/proposals/{proposalId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+                proposalId: components["parameters"]["ProposalId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject a dispatch proposal
+         * @description Admins, or the responder the proposal names. `409` when it was already decided or superseded. The case keeps its score and status; the agent may propose again on a later run.
+         */
+        post: operations["rejectAgentProposal"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -829,6 +965,29 @@ export interface paths {
         head?: never;
         /** Edit event (name, region, retention) (admin) */
         patch: operations["updateEvent"];
+        trace?: never;
+    };
+    "/events/{eventId}/facilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eventId: components["parameters"]["EventId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Hospitals, shelters and fire stations of the event area
+         * @description Public infrastructure from OpenStreetMap (Overpass), ingested in the background when the event is created or its geofence changes. Any responder or volunteer can read it
+         *     (the dashboard may draw it). In demo mode a small synthetic set is seeded when Overpass is unavailable (`source: synthetic_demo`). Empty `data` with `source: null` means not ingested yet.
+         */
+        get: operations["listEventFacilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/events/{eventId}/close": {
@@ -1429,6 +1588,11 @@ export interface components {
         };
         TriageReason: {
             /**
+             * @description Set on reasons contributed by the dispatch agent (`source` is `llm`). The agent's `urgency_delta` is applied through the same clamp as the extraction (combined adjustment within +/-15, never below the rule floors).
+             * @enum {string}
+             */
+            tag?: "agent";
+            /**
              * @description `silence` = lost contact or unanswered welfare check-ins; `checkin` = the person asked for urgent help
              * @enum {string}
              */
@@ -1651,6 +1815,13 @@ export interface components {
             /** Format: uuid */
             event_id?: string | null;
             has_voice_note?: boolean;
+            /**
+             * @description State of the latest dispatch-agent run for this case (`none` = never ran, or the agent is disabled)
+             * @enum {string}
+             */
+            agent_status?: "none" | "queued" | "running" | "complete" | "failed";
+            /** @description The agent's one-paragraph assessment when its latest run is `complete`, else null. Safe for queue cards; never contains coordinates or names. */
+            agent_summary?: string | null;
             /** @description Number of photos attached (including those of merged duplicates). A number only: ids and bytes are limited to the owning device, admins and the active assignee, see `SosDetail.images`. */
             image_count?: number;
             /** @description Informational: an SOS created offline said this many photos will follow once the phone has signal. Compare with `image_count`. */
@@ -1736,7 +1907,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            type: "reported" | "received_via_gateway" | "triaged" | "merged" | "silent_flagged" | "heartbeat_silent" | "contact_restored" | "checkin_sent" | "checkin_responded" | "checkin_missed" | "self_resolved" | "urgent_help_requested" | "assigned" | "en_route" | "on_scene" | "resolved" | "released" | "note" | "edited" | "closed";
+            type: "reported" | "received_via_gateway" | "triaged" | "merged" | "silent_flagged" | "heartbeat_silent" | "contact_restored" | "checkin_sent" | "checkin_responded" | "checkin_missed" | "self_resolved" | "urgent_help_requested" | "assigned" | "en_route" | "on_scene" | "resolved" | "released" | "note" | "edited" | "closed" | "agent_assessed" | "agent_approved" | "agent_rejected";
             actor?: {
                 /** @enum {string} */
                 kind?: "system" | "responder" | "victim";
@@ -1889,12 +2060,37 @@ export interface components {
             password?: string;
             role?: components["schemas"]["Role"];
             skills?: string[];
+            /** @description Manual override. In the app, `false` sticks for the whole app session (presence `online` will not undo it) and `true` clears the override; dashboards edit the flag freely for dashboard-only responders. */
             available?: boolean;
             /** @description Share the responder's current position (also refreshes `last_seen_at`, which dashboards use to grey out stale positions). Send `null` to stop sharing and clear the stored position. */
             location?: components["schemas"]["LatLng"] | null;
             organization?: string;
             phone?: string;
         };
+        /**
+         * @example {
+         *       "id": "0192a7d4-1c2e-7000-8a00-0000000000c1",
+         *       "username": "alice",
+         *       "name": "Alice Rivera",
+         *       "role": "responder",
+         *       "skills": [
+         *         "boat",
+         *         "rescue"
+         *       ],
+         *       "organization": "State Farm CAT Team",
+         *       "available": true,
+         *       "location": {
+         *         "lat": 32.78,
+         *         "lng": -96.8
+         *       },
+         *       "active_assignments": 0,
+         *       "last_seen_at": "2026-11-07T17:02:00Z",
+         *       "in_app": true,
+         *       "last_app_seen_at": "2026-11-07T17:02:00Z",
+         *       "location_updated_at": "2026-11-07T17:01:40Z",
+         *       "available_manual": null
+         *     }
+         */
         Responder: {
             /** Format: uuid */
             id: string;
@@ -1903,11 +2099,42 @@ export interface components {
             role: components["schemas"]["Role"];
             skills?: string[];
             organization?: string | null;
+            /** @description Can be dispatched. Set automatically by app presence; the app user can override it while in the app. */
             available?: boolean;
+            /** @description Shared position (stored exactly; responders and admins see it, volunteers never see others'). Null when not sharing. */
             location?: components["schemas"]["LatLng"] | null;
             active_assignments?: number;
             /** Format: date-time */
             last_seen_at?: string | null;
+            /** @description True while the mobile app is considered active (online via presence/WebSocket within RESPONDER_PRESENCE_TIMEOUT_S). Dashboard sessions never set it. */
+            in_app?: boolean;
+            /**
+             * Format: date-time
+             * @description Last sign of life from the app (presence call, app WebSocket, or app PATCH)
+             */
+            last_app_seen_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When `location` was last written; use it for staleness
+             */
+            location_updated_at?: string | null;
+            /** @description `false` while the responder explicitly switched availability off during this app session (online will not flip `available` back on); null otherwise */
+            available_manual?: boolean | null;
+        };
+        /**
+         * @example {
+         *       "state": "online",
+         *       "client": "app"
+         *     }
+         */
+        PresenceUpdate: {
+            /** @enum {string} */
+            state: "online" | "offline";
+            /**
+             * @default app
+             * @enum {string}
+             */
+            client: "app" | "dashboard";
         };
         /**
          * @description `active` heartbeats arriving; `quiet` missed the threshold (probably no connectivity); `distress` missed it while neighbours still report or with an open SOS; `stopped` event closed or user opted out; `unknown` never heartbeated. Prefer `Device.connectivity`.
@@ -2233,6 +2460,216 @@ export interface components {
         };
         /**
          * @example {
+         *       "index": 3,
+         *       "turn": 1,
+         *       "type": "tool_result",
+         *       "tool": "get_river_gauges",
+         *       "summary": "1 gauge(s); nearest Demo Creek near the incident (synthetic): 9.8 ft, rising, moderate",
+         *       "ok": true,
+         *       "ms": 412,
+         *       "synthetic": true,
+         *       "at": "2026-11-08T16:00:03Z"
+         *     }
+         */
+        AgentStep: {
+            index: number;
+            /** @description Model turn that produced the step */
+            turn: number;
+            /** @enum {string} */
+            type: "plan" | "tool_call" | "tool_result" | "final";
+            /** @example get_weather_alerts */
+            tool: string | null;
+            /** @description Short human-readable line (a tool result is summarised, never dumped). Never holds coordinates, names or contacts. */
+            summary: string;
+            /** @description tool_result / final: success. null for plan and tool_call */
+            ok: boolean | null;
+            /** @description Duration of the tool call */
+            ms: number | null;
+            /** @description True when the result came from a demo fixture (AGENT_DEMO_WEATHER) instead of the real service */
+            synthetic?: boolean;
+            cached?: boolean;
+            /** Format: date-time */
+            at: string;
+        };
+        AgentRecommendation: {
+            /**
+             * Format: uuid
+             * @description A responder returned by `list_available_responders` in this run, or null
+             */
+            responder_id: string | null;
+            eta_minutes: number | null;
+            /**
+             * @example [
+             *       "boat",
+             *       "life jackets",
+             *       "medical kit"
+             *     ]
+             */
+            equipment: string[];
+            facility: {
+                /** @example hospital */
+                kind: string;
+                name: string;
+                distance_km: number;
+            } | null;
+            /** @description Plain-language text for the person; makes no arrival-time promise unless eta_minutes is set. Sent to the phone only if the approver chooses to. */
+            victim_message: string;
+            notes: string;
+        };
+        AgentAssessment: {
+            summary: string;
+            /** @description What the agent asked for (clamped to +/-15). See `score_effect` for what was applied. */
+            urgency_delta: number;
+            confidence: components["schemas"]["Confidence"];
+            evidence: {
+                /**
+                 * @description Tool name
+                 * @example get_weather_alerts
+                 */
+                source: string;
+                finding: string;
+            }[];
+            risks: string[];
+            recommendation: components["schemas"]["AgentRecommendation"];
+            /** @description The agent's urgency_delta goes through the same clamp as the AI extraction: the combined LLM adjustment never exceeds +/-15 and the score never goes below the rule floors. Absent when nothing was applied. */
+            score_effect?: {
+                requested_delta: number;
+                applied_delta: number;
+                score_before: number;
+                score_after: number;
+            };
+        };
+        AgentProposal: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            run_id: string;
+            /** Format: uuid */
+            sos_id: string;
+            /** @enum {string} */
+            kind: "dispatch";
+            /** Format: uuid */
+            responder_id: string | null;
+            responder_name?: string | null;
+            eta_minutes: number | null;
+            equipment: string[];
+            facility: {
+                kind: string;
+                name: string;
+                distance_km: number;
+            } | null;
+            victim_message: string | null;
+            notes?: string | null;
+            /**
+             * @description A new proposal supersedes older open ones for the case
+             * @enum {string}
+             */
+            status: "proposed" | "approved" | "rejected" | "superseded" | "expired";
+            /** Format: uuid */
+            decided_by?: string | null;
+            /** Format: date-time */
+            decided_at?: string | null;
+            decision_note?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AgentRun: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sos_id: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "complete" | "failed" | "cancelled";
+            /**
+             * @description What started the run
+             * @enum {string}
+             */
+            trigger: "new_case" | "contact_change" | "checkin" | "nearby_critical" | "weather_alert" | "case_edit" | "manual" | "sweep";
+            model?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            duration_ms?: number | null;
+            steps: components["schemas"]["AgentStep"][];
+            assessment?: components["schemas"]["AgentAssessment"] | null;
+            /** @description Why a run failed (timeout, llm unavailable, invalid assessment...). The rules score and the AI extraction still stand. */
+            error?: string | null;
+            tokens?: {
+                prompt?: number;
+                completion?: number;
+                turns?: number;
+            } | null;
+            /** @description The case's current (newest not superseded) proposal */
+            proposal?: components["schemas"]["AgentProposal"] | null;
+        };
+        AgentRunSummary: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "complete" | "failed" | "cancelled";
+            trigger: string;
+            model?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            finished_at?: string | null;
+            duration_ms?: number | null;
+            step_count: number;
+            summary?: string | null;
+            confidence?: components["schemas"]["Confidence"] | null;
+            error?: string | null;
+            /** @enum {string|null} */
+            proposal_status?: "proposed" | "approved" | "rejected" | "superseded" | "expired" | null;
+        };
+        AgentProposalApprove: {
+            /** @description Overrides the proposed ETA */
+            eta_minutes?: number;
+            /** @description Stored as a case note */
+            note?: string;
+            /**
+             * @description Also queue the proposal's `victim_message` to the person as a `status_update` (after the assignment succeeded)
+             * @default false
+             */
+            send_victim_message: boolean;
+            /**
+             * Format: uuid
+             * @description Admin only; needed when the proposal names no responder
+             */
+            responder_id?: string;
+        };
+        AgentProposalReject: {
+            reason?: string;
+        };
+        AgentProposalDecision: {
+            proposal: components["schemas"]["AgentProposal"];
+            assignment: components["schemas"]["Assignment"];
+        };
+        /** @enum {string} */
+        FacilityKind: "hospital" | "shelter" | "fire_station";
+        Facility: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["FacilityKind"];
+            name: string;
+            lat: number;
+            lng: number;
+            /** @example way/401521703 */
+            osm_id?: string | null;
+            /** @description True for the demo-mode fallback set */
+            synthetic?: boolean;
+        };
+        FacilityList: {
+            data: components["schemas"]["Facility"][];
+            /** @enum {string|null} */
+            source: "osm" | "synthetic_demo" | null;
+            /** Format: date-time */
+            fetched_at: string | null;
+        };
+        /**
+         * @example {
          *       "event": "sos.silent",
          *       "ts": "2026-11-07T17:02:00Z",
          *       "data": {
@@ -2245,7 +2682,7 @@ export interface components {
          */
         WsFrame: {
             /** @enum {string} */
-            event: "sos.created" | "sos.updated" | "sos.merged" | "sos.silent" | "heartbeat.silent" | "heartbeat.resumed" | "profile.updated" | "checkin.sent" | "checkin.responded" | "assignment.created" | "assignment.updated" | "deadzones.updated" | "mesh.stats" | "pong";
+            event: "sos.created" | "sos.updated" | "sos.merged" | "sos.silent" | "heartbeat.silent" | "heartbeat.resumed" | "profile.updated" | "checkin.sent" | "checkin.responded" | "assignment.created" | "assignment.updated" | "deadzones.updated" | "responder.updated" | "mesh.stats" | "agent.step" | "agent.updated" | "pong";
             /** Format: date-time */
             ts: string;
             data: unknown;
@@ -2278,6 +2715,60 @@ export interface components {
         WsEventDeadzones: {
             data?: components["schemas"]["Deadzone"][];
         };
+        /**
+         * @description Payload for `agent.step`: one step of a running dispatch-agent run, streamed as it happens (same fields as `AgentStep` plus the run and case ids). Public/safe fields only:
+         *     no coordinates, names or free text from the case. Not sent to volunteers.
+         * @example {
+         *       "run_id": "0192a7d4-1c2e-7000-8a00-0000000000b1",
+         *       "sos_id": "0192a7d4-1c2e-7000-8a00-0000000000a1",
+         *       "index": 2,
+         *       "type": "tool_result",
+         *       "tool": "get_weather_alerts",
+         *       "summary": "1 alert(s): Flash Flood Warning",
+         *       "ok": true,
+         *       "ms": 188,
+         *       "synthetic": true
+         *     }
+         */
+        WsEventAgentStep: {
+            /** Format: uuid */
+            run_id: string;
+            /** Format: uuid */
+            sos_id: string;
+            index: number;
+            /** @enum {string} */
+            type: "plan" | "tool_call" | "tool_result" | "final";
+            tool: string | null;
+            summary: string;
+            ok: boolean | null;
+            ms: number | null;
+            synthetic?: boolean;
+        };
+        /**
+         * @description Payload for `agent.updated`: a run changed state (queued, running, complete, failed, cancelled) or its proposal was decided. Carries the current proposal when there is one.
+         *     Refetch `GET /sos/{sosId}/agent` for the full trace. Not sent to volunteers.
+         */
+        WsEventAgentUpdated: {
+            /** Format: uuid */
+            run_id: string;
+            /** Format: uuid */
+            sos_id: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "complete" | "failed" | "cancelled";
+            trigger: string;
+            summary?: string | null;
+            confidence?: string | null;
+            duration_ms?: number | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            error?: string | null;
+            proposal?: components["schemas"]["AgentProposal"] | null;
+        };
+        /**
+         * @description Payload for `responder.updated`: the full `Responder` (position, availability, in-app presence, active assignment count). Coalesced to at most one frame per responder per second.
+         *     Sent only to admin and responder connections (never volunteers) on channel `responders`. Positions are exact (responders chose to share).
+         */
+        WsEventResponder: components["schemas"]["Responder"];
         /** @description Payload for `mesh.stats` (pushed about every 10 s while connected) */
         WsEventMeshStats: components["schemas"]["MeshStats"];
     };
@@ -2347,6 +2838,7 @@ export interface components {
         AssignmentId: string;
         EventId: string;
         ResponderId: string;
+        ProposalId: string;
         /** @description Client-generated UUID of the photo (makes uploads idempotent) */
         ImageId: string;
     };
@@ -2388,6 +2880,15 @@ export interface operations {
                             queue_depth?: number;
                             /** @description Age in seconds of the oldest case still waiting for its AI pass (0 when the queue is empty) */
                             oldest_pending_seconds?: number;
+                        };
+                        /** @description Dispatch agent. `disabled` when `AGENT_ENABLED` is off or the LLM has no tool calling; `degraded` while the LLM circuit breaker is open. */
+                        agent?: {
+                            /** @enum {string} */
+                            status: "ok" | "degraded" | "disabled";
+                            /** @description Runs waiting to start (all server instances) */
+                            queue_depth: number;
+                            /** @description Runs executing now (all server instances) */
+                            running: number;
                         };
                     };
                 };
@@ -2517,6 +3018,32 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    setMyPresence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PresenceUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated responder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Responder"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listDevices: {
@@ -3257,6 +3784,149 @@ export interface operations {
             422: components["responses"]["ValidationError"];
         };
     };
+    getCaseAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest run */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listCaseAgentRuns: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runs without their steps */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AgentRunSummary"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    runCaseAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run queued (or already active) */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    approveAgentProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+                proposalId: components["parameters"]["ProposalId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AgentProposalApprove"];
+            };
+        };
+        responses: {
+            /** @description Approved; the assignment now exists */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentProposalDecision"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    rejectAgentProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sosId: components["parameters"]["SosId"];
+                proposalId: components["parameters"]["ProposalId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AgentProposalReject"];
+            };
+        };
+        responses: {
+            /** @description Rejected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentProposal"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     listCaseImages: {
         parameters: {
             query?: never;
@@ -3731,6 +4401,8 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 skill?: string;
                 available?: boolean;
+                /** @description Only responders currently active in the mobile app (true) or not (false) */
+                in_app?: boolean;
             };
             header?: never;
             path?: never;
@@ -3738,7 +4410,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Responders */
+            /** @description Responders. Volunteers get `location: null` for everyone but themselves. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4322,6 +4994,30 @@ export interface operations {
             422: components["responses"]["ValidationError"];
         };
     };
+    listEventFacilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eventId: components["parameters"]["EventId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FacilityList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     closeEvent: {
         parameters: {
             query?: never;
@@ -4369,6 +5065,8 @@ export interface operations {
                         purged_voice_notes?: number;
                         /** @description Case photos deleted */
                         purged_images?: number;
+                        /** @description Dispatch-agent runs deleted (their proposals go with them) */
+                        purged_agent_runs?: number;
                         /** @description Identity profiles deleted because their device has no case left (see Profiles lifecycle) */
                         purged_profiles?: number;
                         /** Format: date-time */

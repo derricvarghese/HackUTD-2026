@@ -1,0 +1,33 @@
+{
+ "lid": "DALT2",
+ "usgsId": "08057000",
+ "name": "Trinity River at Dallas",
+ "status": {
+  "observed": {
+   "primary": 28.4,
+   "primaryUnit": "ft",
+   "floodCategory": "minor",
+   "validTime": "2026-11-08T05:15:00Z"
+  },
+  "forecast": {
+   "primary": -999,
+   "floodCategory": "fcst_not_current"
+  }
+ },
+ "flood": {
+  "categories": {
+   "major": {
+    "stage": 44
+   },
+   "moderate": {
+    "stage": 38
+   },
+   "minor": {
+    "stage": 30
+   },
+   "action": {
+    "stage": 28
+   }
+  }
+ }
+}

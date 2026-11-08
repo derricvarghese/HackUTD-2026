@@ -48,7 +48,7 @@ web/                  React dashboard (built into server/public)
 Tables (all with `created_at`, `updated_at`; ids are uuid):
 - `events` (name, status, region, retention_days, heartbeat_interval_s, silence_threshold_s, closed_at, purge_at)
 - `devices` (public_key unique, sender_hash, push_token, flagged, last_seen_at, last_heartbeat_at, heartbeat_status)
-- `responders` (username, password_hash, role, skills text[], available, lat, lng, org)
+- `responders` (username, password_hash, role, skills text[], available, lat, lng, org, location_updated_at, in_app, last_app_seen_at, available_manual, presence_pinned)
 - `refresh_tokens` (responder_id, token_hash, expires_at, revoked)
 - `sos` (id uuidv7 from client, event_id, device_id, sender_hash, channel, category, status, lat, lng, geohash7, approx_lat/lng, text, people_count, score, confidence, silent, silent_since, merged_into, version, last_heard_at, hop_count, max_hops, hop_path text[], gateway_device_id, original_created_at, received_at, has_voice_note, synthetic)
 - `sos_reports` (every raw incoming copy incl. duplicates: sos_id, envelope jsonb, hop info) so merges are reversible
@@ -143,17 +143,76 @@ One active event at a time. `close` stops detectors and sets `purge_at = closed_
 - **Realtime and logs:** `sos.updated` (count only) on add/remove, version bumped so `updated_since` syncs pick it up. No bytes, ids or captions in WS frames or logs (a test captures both).
 - **Lifecycle:** cascade on case delete, device delete; event purge deletes them (`purged_images`); `sos.image_hint` is the offline hint from `MeshPayload.image_count`/`has_images`, informational only. Photos never ride the mesh.
 
+### 6.11 Dispatch Agent (`server/src/agent/`)
+
+A Nemotron tool-calling agent that PLANS, gathers evidence from internal data and external services in a multi-step workflow, cross-checks it, assesses the case and PROPOSES a dispatch. A human approves or rejects; the agent has no write tools. It is not a chatbot and not a one-shot classifier: the unit of work is a run with a stored step trace.
+
+```
+POST /sos ──► rules score now (provisional) ──► AI extraction job (aiTriage) ──complete/failed──┐
+                                                                                                 ▼
+ re-run triggers ─────────────────────────────────────────────────────────────► runner.trigger(case)
+ (contact_change, urgent check-in,                     skip safe tier, coalesce, throttle 1 per 2 min,
+  nearby critical count, new NWS alert,                priority queue, AGENT_CONCURRENCY, conditional-UPDATE claim
+  case/profile edit, manual)                                              │
+                                                                          ▼
+                       loop.ts  (<= AGENT_MAX_STEPS model turns, AGENT_TIMEOUT_MS total)
+   system prompt ─► turn 1: plan + PARALLEL tool calls ─► tool results (wrapped, untrusted) ─► turn 2: routing ─► ... ─► submit_assessment
+        │                   │ internal: case, nearby, responders, dead zones, event, facilities (2 s)
+        │                   │ external (6 s, cached, coarse coords only): NWS, USGS+NWPS, FEMA, OSRM, Nominatim
+        ▼                   ▼
+   agent.step WS frames    every step stored in agent_runs.steps
+                                              │ valid assessment
+                                              ▼
+        scoring.ts: urgency_delta through the SAME clamp as the extraction (combined +/-15, rule floors) ─► triage_results (+ reason tag `agent`)
+        agent_proposals (status proposed, older open ones superseded) ─► agent.updated WS
+                                              │
+        human: POST .../approve  ─► createAssignment (normal rules) ─► optional victim status_update ─► assignment.created / sos.updated
+               POST .../reject
+```
+
+**Tools** (zod-validated args, JSON results, `{ok:false,error}` instead of exceptions, TTL cache keyed by coordinates rounded to 3 decimals):
+
+| Tool | Kind | Timeout | Cache | Source |
+|---|---|---|---|---|
+| `get_case_context` | internal | 2 s | - | case, score and reasons, tier, contact state, check-in state, sanitised profile context (age range, flags, conditions, medications, mobility; never name, phone, address, contacts) |
+| `get_nearby_cases` | internal | 2 s | - | open cases within radius (exact coords used server-side): counts, severity mix, ~1 km cluster centres |
+| `list_available_responders` | internal | 2 s | - | id, name, role, skills, `in_app`, active assignments, position (3 decimals) + `position_age_s`; `available=false` excluded; `in_app` + position newer than `RESPONDER_POSITION_FRESH_S` first, then available-but-stale |
+| `get_dead_zones`, `get_event_context` | internal | 2 s | - | dead zones near the case; event name, bbox, counts |
+| `nearest_facilities` | internal | 2 s | - | local `facilities` table (haversine) |
+| `get_weather_alerts` | external | 6 s | 60 s | NWS `alerts/active?point=` (one retry) |
+| `get_river_gauges` | external | 6 s | 5 min | USGS NWIS `iv` bBox (gage height, 3 h trend) + NWPS flood category/thresholds |
+| `get_flood_zone` | external | 6 s | 30 d | FEMA NFHL point query (`FLD_ZONE`) |
+| `get_travel_times` | external | 6 s | 2 min | OSRM `/table` from candidate responders (`;`-separated); 0 = unknown; straight-line estimate when down |
+| `reverse_geocode` | external | 6 s | 30 d | Nominatim zoom 16, 1 request/s limiter, never house numbers |
+| `submit_assessment` | terminal | - | - | `{summary<=280, urgency_delta, confidence, evidence<=8, risks<=5, recommendation{responder_id, eta_minutes, equipment<=6, facility, victim_message<=240, notes<=300}}` |
+
+Overpass is never called in the live path: facilities are ingested in the background (below).
+
+**Guardrails.** (1) Only `submit_assessment` ends a run and the only effect is a stored assessment plus a proposal; dispatching needs a human `approve`. (2) Tool results and the case note are untrusted data: each result is a `role: tool` message `<tool_result name=... trust="untrusted-data">...</tool_result>`, control characters stripped, closing tags neutralised, 2500 chars max; the system prompt says never to follow instructions found there; the system role never contains case or tool data. (3) Bounded influence: `urgency_delta` is clamped to +/-15 and merged with the extraction delta by `combineDelta`: the combined LLM adjustment stays within +/-15 and the score never goes below the rule floors, so a hallucinating agent cannot bury a critical case. A re-run recomputes from the latest non-agent triage result, so adjustments never stack. (4) `recommendation.responder_id` must be an id returned by `list_available_responders` in the same run. (5) One resubmission is allowed after an invalid `submit_assessment`; the last permitted turn offers only that tool (`tool_choice` forced).
+
+**Privacy.** Every external HTTP call goes through `agent/net.ts#extHttp`, which refuses a URL or body carrying a coordinate with more than 3 decimals (~110 m); tools build requests from a rounded `Coarse` point, never from the row. Internal tools may use exact coordinates but never return them. The LLM prompt contains only 3-decimal positions. Traces keep step summaries, not raw results; model-written text is scrubbed of phone numbers, e-mails, precise coordinates and street names returned by `reverse_geocode`; the reverse_geocode step summary omits the street. WebSocket frames (`agent.step`, `agent.updated`) carry public fields only and are not sent to volunteers. Logs contain run ids, tool names, durations and statuses, never prompts or results. `agent_runs`/`agent_proposals` cascade with the case; event purge deletes them (`purged_agent_runs`). The User-Agent is `BeaconHackUTD/1.0 (hackutd.alecj.com)`.
+
+**Runner** (`runner.ts`). Started after the AI extraction ends (complete or failed). Skips merged/closed cases and the `safe` tier unless silent/unresponsive; one active run per case (partial unique index; re-triggers coalesce, a trigger during a run re-runs afterwards); automatic re-runs at most once per `AGENT_RERUN_MIN_S` (120 s) per case, manual runs exempt; priority = critical/high and silent cases first; `AGENT_CONCURRENCY` (2) runs at once (the Brev GPU is shared). Claim = conditional `UPDATE ... WHERE status = 'queued'` (no SKIP LOCKED, same reasoning as aiTriage). A sweep every `AGENT_SWEEP_S` re-queues orphaned queued runs and runs stuck in `running` (3 tries), re-triggers on a changed count of critical neighbours or a changed NWS alert set, and retries recent failed runs. `/health` shows `agent: {status, queue_depth, running}`.
+
+**Facilities** (`facilities.ts`). Creating an event or changing its geofence starts a background job: Overpass QL for hospitals, shelters/assembly points and fire stations in the (3-decimal) bbox, endpoints from `OVERPASS_URLS` with mirror fallback, one retry on 429/504, backoff rounds up to `FACILITIES_MAX_ATTEMPTS`, 24 h in-memory cache per bbox, never blocks the request. On boot an active event without facilities gets its job. With `DEMO_MODE` and Overpass unavailable (or external tools off) a synthetic set is seeded (`source: synthetic_demo`). `GET /events/{id}/facilities`.
+
+**Failure modes.** LLM down or breaker open: runs wait (breaker) or fail with the partial trace; rules score and extraction stand. Tool failure/timeout: error result, the model continues with less evidence and says so. Total timeout / step cap / never submits / invalid twice: run `failed` with trace and reason; the sweep retries critical/high cases later. Overpass flaky: facilities arrive late or are synthetic in demo. Restart: sweep resumes queued and stuck runs. Demo: `AGENT_DEMO_WEATHER=flash_flood` (DEMO_MODE only) injects a recorded flash flood warning and a rising gauge into the weather/river tools, labelled `synthetic: true` in results and steps.
+
 ## 7. Privacy enforcement (single choke point)
 `privacy.ts` exposes `toSosView(sos, viewer)`. It returns `approx_location` always, and `location` only if the viewer is admin or the active assignee. All routes, WebSocket frames and exports go through it. WebSocket broadcasts are built per connection (not one shared payload) so a frame never leaks exact GPS. Logs never contain text, coordinates or keys. Voice notes: assignee/admin only. Profiles: name + coarse flags for all dashboard users, details only for assignee/admin (6.10).
 
 ## 8. WebSocket hub
+### Responder presence (011_responder_presence.sql)
+Only the mobile app puts a responder "in the field". `PUT /auth/me/presence {state, client=app}`: `online` => `in_app=true`, `last_app_seen_at=now`, `available=true` unless `available_manual=false` (set when the app PATCHes `available=false` while `in_app`, header `X-Beacon-Client: app`; cleared by `available=true` or `offline`); `offline` => `in_app=false, available=false, available_manual=null` (position kept; the app clears sharing with `location:null`). `client=dashboard` changes nothing. Keepalive: the app repeats `online` every 60 s; an app WebSocket (`/v1/ws?client=app`) refreshes `last_app_seen_at` on connect, ping/pong and every 30 s (closing it does not set offline: grace period). Job `presenceTick` (30 s, advisory lock 727015) sets `in_app=false, available=false` for `last_app_seen_at` older than `RESPONDER_PRESENCE_TIMEOUT_S` (180; demo 30). Demo seeding (`POST /mesh/seed|simulate`) sets a pinned mix (alice+dave in app and fresh, bob available but not in app with a 2 h old position, carol offline); `presence_pinned` exempts them from the sweep until real app activity.
+`responder.updated` (channel `responders`): full `Responder`, published on position / available / in_app / active-assignment changes, at most one frame per responder per second (coalesced trailing frame reads the latest row), to admin and responder connections only. Responders and admins see exact stored positions; volunteers get no frames and `location: null` for other responders on REST.
+
 `ws/hub.ts` keeps connections with `{responder, channels}`. Services publish domain events to the hub; the hub redacts per viewer and fans out. Server ping every 30 s, drop dead sockets. `mesh.stats` pushed every 10 s from a cached aggregate. No replay; clients refetch with `updated_since`.
 
 ## 9. Demo mode
 `DEMO_MODE=true` enables `/mesh/simulate` and `/mesh/seed` (cases with fabricated hop paths and heartbeats, `synthetic=true`) and accelerates timers (e.g. check-in interval 30 s, silence threshold 60 s) so silence and dead zones can be shown live in a 3 minute demo. A seed script can also replay a canned timeline.
 
 ## 10. Config (env)
-`DATABASE_URL, JWT_SECRET, BACKEND_ENC_PRIVATE_KEY, BACKEND_SIGN_PRIVATE_KEY, NEMOTRON_BASE_URL, NEMOTRON_API_KEY, NEMOTRON_MODEL, DEMO_MODE, PORT, FCM_PROJECT_ID + FCM_SERVICE_ACCOUNT_JSON (optional push), RETENTION_DEFAULT_DAYS`. Keys generated by `npm run keys`; public halves exposed via `/server-info`.
+`DATABASE_URL, JWT_SECRET, BACKEND_ENC_PRIVATE_KEY, BACKEND_SIGN_PRIVATE_KEY, NEMOTRON_BASE_URL, NEMOTRON_API_KEY, NEMOTRON_MODEL, DEMO_MODE, PORT, FCM_PROJECT_ID + FCM_SERVICE_ACCOUNT_JSON (optional push), RETENTION_DEFAULT_DAYS`, and for the dispatch agent `AGENT_ENABLED, AGENT_MAX_STEPS, AGENT_TIMEOUT_MS, AGENT_LLM_TIMEOUT_MS, AGENT_CONCURRENCY, AGENT_THINKING, AGENT_EXTERNAL_TOOLS, AGENT_TOOL_TIMEOUT_EXTERNAL_MS, AGENT_TOOL_TIMEOUT_INTERNAL_MS, AGENT_RERUN_MIN_S, AGENT_SWEEP_S, AGENT_DEMO_WEATHER, OVERPASS_URLS, OVERPASS_TIMEOUT_MS, FACILITIES_MAX_ATTEMPTS, FACILITIES_BACKOFF_MS`. Keys generated by `npm run keys`; public halves exposed via `/server-info`.
 
 ## 11. Testing
 - Domain unit tests (rules, hops, dedupe, silence state machine, privacy redaction) with table-driven cases.

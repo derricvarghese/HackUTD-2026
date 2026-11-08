@@ -97,6 +97,7 @@ info:
     |---|---|
     | Responder dashboard | `Authorization: Bearer <JWT>` from `POST /auth/login`. Short-lived access token + refresh token. |
     | Android app (gateway/direct) | Device registers its public key once (`POST /devices`). Authenticated calls carry `X-Device-Id` and `X-Device-Signature` (base64 ECDSA-P256 signature over `METHOD\nPATH\nSHA256(body)\nX-Timestamp`) plus `X-Timestamp` (reject if skew > 5 min). |
+    | Mobile app (responder mode) | Same `Authorization: Bearer <JWT>` as the dashboard, plus the optional header `X-Beacon-Client: app` on `PATCH /responders/{id}` (see Responder presence below). |
     | Mesh envelope | Independently signed by the original sender (see `MeshEnvelope`); backend verifies regardless of which gateway uploaded it. |
 
     ## Privacy rules enforced by the server
@@ -115,11 +116,20 @@ info:
       | safe | 3 | 3 h |
       | heartbeat (disaster-wide liveness ping) | 2 | 30 min |
 
+    ## Responder presence (who is in the field)
+    Responders use two kinds of clients: the mobile **app** (field responders) and the web **dashboard** (coordinators). Only the app makes someone *in the field*.
+    - `PUT /auth/me/presence {state: online|offline, client: app|dashboard}`. The app calls `online` when responder mode is open/foregrounded and then every **60 s** (cheap, idempotent keepalive), and `offline` when responder mode is left, the user signs out or the app is closed. `online` from the app sets `in_app=true`, `last_app_seen_at=now` and `available=true`, unless the responder explicitly switched availability off during this app session (`available_manual=false`). `offline` sets `in_app=false`, `available=false`, `available_manual=null`; the stored position is NOT cleared (the app sends `location: null` itself). `client=dashboard` never changes `available` or `in_app`.
+    - An app WebSocket (`/v1/ws?client=app`) also counts as presence: `last_app_seen_at` is refreshed on connect, on each ping/pong and every 30 s. Closing the last one does not set offline immediately (grace period).
+    - `PATCH /responders/{id}` with header `X-Beacon-Client: app` (own account, `location` or `available` in the body) also refreshes `last_app_seen_at`.
+    - A server sweep (every 30 s) flips responders whose `last_app_seen_at` is older than `RESPONDER_PRESENCE_TIMEOUT_S` (default 180 s, 30 s in demo mode) to `in_app=false, available=false` and emits `responder.updated`.
+    - Dispatch prefers `available && in_app` responders with a position newer than `RESPONDER_POSITION_FRESH_S` (default 900 s).
+    - **Privacy:** responders chose to share their position, so responders and admins see the stored (exact) position in `Responder.location` and in `responder.updated`. Volunteers never receive responder positions (`location` is null for others, no `responder.updated` frames).
+
     ## WebSocket (live updates)
-    Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
-    Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
+    Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Optional query `client=app|dashboard` (default `dashboard`; the mobile app passes `app`, see Responder presence). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
+    Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones","responders"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
     Events (payload schemas under `components/schemas/WsEvent*`):
-    `sos.created`, `sos.updated` (score/status/dedupe changes, and the AI triage result: `triage_status` moves provisional -> complete/failed and `score` may change), `sos.merged`, `sos.silent` (an open case lost contact or missed its welfare check-in deadline), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `heartbeat.silent` (a phone that was heartbeating stopped; no case implied), `heartbeat.resumed` (heartbeats are back; payload `connectivity=connected`), `profile.updated` (a device with open cases changed its profile; public fields only), `deadzones.updated`, `mesh.stats`.
+    `sos.created`, `sos.updated` (score/status/dedupe changes, and the AI triage result: `triage_status` moves provisional -> complete/failed and `score` may change), `sos.merged`, `sos.silent` (an open case lost contact or missed its welfare check-in deadline), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `heartbeat.silent` (a phone that was heartbeating stopped; no case implied), `heartbeat.resumed` (heartbeats are back; payload `connectivity=connected`), `profile.updated` (a device with open cases changed its profile; public fields only), `deadzones.updated`, `responder.updated` (a responder's position, availability, in-app presence or active assignment count changed; coalesced to at most one frame per responder per second; admins and responders only, channel `responders`), `mesh.stats`, `agent.step` and `agent.updated` (dispatch agent progress and result; admins and responders only, see the Agent tag).
     After reconnect, clients should refetch via REST (`GET /sos?updated_since=`) to close gaps; events are not replayed.
   license:
     name: MIT
@@ -136,6 +146,8 @@ tags:
   - name: Profiles
     description: Victim identity profile (name + identifying characteristics) synced from the app at install; privacy-tiered, encrypted at rest.
   - name: SOS
+  - name: Agent
+    description: "Dispatch agent: a Nemotron tool-calling loop that gathers evidence (internal data, weather, river gauges, flood zone, routing) and PROPOSES a dispatch. Nothing happens until a human approves the proposal. Admins and responders only; volunteers get 403."
   - name: Images
     description: Photos attached to a case (what they see, damage, injuries). JPEG/PNG only; metadata is stripped by the server; privacy-tiered like exact location.
   - name: Check-ins
@@ -179,6 +191,14 @@ paths:
                       latency_ms: { type: integer }
                       queue_depth: { type: integer, minimum: 0, description: "Cases still waiting for their AI pass (`triage_status` provisional or pending), across all server instances" }
                       oldest_pending_seconds: { type: integer, minimum: 0, description: "Age in seconds of the oldest case still waiting for its AI pass (0 when the queue is empty)" }
+                  agent:
+                    type: object
+                    description: Dispatch agent. `disabled` when `AGENT_ENABLED` is off or the LLM has no tool calling; `degraded` while the LLM circuit breaker is open.
+                    required: [status, queue_depth, running]
+                    properties:
+                      status: { type: string, enum: [ok, degraded, disabled] }
+                      queue_depth: { type: integer, minimum: 0, description: Runs waiting to start (all server instances) }
+                      running: { type: integer, minimum: 0, description: Runs executing now (all server instances) }
 
   /server-info:
     get:
@@ -270,6 +290,28 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Responder" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/me/presence:
+    put:
+      tags: [Auth]
+      summary: Set responder presence (app online/offline)
+      description: |
+        The mobile app calls `online` when responder mode is active and every 60 s as a keepalive, and `offline` when it is left. Only `client=app` (default) changes `in_app` / `available`;
+        `client=dashboard` is accepted and changes nothing. Any signed-in responder or volunteer. See "Responder presence" in the API description.
+      operationId: setMyPresence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PresenceUpdate" }
+      responses:
+        "200":
+          description: The updated responder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Responder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   # ---------------------------------------------------------------- Devices
   /devices:
@@ -850,6 +892,125 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  # ---------------------------------------------------------------- Dispatch agent
+  /sos/{sosId}/agent:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    get:
+      tags: [Agent]
+      summary: Latest dispatch-agent run of a case (steps, assessment, current proposal)
+      description: |
+        Admins and responders. Volunteers get `403`. `404` when the case never had a run. While a run is `running` the response already holds the steps
+        recorded so far (they also stream over the `agent.step` WebSocket event). The trace never contains exact coordinates, names, phone numbers,
+        addresses or contacts: tool results are summarised, and model-written text is scrubbed.
+      operationId: getCaseAgent
+      responses:
+        "200":
+          description: Latest run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /sos/{sosId}/agent/runs:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    get:
+      tags: [Agent]
+      summary: Run history of a case (compact, newest first)
+      operationId: listCaseAgentRuns
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Runs without their steps
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentRunSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /sos/{sosId}/agent/run:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    post:
+      tags: [Agent]
+      summary: Re-run the dispatch agent now
+      description: |
+        Queues a manual run (exempt from the 2-minute re-run throttle). If a run is already queued or running for the case, that run is returned (re-triggers coalesce).
+        `409` when the agent is disabled or the case is not open. Follow progress through `agent.step` / `agent.updated` or `GET /sos/{sosId}/agent`.
+      operationId: runCaseAgent
+      responses:
+        "202":
+          description: Run queued (or already active)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /sos/{sosId}/agent/proposals/{proposalId}/approve:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+      - $ref: "#/components/parameters/ProposalId"
+    post:
+      tags: [Agent]
+      summary: Approve a dispatch proposal (creates the assignment)
+      description: |
+        Human-in-the-loop gate. An admin may approve any open proposal; a responder only a proposal that names themselves (otherwise `403`), and approving claims the case for them.
+        The assignment is created through the normal assignment rules (`409` if the case is already claimed or closed; the proposal then stays `proposed`) and the usual
+        `status_update` for the person's phone is queued as always. With `send_victim_message: true` the proposal's `victim_message` is additionally queued to the person as a `status_update`,
+        only after the assignment succeeded. `409` when the proposal was already decided or superseded. A proposal that names no responder needs `responder_id` from an admin.
+      operationId: approveAgentProposal
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProposalApprove" }
+      responses:
+        "200":
+          description: Approved; the assignment now exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProposalDecision" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /sos/{sosId}/agent/proposals/{proposalId}/reject:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+      - $ref: "#/components/parameters/ProposalId"
+    post:
+      tags: [Agent]
+      summary: Reject a dispatch proposal
+      description: Admins, or the responder the proposal names. `409` when it was already decided or superseded. The case keeps its score and status; the agent may propose again on a later run.
+      operationId: rejectAgentProposal
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProposalReject" }
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProposal" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   # ---------------------------------------------------------------- Case images
   /sos/{sosId}/images:
     parameters:
@@ -1221,9 +1382,13 @@ paths:
         - name: available
           in: query
           schema: { type: boolean }
+        - name: in_app
+          in: query
+          description: Only responders currently active in the mobile app (true) or not (false)
+          schema: { type: boolean }
       responses:
         "200":
-          description: Responders
+          description: "Responders. Volunteers get `location: null` for everyone but themselves."
           content:
             application/json:
               schema:
@@ -1674,6 +1839,24 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /events/{eventId}/facilities:
+    parameters:
+      - $ref: "#/components/parameters/EventId"
+    get:
+      tags: [Events]
+      summary: Hospitals, shelters and fire stations of the event area
+      description: |
+        Public infrastructure from OpenStreetMap (Overpass), ingested in the background when the event is created or its geofence changes. Any responder or volunteer can read it
+        (the dashboard may draw it). In demo mode a small synthetic set is seeded when Overpass is unavailable (`source: synthetic_demo`). Empty `data` with `source: null` means not ingested yet.
+      operationId: listEventFacilities
+      responses:
+        "200":
+          description: Facilities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FacilityList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /events/{eventId}/close:
     post:
       tags: [Events]
@@ -1710,6 +1893,7 @@ paths:
                   purged_cases: { type: integer }
                   purged_voice_notes: { type: integer }
                   purged_images: { type: integer, description: Case photos deleted }
+                  purged_agent_runs: { type: integer, description: "Dispatch-agent runs deleted (their proposals go with them)" }
                   purged_profiles: { type: integer, description: "Identity profiles deleted because their device has no case left (see Profiles lifecycle)" }
                   purged_at: { type: string, format: date-time }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1851,6 +2035,12 @@ components:
       schema: { type: string, format: uuid }
     ResponderId:
       name: responderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    ProposalId:
+      name: proposalId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -2313,6 +2503,7 @@ components:
       type: object
       required: [source, text]
       properties:
+        tag: { type: string, enum: [agent], description: "Set on reasons contributed by the dispatch agent (`source` is `llm`). The agent's `urgency_delta` is applied through the same clamp as the extraction (combined adjustment within +/-15, never below the rule floors)." }
         source: { type: string, enum: [rule, llm, silence, heartbeat, checkin, manual], description: "`silence` = lost contact or unanswered welfare check-ins; `checkin` = the person asked for urgent help" }
         text: { type: string, example: 2 people trapped with rising water }
         weight: { type: integer, description: Score contribution }
@@ -2438,6 +2629,8 @@ components:
           items: { $ref: "#/components/schemas/TriageReason" }
         event_id: { type: [string, "null"], format: uuid }
         has_voice_note: { type: boolean }
+        agent_status: { type: string, enum: [none, queued, running, complete, failed], description: "State of the latest dispatch-agent run for this case (`none` = never ran, or the agent is disabled)" }
+        agent_summary: { type: [string, "null"], maxLength: 280, description: "The agent's one-paragraph assessment when its latest run is `complete`, else null. Safe for queue cards; never contains coordinates or names." }
         image_count: { type: integer, minimum: 0, description: "Number of photos attached (including those of merged duplicates). A number only: ids and bytes are limited to the owning device, admins and the active assignee, see `SosDetail.images`." }
         image_hint: { type: integer, minimum: 1, description: "Informational: an SOS created offline said this many photos will follow once the phone has signal. Compare with `image_count`." }
         silent: { type: boolean, description: "Contact lost (no heartbeat/message for the silence threshold) or a welfare check-in deadline passed unanswered; priority already boosted. Only a recent heartbeat or an answer clears it, and never lowers the score." }
@@ -2560,7 +2753,7 @@ components:
         id: { type: string, format: uuid }
         type:
           type: string
-          enum: [reported, received_via_gateway, triaged, merged, silent_flagged, heartbeat_silent, contact_restored, checkin_sent, checkin_responded, checkin_missed, self_resolved, urgent_help_requested, assigned, en_route, on_scene, resolved, released, note, edited, closed]
+          enum: [reported, received_via_gateway, triaged, merged, silent_flagged, heartbeat_silent, contact_restored, checkin_sent, checkin_responded, checkin_missed, self_resolved, urgent_help_requested, assigned, en_route, on_scene, resolved, released, note, edited, closed, agent_assessed, agent_approved, agent_rejected]
         actor:
           type: object
           properties:
@@ -2694,7 +2887,7 @@ components:
         password: { type: string, format: password }
         role: { $ref: "#/components/schemas/Role" }
         skills: { type: array, items: { type: string } }
-        available: { type: boolean }
+        available: { type: boolean, description: "Manual override. In the app, `false` sticks for the whole app session (presence `online` will not undo it) and `true` clears the override; dashboards edit the flag freely for dashboard-only responders." }
         location:
           oneOf:
             - $ref: "#/components/schemas/LatLng"
@@ -2712,13 +2905,40 @@ components:
         role: { $ref: "#/components/schemas/Role" }
         skills: { type: array, items: { type: string } }
         organization: { type: [string, "null"] }
-        available: { type: boolean }
+        available: { type: boolean, description: "Can be dispatched. Set automatically by app presence; the app user can override it while in the app." }
         location:
           oneOf:
             - $ref: "#/components/schemas/LatLng"
             - type: "null"
+          description: Shared position (stored exactly; responders and admins see it, volunteers never see others'). Null when not sharing.
         active_assignments: { type: integer }
         last_seen_at: { type: [string, "null"], format: date-time }
+        in_app: { type: boolean, description: "True while the mobile app is considered active (online via presence/WebSocket within RESPONDER_PRESENCE_TIMEOUT_S). Dashboard sessions never set it." }
+        last_app_seen_at: { type: [string, "null"], format: date-time, description: "Last sign of life from the app (presence call, app WebSocket, or app PATCH)" }
+        location_updated_at: { type: [string, "null"], format: date-time, description: When `location` was last written; use it for staleness }
+        available_manual: { type: [boolean, "null"], description: "`false` while the responder explicitly switched availability off during this app session (online will not flip `available` back on); null otherwise" }
+      example:
+        id: 0192a7d4-1c2e-7000-8a00-0000000000c1
+        username: alice
+        name: Alice Rivera
+        role: responder
+        skills: [boat, rescue]
+        organization: State Farm CAT Team
+        available: true
+        location: { lat: 32.78, lng: -96.8 }
+        active_assignments: 0
+        last_seen_at: "2026-11-07T17:02:00Z"
+        in_app: true
+        last_app_seen_at: "2026-11-07T17:02:00Z"
+        location_updated_at: "2026-11-07T17:01:40Z"
+        available_manual: null
+    PresenceUpdate:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [online, offline] }
+        client: { type: string, enum: [app, dashboard], default: app }
+      example: { state: online, client: app }
 
     # ---- heartbeats
     HeartbeatStatus:
@@ -2991,6 +3211,187 @@ components:
         neighbor_case_count: { type: integer }
         detected_at: { type: string, format: date-time }
 
+    # ---- dispatch agent
+    AgentStep:
+      type: object
+      required: [index, turn, type, tool, summary, ok, ms, at]
+      properties:
+        index: { type: integer, minimum: 0 }
+        turn: { type: integer, minimum: 0, description: Model turn that produced the step }
+        type: { type: string, enum: [plan, tool_call, tool_result, final] }
+        tool: { type: [string, "null"], example: get_weather_alerts }
+        summary: { type: string, maxLength: 220, description: "Short human-readable line (a tool result is summarised, never dumped). Never holds coordinates, names or contacts." }
+        ok: { type: [boolean, "null"], description: "tool_result / final: success. null for plan and tool_call" }
+        ms: { type: [integer, "null"], description: Duration of the tool call }
+        synthetic: { type: boolean, description: "True when the result came from a demo fixture (AGENT_DEMO_WEATHER) instead of the real service" }
+        cached: { type: boolean }
+        at: { type: string, format: date-time }
+      example: { index: 3, turn: 1, type: tool_result, tool: get_river_gauges, summary: "1 gauge(s); nearest Demo Creek near the incident (synthetic): 9.8 ft, rising, moderate", ok: true, ms: 412, synthetic: true, at: "2026-11-08T16:00:03Z" }
+    AgentRecommendation:
+      type: object
+      required: [responder_id, eta_minutes, equipment, facility, victim_message, notes]
+      properties:
+        responder_id: { type: [string, "null"], format: uuid, description: "A responder returned by `list_available_responders` in this run, or null" }
+        eta_minutes: { type: [integer, "null"], minimum: 0 }
+        equipment: { type: array, maxItems: 6, items: { type: string }, example: [boat, life jackets, medical kit] }
+        facility:
+          oneOf:
+            - type: object
+              required: [kind, name, distance_km]
+              properties:
+                kind: { type: string, example: hospital }
+                name: { type: string }
+                distance_km: { type: number }
+            - type: "null"
+        victim_message: { type: string, maxLength: 240, description: "Plain-language text for the person; makes no arrival-time promise unless eta_minutes is set. Sent to the phone only if the approver chooses to." }
+        notes: { type: string, maxLength: 300 }
+    AgentAssessment:
+      type: object
+      required: [summary, urgency_delta, confidence, evidence, risks, recommendation]
+      properties:
+        summary: { type: string, maxLength: 280 }
+        urgency_delta: { type: integer, minimum: -15, maximum: 15, description: "What the agent asked for (clamped to +/-15). See `score_effect` for what was applied." }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        evidence:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            required: [source, finding]
+            properties:
+              source: { type: string, description: Tool name, example: get_weather_alerts }
+              finding: { type: string, maxLength: 200 }
+        risks: { type: array, maxItems: 5, items: { type: string } }
+        recommendation: { $ref: "#/components/schemas/AgentRecommendation" }
+        score_effect:
+          type: object
+          description: "The agent's urgency_delta goes through the same clamp as the AI extraction: the combined LLM adjustment never exceeds +/-15 and the score never goes below the rule floors. Absent when nothing was applied."
+          required: [requested_delta, applied_delta, score_before, score_after]
+          properties:
+            requested_delta: { type: integer }
+            applied_delta: { type: integer }
+            score_before: { type: integer }
+            score_after: { type: integer }
+    AgentProposal:
+      type: object
+      required: [id, run_id, sos_id, kind, responder_id, eta_minutes, equipment, facility, victim_message, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        kind: { type: string, enum: [dispatch] }
+        responder_id: { type: [string, "null"], format: uuid }
+        responder_name: { type: [string, "null"] }
+        eta_minutes: { type: [integer, "null"] }
+        equipment: { type: array, items: { type: string } }
+        facility:
+          oneOf:
+            - type: object
+              required: [kind, name, distance_km]
+              properties:
+                kind: { type: string }
+                name: { type: string }
+                distance_km: { type: number }
+            - type: "null"
+        victim_message: { type: [string, "null"] }
+        notes: { type: [string, "null"] }
+        status: { type: string, enum: [proposed, approved, rejected, superseded, expired], description: A new proposal supersedes older open ones for the case }
+        decided_by: { type: [string, "null"], format: uuid }
+        decided_at: { type: [string, "null"], format: date-time }
+        decision_note: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+    AgentRun:
+      type: object
+      required: [id, sos_id, status, trigger, created_at, steps]
+      properties:
+        id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, complete, failed, cancelled] }
+        trigger: { type: string, enum: [new_case, contact_change, checkin, nearby_critical, weather_alert, case_edit, manual, sweep], description: What started the run }
+        model: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        duration_ms: { type: [integer, "null"] }
+        steps: { type: array, items: { $ref: "#/components/schemas/AgentStep" } }
+        assessment:
+          oneOf:
+            - $ref: "#/components/schemas/AgentAssessment"
+            - type: "null"
+        error: { type: [string, "null"], description: "Why a run failed (timeout, llm unavailable, invalid assessment...). The rules score and the AI extraction still stand." }
+        tokens:
+          oneOf:
+            - type: object
+              properties:
+                prompt: { type: integer }
+                completion: { type: integer }
+                turns: { type: integer }
+            - type: "null"
+        proposal:
+          oneOf:
+            - $ref: "#/components/schemas/AgentProposal"
+            - type: "null"
+          description: The case's current (newest not superseded) proposal
+    AgentRunSummary:
+      type: object
+      required: [id, status, trigger, created_at, step_count]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, complete, failed, cancelled] }
+        trigger: { type: string }
+        model: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        duration_ms: { type: [integer, "null"] }
+        step_count: { type: integer }
+        summary: { type: [string, "null"] }
+        confidence:
+          oneOf:
+            - $ref: "#/components/schemas/Confidence"
+            - type: "null"
+        error: { type: [string, "null"] }
+        proposal_status:
+          type: [string, "null"]
+          enum: [proposed, approved, rejected, superseded, expired, null]
+    AgentProposalApprove:
+      type: object
+      properties:
+        eta_minutes: { type: integer, minimum: 0, maximum: 1440, description: Overrides the proposed ETA }
+        note: { type: string, maxLength: 500, description: Stored as a case note }
+        send_victim_message: { type: boolean, default: false, description: "Also queue the proposal's `victim_message` to the person as a `status_update` (after the assignment succeeded)" }
+        responder_id: { type: string, format: uuid, description: "Admin only; needed when the proposal names no responder" }
+    AgentProposalReject:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 500 }
+    AgentProposalDecision:
+      type: object
+      required: [proposal, assignment]
+      properties:
+        proposal: { $ref: "#/components/schemas/AgentProposal" }
+        assignment: { $ref: "#/components/schemas/Assignment" }
+    FacilityKind:
+      type: string
+      enum: [hospital, shelter, fire_station]
+    Facility:
+      type: object
+      required: [id, kind, name, lat, lng]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/FacilityKind" }
+        name: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        osm_id: { type: [string, "null"], example: way/401521703 }
+        synthetic: { type: boolean, description: True for the demo-mode fallback set }
+    FacilityList:
+      type: object
+      required: [data, source, fetched_at]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Facility" } }
+        source: { type: [string, "null"], enum: [osm, synthetic_demo, null] }
+        fetched_at: { type: [string, "null"], format: date-time }
+
     # ---- websocket events (not REST)
     WsFrame:
       type: object
@@ -2998,7 +3399,7 @@ components:
       properties:
         event:
           type: string
-          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, profile.updated, checkin.sent, checkin.responded, assignment.created, assignment.updated, deadzones.updated, mesh.stats, pong]
+          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, profile.updated, checkin.sent, checkin.responded, assignment.created, assignment.updated, deadzones.updated, responder.updated, mesh.stats, agent.step, agent.updated, pong]
         ts: { type: string, format: date-time }
         data: {}
       discriminator:
@@ -3048,6 +3449,49 @@ components:
         data:
           type: array
           items: { $ref: "#/components/schemas/Deadzone" }
+    WsEventAgentStep:
+      description: |
+        Payload for `agent.step`: one step of a running dispatch-agent run, streamed as it happens (same fields as `AgentStep` plus the run and case ids). Public/safe fields only:
+        no coordinates, names or free text from the case. Not sent to volunteers.
+      type: object
+      required: [run_id, sos_id, index, type, tool, summary, ok, ms]
+      properties:
+        run_id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        index: { type: integer }
+        type: { type: string, enum: [plan, tool_call, tool_result, final] }
+        tool: { type: [string, "null"] }
+        summary: { type: string }
+        ok: { type: [boolean, "null"] }
+        ms: { type: [integer, "null"] }
+        synthetic: { type: boolean }
+      example: { run_id: 0192a7d4-1c2e-7000-8a00-0000000000b1, sos_id: 0192a7d4-1c2e-7000-8a00-0000000000a1, index: 2, type: tool_result, tool: get_weather_alerts, summary: "1 alert(s): Flash Flood Warning", ok: true, ms: 188, synthetic: true }
+    WsEventAgentUpdated:
+      description: |
+        Payload for `agent.updated`: a run changed state (queued, running, complete, failed, cancelled) or its proposal was decided. Carries the current proposal when there is one.
+        Refetch `GET /sos/{sosId}/agent` for the full trace. Not sent to volunteers.
+      type: object
+      required: [run_id, sos_id, status, trigger]
+      properties:
+        run_id: { type: string, format: uuid }
+        sos_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, complete, failed, cancelled] }
+        trigger: { type: string }
+        summary: { type: [string, "null"] }
+        confidence: { type: [string, "null"] }
+        duration_ms: { type: [integer, "null"] }
+        finished_at: { type: [string, "null"], format: date-time }
+        error: { type: [string, "null"] }
+        proposal:
+          oneOf:
+            - $ref: "#/components/schemas/AgentProposal"
+            - type: "null"
+    WsEventResponder:
+      description: |
+        Payload for `responder.updated`: the full `Responder` (position, availability, in-app presence, active assignment count). Coalesced to at most one frame per responder per second.
+        Sent only to admin and responder connections (never volunteers) on channel `responders`. Positions are exact (responders chose to share).
+      allOf:
+        - $ref: "#/components/schemas/Responder"
     WsEventMeshStats:
       description: Payload for `mesh.stats` (pushed about every 10 s while connected)
       allOf:

@@ -18,7 +18,9 @@ import * as map from '../services/map';
 import * as voice from '../services/voice';
 import * as images from '../services/images';
 import * as profiles from '../services/profiles';
-import { triageHealth, VERSION } from '../services/health';
+import * as agent from '../agent/service';
+import { listFacilities } from '../agent/facilities';
+import { agentHealth, triageHealth, VERSION } from '../services/health';
 import { activeEventRow, eventTimers, toEvent } from '../services/events';
 import { processBatch } from '../services/ingest';
 import { senderHash } from '../services/devices';
@@ -33,7 +35,7 @@ export function buildRoutes(ctx: Ctx): Router {
   // ---------------------------------------------------------------- System
   r.get('/health', async (_req, res) => {
     await ctx.pool.query('select 1');
-    res.json({ status: 'ok', time: new Date().toISOString(), version: VERSION, triage: { ...(await triageHealth(ctx)), ...(await ctx.aiTriage.stats()) } });
+    res.json({ status: 'ok', time: new Date().toISOString(), version: VERSION, triage: { ...(await triageHealth(ctx)), ...(await ctx.aiTriage.stats()) }, agent: await agentHealth(ctx) });
   });
   r.get('/server-info', async (_req, res) => {
     const ev = await activeEventRow(ctx);
@@ -62,6 +64,7 @@ export function buildRoutes(ctx: Ctx): Router {
     await auth.logout(ctx, requireResponder(req).id, req.body?.refresh_token);
     res.status(204).end();
   });
+  r.put('/auth/me/presence', async (req, res) => res.json(await responders.setPresence(ctx, requireResponder(req).id, req.body)));
   r.get('/auth/me', async (req, res) => res.json(await responders.getResponderView(ctx, requireResponder(req).id).catch(() => { throw unauthorized('Account no longer active'); })));
 
   // ---------------------------------------------------------------- Devices
@@ -138,6 +141,13 @@ export function buildRoutes(ctx: Ctx): Router {
     res.json(st);
   });
 
+  // ---------------------------------------------------------------- Dispatch agent (admin and responders; volunteers get 403)
+  r.get('/sos/:sosId/agent', async (req, res) => res.json(await agent.getLatestRun(ctx, req.params.sosId, actorOf(req))));
+  r.get('/sos/:sosId/agent/runs', async (req, res) => res.json(await agent.listRuns(ctx, req.params.sosId, actorOf(req), limitOf(req))));
+  r.post('/sos/:sosId/agent/run', async (req, res) => res.status(202).json(await agent.manualRun(ctx, req.params.sosId, actorOf(req))));
+  r.post('/sos/:sosId/agent/proposals/:proposalId/approve', async (req, res) => res.json(await agent.approveProposal(ctx, req.params.sosId, req.params.proposalId, req.body ?? {}, actorOf(req))));
+  r.post('/sos/:sosId/agent/proposals/:proposalId/reject', async (req, res) => res.json(await agent.rejectProposal(ctx, req.params.sosId, req.params.proposalId, req.body ?? {}, actorOf(req))));
+
   // ---------------------------------------------------------------- Voice notes
   r.put('/sos/:sosId/voice-note', async (req, res) => {
     await voice.putVoiceNote(ctx, req.params.sosId, requireDevice(req).id, req.headers['content-type'] ?? '', req.body);
@@ -187,13 +197,13 @@ export function buildRoutes(ctx: Ctx): Router {
 
   // ---------------------------------------------------------------- Responders
   r.get('/responders', async (req, res) => {
-    requireResponder(req);
+    const me = requireResponder(req);
     const x = q(req);
-    res.json(await responders.listResponders(ctx, { limit: limitOf(req), cursor: str(x.cursor), skill: str(x.skill), available: asBool(x.available) }));
+    res.json(await responders.listResponders(ctx, { limit: limitOf(req), cursor: str(x.cursor), skill: str(x.skill), available: asBool(x.available), in_app: asBool(x.in_app) }, { id: me.id, role: me.role }));
   });
   r.post('/responders', async (req, res) => { requireRole(req, 'admin'); res.status(201).json(await responders.createResponder(ctx, req.body)); });
-  r.get('/responders/:responderId', async (req, res) => { requireResponder(req); res.json(await responders.getResponderView(ctx, req.params.responderId)); });
-  r.patch('/responders/:responderId', async (req, res) => res.json(await responders.updateResponder(ctx, req.params.responderId, req.body, actorOf(req))));
+  r.get('/responders/:responderId', async (req, res) => { const me = requireResponder(req); res.json(await responders.getResponderView(ctx, req.params.responderId, { id: me.id, role: me.role })); });
+  r.patch('/responders/:responderId', async (req, res) => res.json(await responders.updateResponder(ctx, req.params.responderId, req.body, actorOf(req), { fromApp: req.get('x-beacon-client')?.toLowerCase() === 'app' })));
   r.delete('/responders/:responderId', async (req, res) => { await responders.deactivateResponder(ctx, req.params.responderId, actorOf(req)); res.status(204).end(); });
 
   // ---------------------------------------------------------------- Mesh
@@ -233,6 +243,7 @@ export function buildRoutes(ctx: Ctx): Router {
   r.get('/events/:eventId', async (req, res) => { requireResponder(req); res.json(await events.getEvent(ctx, req.params.eventId)); });
   r.patch('/events/:eventId', async (req, res) => { requireRole(req, 'admin'); res.json(await events.updateEvent(ctx, req.params.eventId, req.body)); });
   r.delete('/events/:eventId', async (req, res) => { requireRole(req, 'admin'); await events.deleteEvent(ctx, req.params.eventId); res.status(204).end(); });
+  r.get('/events/:eventId/facilities', async (req, res) => { requireResponder(req); res.json(await listFacilities(ctx, req.params.eventId)); });
   r.post('/events/:eventId/close', async (req, res) => { requireRole(req, 'admin'); res.json(await events.closeEvent(ctx, req.params.eventId)); });
   r.post('/events/:eventId/purge', async (req, res) => { requireRole(req, 'admin'); res.json(await events.purgeEvent(ctx, req.params.eventId)); });
 

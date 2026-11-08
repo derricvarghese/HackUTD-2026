@@ -1,0 +1,56 @@
+{
+ "elements": [
+  {
+   "type": "node",
+   "id": 1,
+   "lat": 32.78,
+   "lon": -96.8,
+   "tags": {
+    "name": "Parkland Memorial Hospital",
+    "amenity": "hospital"
+   }
+  },
+  {
+   "type": "way",
+   "id": 401521703,
+   "center": {
+    "lat": 32.7742625,
+    "lon": -96.7961485
+   },
+   "tags": {
+    "name": "Dallas Fire Station Number 4",
+    "amenity": "fire_station"
+   }
+  },
+  {
+   "type": "way",
+   "id": 7,
+   "center": {
+    "lat": 32.79,
+    "lon": -96.78
+   },
+   "tags": {
+    "name": "Rec Center",
+    "amenity": "shelter"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8,
+   "lat": 32.76,
+   "lon": -96.81,
+   "tags": {
+    "emergency": "assembly_point"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9,
+   "lat": 32.0,
+   "lon": -96.0,
+   "tags": {
+    "shop": "bakery"
+   }
+  }
+ ]
+}

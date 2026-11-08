@@ -26,7 +26,7 @@ npm run dev                  # http://localhost:3000, hot reload
 curl localhost:3000/v1/health
 ```
 
-Seeded responders (password `beacon-demo`, override with `SEED_PASSWORD`): `admin` (admin), `alice` (responder, boat), `bob` (responder, medical), `carol` (volunteer).
+Seeded responders (password `beacon-demo`, override with `SEED_PASSWORD`): `admin` (admin), `alice` (responder, boat), `bob` (responder, medical), `carol` (volunteer), 
 
 | Script | What |
 |---|---|
@@ -78,6 +78,18 @@ People (and responders on scene) attach photos to a case. The model is the voice
 ## Liveness (heartbeats + welfare check-ins)
 
 Heartbeats are automatic (no "I'm OK" button anywhere): every app sends one every `heartbeat_interval_seconds` and a missing heartbeat means the device has no connectivity (`Device.connectivity`, `Sos.connectivity`, `Sos.contact_state`). An open SOS that goes quiet for `silence_threshold_seconds` becomes `silent` (+10..+30). People with an open non-safe SOS additionally get welfare check-ins (critical 10 / high 15 / normal 30 min) with `choices` and `deadline_at`; the case turns `silent` only after `deadline_at` passes unanswered and the check-in is then re-delivered as reminders (no new check-ins pile up) (`unresponsive` if heartbeats still arrive, `lost_contact` if not). Delivery: mesh `checkin_request`, `pending_checkins` in the heartbeat response, `GET /checkins/pending`, and push (`PushProvider`; FCM v1 when `FCM_PROJECT_ID` and `FCM_SERVICE_ACCOUNT_JSON` are set, otherwise a logging no-op; real push needs Firebase credentials). Details: docs/server-design.md 6.4.
+
+## Dispatch agent
+
+A Nemotron tool-calling agent (`src/agent/`) that plans, calls internal and external tools in parallel, cross-checks the evidence and PROPOSES a dispatch; a human approves it (design: docs/server-design.md 6.11). It runs after the AI triage extraction of each case, is read-only (its only output is a stored assessment and proposal) and its `urgency_delta` goes through the same +/-15 clamp and rule floors as the extraction.
+
+- API (admin and responders, volunteers get 403): `GET /sos/{id}/agent`, `GET /sos/{id}/agent/runs`, `POST /sos/{id}/agent/run`, `POST /sos/{id}/agent/proposals/{pid}/approve|reject`, `GET /events/{id}/facilities`. WebSocket: `agent.step`, `agent.updated`. `Sos.agent_status` / `agent_summary`; `/health` has `agent: {status, queue_depth, running}`.
+- Env: `AGENT_ENABLED` (default on when `NEMOTRON_BASE_URL` is set), `AGENT_MAX_STEPS=6`, `AGENT_TIMEOUT_MS=25000`, `AGENT_CONCURRENCY=2`, `AGENT_THINKING=false`, `AGENT_EXTERNAL_TOOLS=true` (false = no outbound HTTP, tests/offline), `AGENT_RERUN_MIN_S=120`, `AGENT_DEMO_WEATHER=flash_flood` (with `DEMO_MODE=true`: recorded flash flood warning and rising gauge, labelled synthetic), `OVERPASS_URLS`, `FACILITIES_MAX_ATTEMPTS`. See `.env.example`.
+- Privacy: external requests and the LLM prompt only ever carry coordinates rounded to 3 decimals; traces hold step summaries, no names, phones, addresses, contacts or exact coordinates.
+- Tests: `test/unit/agent.test.ts`, `test/e2e/agentLoop.test.ts`, `test/e2e/agent.test.ts` (scripted fake LLM, recorded fixtures in `test/fixtures/agent/`; no network).
+
+## Responder presence
+`PUT /auth/me/presence {state: online|offline, client: app|dashboard}` (app default). The app sends `online` when responder mode opens and every 60 s, `offline` when it closes; only the app sets `in_app`/`available`. `PATCH /responders/{id}` with `X-Beacon-Client: app` and `/v1/ws?client=app` also refresh `last_app_seen_at`. The `presenceTick` job flips responders silent for `RESPONDER_PRESENCE_TIMEOUT_S` (180 s; demo 30) to `in_app=false, available=false`. Live `responder.updated` frames (channel `responders`, admin + responders only, <= 1/s per responder) feed the dashboard map; volunteers never see positions. The dispatch agent prefers `available && in_app` responders with a position newer than `RESPONDER_POSITION_FRESH_S` (900 s). Demo seed (`/mesh/seed|simulate`) adds responder `dave` and a presence mix.
 
 ## Jobs
 

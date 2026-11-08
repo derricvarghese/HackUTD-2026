@@ -2,6 +2,14 @@ import type { Ctx } from '../ctx';
 
 export const VERSION = '1.0.0';
 
+/** Dispatch agent status for /health: queue depth and running runs come from the database (all instances). */
+export async function agentHealth(ctx: Ctx) {
+  if (!ctx.agent.enabled()) return { status: 'disabled' as const, queue_depth: 0, running: 0 };
+  const s = await ctx.agent.stats();
+  const llm = ctx.llm.available ? ctx.llm.available() : true;
+  return { status: llm ? ('ok' as const) : ('degraded' as const), ...s };
+}
+
 /** Triage backend status, pinged at most once per HEALTH_CACHE_S (30 s) so /health stays cheap and cannot hammer the LLM host. */
 export async function triageHealth(ctx: Ctx, now = Date.now()) {
   const hit = ctx.cache.get('triage.health');

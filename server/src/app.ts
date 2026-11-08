@@ -21,11 +21,13 @@ import { securityHandlers } from './http/security';
 import { errorHandler, notImplemented } from './http/errorHandler';
 import { startJobs } from './jobs';
 import { tooMany } from './errors';
-import { seedResponders } from './services/responders';
+import { seedResponders, touchApp } from './services/responders';
 import { createAiTriage } from './services/aiTriage';
 import { verifyAccess } from './services/auth';
+import { createAgentRunner } from './agent/runner';
+import { createFacilities } from './agent/facilities';
 
-export interface AppOverrides { db?: Db; llm?: TriageLlm; push?: PushProvider; keys?: BackendKeys; logger?: Logger }
+export interface AppOverrides { fetch?: typeof fetch; db?: Db; llm?: TriageLlm; push?: PushProvider; keys?: BackendKeys; logger?: Logger }
 export interface BeaconApp {
   app: express.Express;
   server: http.Server;
@@ -69,17 +71,20 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
       image: new TokenBuckets(cfg.IMAGE_UPLOAD_RATE_PER_MIN, cfg.IMAGE_UPLOAD_RATE_PER_MIN / 60),
       ip: new TokenBuckets(cfg.IP_RATE_PER_MIN, cfg.IP_RATE_PER_MIN / 60),
     },
+    fetch: o.fetch,
     cache: new Map(),
     deviceCache: new Map(),
     track(p) { const t = p.catch(() => {}).finally(() => pending.delete(t)); pending.add(t); },
     async idle() {
       for (;;) {
         if (pending.size) await Promise.all([...pending]);
-        else if (ctx.aiTriage.busy()) await new Promise((r) => setTimeout(r, 5)); // retry backoff timers
+        else if (ctx.aiTriage.busy() || ctx.agent.busy()) await new Promise((r) => setTimeout(r, 5)); // retry backoff timers
         else return;
       }
     },
     aiTriage: undefined as unknown as Ctx['aiTriage'], // assigned right below (the queue needs the ctx)
+    agent: undefined as unknown as Ctx['agent'],
+    facilities: undefined as unknown as Ctx['facilities'],
     // Local queue first (holds at most ONE pooled connection for the advisory lock, so a burst cannot exhaust the pool),
     // then a session-level Postgres advisory lock so a second server process serialises with us too.
     dedupeLock(fn) {
@@ -95,6 +100,8 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
     },
   };
   ctx.aiTriage = createAiTriage(ctx);
+  ctx.agent = createAgentRunner(ctx);
+  ctx.facilities = createFacilities(ctx);
   if (cfg.SEED_ON_START) await seedResponders(ctx);
 
   const app = express();
@@ -151,17 +158,19 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
   const hub = new Hub(log, (token) => {
     const c = verifyAccess(ctx, token);
     return c ? { viewer: { kind: 'responder', id: c.sub, role: c.role }, exp: c.exp } : null;
-  });
+  }, (ids) => ctx.track(touchApp(ctx, ids).catch((e) => log.error({ err: (e as Error).message }, 'app presence touch failed'))));
   hubRef.hub = hub;
   hub.attach(server);
   const jobs = cfg.jobsEnabled ? startJobs(ctx) : null;
-  if (cfg.jobsEnabled) ctx.aiTriage.start(); // boot recovery + 30 s sweep
+  if (cfg.jobsEnabled) { ctx.aiTriage.start(); ctx.agent.start(); ctx.track(ctx.facilities.recover()); } // boot recovery + sweeps
 
   return {
     app, server, ctx, hub,
     async close() {
       jobs?.stop();
       ctx.aiTriage.stop();
+      ctx.agent.stop();
+      ctx.facilities.stop();
       await ctx.idle();
       await hub.close();
       if (server.listening) await new Promise<void>((r) => server.close(() => r()));

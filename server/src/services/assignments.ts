@@ -7,6 +7,7 @@ import { decodeCursor, encodeCursor, keysetWhere, orderSql, type SortKey } from 
 import { conflict, forbidden, invalid, notFound } from '../errors';
 import { addEvent, broadcastSos } from './sosView';
 import { queueStatusUpdate } from './outbox';
+import { notifyResponder } from './responders';
 
 export type Assignment = components['schemas']['Assignment'];
 type Create = components['schemas']['AssignmentCreate'];
@@ -44,6 +45,7 @@ export async function getAssignment(ctx: Ctx, id: string, viewer: Actor) {
 
 function publishAssignment(ctx: Ctx, event: 'assignment.created' | 'assignment.updated', a: Joined) {
   ctx.hub.publish(event, (v) => toAssignment(a, { id: v.id, role: v.role }));
+  notifyResponder(ctx, a.responder_id); // active_assignments changed
 }
 
 /** Claim a case. The partial unique index is the arbiter: of N parallel claims exactly one commits, the rest get 409. */

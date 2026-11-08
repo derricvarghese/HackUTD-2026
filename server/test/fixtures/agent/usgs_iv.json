@@ -1,0 +1,107 @@
+{
+ "value": {
+  "timeSeries": [
+   {
+    "sourceInfo": {
+     "siteName": "W Fk Trinity Rv at Grand Prairie, TX",
+     "siteCode": [
+      {
+       "value": "08049500"
+      }
+     ],
+     "geoLocation": {
+      "geogLocation": {
+       "latitude": 32.7625,
+       "longitude": -96.9944444
+      }
+     }
+    },
+    "variable": {
+     "variableCode": [
+      {
+       "value": "00065"
+      }
+     ],
+     "unit": {
+      "unitCode": "ft"
+     },
+     "noDataValue": -999999.0
+    },
+    "values": [
+     {
+      "value": [
+       {
+        "value": "2.31",
+        "qualifiers": [
+         "P"
+        ],
+        "dateTime": "2026-11-08T09:00:00.000-06:00"
+       },
+       {
+        "value": "2.9",
+        "qualifiers": [
+         "P"
+        ],
+        "dateTime": "2026-11-08T10:00:00.000-06:00"
+       },
+       {
+        "value": "3.6",
+        "qualifiers": [
+         "P"
+        ],
+        "dateTime": "2026-11-08T11:00:00.000-06:00"
+       },
+       {
+        "value": "-999999.0",
+        "qualifiers": [
+         "P"
+        ],
+        "dateTime": "2026-11-08T12:00:00.000-06:00"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "sourceInfo": {
+     "siteName": "W Fk Trinity Rv at Grand Prairie, TX",
+     "siteCode": [
+      {
+       "value": "08049500"
+      }
+     ],
+     "geoLocation": {
+      "geogLocation": {
+       "latitude": 32.7625,
+       "longitude": -96.9944444
+      }
+     }
+    },
+    "variable": {
+     "variableCode": [
+      {
+       "value": "00060"
+      }
+     ],
+     "unit": {
+      "unitCode": "ft3/s"
+     },
+     "noDataValue": -999999.0
+    },
+    "values": [
+     {
+      "value": [
+       {
+        "value": "187",
+        "qualifiers": [
+         "P"
+        ],
+        "dateTime": "2026-11-08T12:00:00.000-06:00"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

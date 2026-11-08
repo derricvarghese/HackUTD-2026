@@ -15,7 +15,7 @@ export interface TestEnv extends BeaconApp {
   signed(device: TestDevice, method: string, path: string, body?: unknown): supertest.Test;
   upload(device: TestDevice, envelopes: unknown[]): Promise<supertest.Response>;
   envelope(device: TestDevice, payload: Record<string, unknown>, opts?: Record<string, unknown>): ReturnType<typeof buildEnvelope>;
-  ws(token: string): Promise<WsClient>;
+  ws(token: string, query?: string): Promise<WsClient>;
   encKey: string;
 }
 
@@ -26,7 +26,7 @@ export interface WsClient {
   close(): void;
 }
 
-export async function startTestApp(overrides: { llm?: TriageLlm; push?: import('../src/services/push').PushProvider; env?: Record<string, string>; logger?: import('../src/logger').Logger } = {}): Promise<TestEnv> {
+export async function startTestApp(overrides: { fetch?: typeof fetch; llm?: TriageLlm; push?: import('../src/services/push').PushProvider; env?: Record<string, string>; logger?: import('../src/logger').Logger } = {}): Promise<TestEnv> {
   const enc = generateKeyPair();
   const sign = generateKeyPair();
   const cfg = loadConfig({
@@ -34,7 +34,7 @@ export async function startTestApp(overrides: { llm?: TriageLlm; push?: import('
     BACKEND_ENC_PRIVATE_KEY: enc.privateKey, BACKEND_SIGN_PRIVATE_KEY: sign.privateKey, VALIDATE_RESPONSES: 'true',
     SENDER_RATE_PER_HOUR: '1000', IP_RATE_PER_MIN: '100000', HEARTBEAT_RATE_PER_MIN: '1000', LOGIN_RATE_PER_MIN: '1000', DEVICE_REGISTER_RATE_PER_MIN: '1000', ...overrides.env,
   } as NodeJS.ProcessEnv);
-  const app = await createApp(cfg, { llm: overrides.llm, push: overrides.push, logger: overrides.logger });
+  const app = await createApp(cfg, { fetch: overrides.fetch, llm: overrides.llm, push: overrides.push, logger: overrides.logger });
   await app.ctx.pool.query(
     'truncate sos, sos_reports, triage_results, sos_events, checkins, assignments, heartbeats, silent_devices, deadzones, mesh_outbox, voice_notes, case_images, rejections, devices, refresh_tokens, events restart identity cascade',
   );
@@ -69,9 +69,9 @@ export async function startTestApp(overrides: { llm?: TriageLlm; push?: import('
     envelope(device, payload, opts = {}) {
       return buildEnvelope({ device, backendEncPublicKey: encKey, payload, ...opts });
     },
-    ws(token) {
+    ws(token, query = '') {
       return new Promise<WsClient>((resolve, reject) => {
-        const sock = new WebSocket(`${baseUrl.replace('http', 'ws')}/v1/ws?token=${encodeURIComponent(token)}`);
+        const sock = new WebSocket(`${baseUrl.replace('http', 'ws')}/v1/ws?token=${encodeURIComponent(token)}${query ? `&${query}` : ''}`);
         const frames: WsClient['frames'] = [];
         const waiters: { event: string; pred: (d: any) => boolean; res: (f: any) => void }[] = [];
         sock.on('message', (m) => {

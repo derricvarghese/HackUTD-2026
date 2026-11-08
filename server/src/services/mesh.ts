@@ -17,6 +17,7 @@ import { senderHash } from './devices';
 import { viewsFor, getRowOrThrow } from './sosView';
 import type { Viewer } from '../domain/privacy';
 import { seedDemoImages } from './images';
+import { seedResponderPresence } from './responders';
 import { fakeProfile, insertSyntheticProfile, summaryOf } from './profileSeed';
 
 export type MeshStats = components['schemas']['MeshStats'];
@@ -112,6 +113,7 @@ const hopPath = (n: number, rnd = Math.random) => Array.from({ length: n }, () =
 export async function simulate(ctx: Ctx, b: { lat: number; lng: number; category: 'injured' | 'trapped' | 'need_water_meds' | 'safe' | 'other'; text?: string; people_count?: number; hops?: number }, viewer: Viewer) {
   requireDemo(ctx);
   const fence = await geofencePicker(ctx);
+  await seedResponderPresence(ctx, fence?.pick ?? (() => ({ lat: b.lat, lng: b.lng })));
   if (fence && !fence.inside(b.lat, b.lng)) b = { ...b, ...fence.pick() }; // demo cases belong inside the event's geofence
   const tier: Tier = tierFor(b.category);
   const max = HOP_TABLE[tier].max_hops;
@@ -162,6 +164,7 @@ export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number
   requireDemo(ctx);
   if (!(await activeEventRow(ctx))) await createEvent(ctx, { name: 'Synthetic demo event', synthetic: true, region: undefined, retention_days: 1 } as never);
   const fence = await geofencePicker(ctx);
+  await seedResponderPresence(ctx, fence?.pick ?? (() => { const r = (b.radius_km ?? 5) * Math.sqrt(Math.random()) / 111.32, th = Math.random() * 2 * Math.PI; return { lat: b.center_lat + r * Math.sin(th), lng: b.center_lng + (r * Math.cos(th)) / Math.max(Math.cos((b.center_lat * Math.PI) / 180), 0.01) }; }));
   const count = Math.min(500, b.count ?? 40);
   const radius = b.radius_km ?? 5;
   const now = new Date();

@@ -3,7 +3,7 @@ import { profileScore, type ProfileTriageCtx } from '../profile';
 
 export type Category = 'injured' | 'trapped' | 'need_water_meds' | 'safe' | 'other';
 export type Confidence = 'low' | 'medium' | 'high';
-export interface Reason { source: 'rule' | 'llm' | 'silence' | 'heartbeat' | 'manual'; text: string; weight?: number }
+export interface Reason { source: 'rule' | 'llm' | 'silence' | 'heartbeat' | 'manual'; text: string; weight?: number; /** set on reasons contributed by the dispatch agent */ tag?: 'agent' }
 
 export interface TriageInput {
   category: Category;

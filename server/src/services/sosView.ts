@@ -12,7 +12,7 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const deviceIds = [...new Set(rows.map((r) => r.device_id).filter((d): d is string => !!d))];
-  const [triage, assigns, profiles, devs, ev, imageCounts] = await Promise.all([
+  const [triage, assigns, profiles, devs, ev, imageCounts, agentRuns] = await Promise.all([
     ctx.db.selectFrom('triage_results').select(['sos_id', 'reasons'])
       .distinctOn('sos_id').where('sos_id', 'in', ids).orderBy('sos_id').orderBy('scored_at', 'desc').orderBy('created_at', 'desc').execute(),
     ctx.db.selectFrom('assignments').innerJoin('responders', 'responders.id', 'assignments.responder_id')
@@ -22,7 +22,9 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
     deviceIds.length ? ctx.db.selectFrom('devices').select(['id', 'last_heartbeat_at']).where('id', 'in', deviceIds).execute() : Promise.resolve([]),
     activeEventRow(ctx),
     imageCountsFor(ctx, ids),
+    ctx.db.selectFrom('agent_runs').select(['sos_id', 'status', 'assessment']).distinctOn('sos_id').where('sos_id', 'in', ids).where('status', '!=', 'cancelled').orderBy('sos_id').orderBy('created_at', 'desc').execute(),
   ]);
+  const agentBy = new Map(agentRuns.map((a) => [a.sos_id, { status: a.status as 'queued' | 'running' | 'complete' | 'failed', summary: a.status === 'complete' ? ((a.assessment as { summary?: string } | null)?.summary ?? null) : null }]));
   const hbBy = new Map(devs.map((d) => [d.id, d.last_heartbeat_at]));
   const now = new Date();
   const { heartbeatS, silenceS } = eventTimers(ctx.cfg, ev);
@@ -48,7 +50,7 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
     if (row.heartbeat_boost > 0) reasons.push({ source: 'heartbeat', text: 'Device stopped heartbeating while neighbours still report: priority raised', weight: row.heartbeat_boost });
     if (row.score_override != null) reasons.push({ source: 'manual', text: `Score manually set to ${row.score_override}`, weight: row.score_override });
     const a = assignBy.get(row.id);
-    return { row, liveness: { lastHeartbeatAt: row.device_id ? hbBy.get(row.device_id) ?? null : null, now, heartbeatS, silenceS }, reasons, profile: profiles.get(row.id) ?? null, imageCount: imageCounts.get(row.id) ?? 0, assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
+    return { row, liveness: { lastHeartbeatAt: row.device_id ? hbBy.get(row.device_id) ?? null : null, now, heartbeatS, silenceS }, reasons, profile: profiles.get(row.id) ?? null, imageCount: imageCounts.get(row.id) ?? 0, agent: agentBy.get(row.id), assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
   });
 }
 

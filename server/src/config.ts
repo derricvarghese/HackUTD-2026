@@ -38,6 +38,30 @@ const schema = z.object({
   AI_TRIAGE_BREAKER_WAIT_MS: z.coerce.number().int().min(0).default(5000),
   /** Artificial latency for the offline StubLlm so the provisional -> final transition is visible. Defaults to 1500 in DEMO_MODE, else 0. */
   AI_TRIAGE_DEMO_DELAY_MS: z.coerce.number().int().min(0).default(0),
+  /** Dispatch agent (tool-calling Nemotron loop that proposes a dispatch for human approval). '' = on when NEMOTRON_BASE_URL is set. */
+  AGENT_ENABLED: z.enum(['true', 'false', '1', '0', '']).optional().default(''),
+  AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(20).default(6),
+  AGENT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(25000),
+  AGENT_LLM_TIMEOUT_MS: z.coerce.number().int().min(500).default(15000),
+  AGENT_CONCURRENCY: z.coerce.number().int().min(1).default(2),
+  AGENT_THINKING: bool(false),
+  /** false disables every external HTTP tool (tests, offline). Tools then answer {ok:false,error:'external tools disabled'}. */
+  AGENT_EXTERNAL_TOOLS: bool(true),
+  AGENT_TOOL_TIMEOUT_EXTERNAL_MS: z.coerce.number().int().min(100).default(6000),
+  AGENT_TOOL_TIMEOUT_INTERNAL_MS: z.coerce.number().int().min(50).default(2000),
+  /** At most one automatic re-run per case in this window (manual re-runs are exempt). */
+  AGENT_RERUN_MIN_S: z.coerce.number().int().min(0).default(120),
+  AGENT_SWEEP_S: z.coerce.number().int().min(1).default(60),
+  /** DEMO_MODE only: `flash_flood` injects a recorded NWS flash flood warning and a rising gauge into the weather/river tools (labelled synthetic). */
+  AGENT_DEMO_WEATHER: z.enum(['', 'flash_flood']).optional().default(''),
+  OVERPASS_URLS: z.string().default('https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter').transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean)),
+  OVERPASS_TIMEOUT_MS: z.coerce.number().int().min(100).default(30000),
+  FACILITIES_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(4),
+  FACILITIES_BACKOFF_MS: z.string().default('5000,30000,120000').transform((v) => v.split(',').map((x) => Math.max(0, Number(x.trim()) || 0))),
+  /** A responder whose app was last seen longer ago than this is no longer in the field (in_app=false, available=false). DEMO_MODE: 30. */
+  RESPONDER_PRESENCE_TIMEOUT_S: z.coerce.number().int().min(1).default(180),
+  /** Dispatch agent prefers responders whose position was updated within this many seconds. */
+  RESPONDER_POSITION_FRESH_S: z.coerce.number().int().min(1).default(900),
   DEMO_MODE: bool(false),
   SEED_ON_START: bool(true),
   SEED_PASSWORD: z.string().default('beacon-demo'),
@@ -86,13 +110,13 @@ const schema = z.object({
   OPENAPI_PATH: z.string().optional().default(''),
 });
 
-export type Config = Omit<z.infer<typeof schema>, 'VALIDATE_RESPONSES' | 'JOBS_ENABLED'> & { validateResponses: boolean; jobsEnabled: boolean };
+export type Config = Omit<z.infer<typeof schema>, 'VALIDATE_RESPONSES' | 'JOBS_ENABLED' | 'AGENT_ENABLED'> & { validateResponses: boolean; jobsEnabled: boolean; agentEnabled: boolean };
 
 /** In DEMO_MODE the timers shrink so silence and dead zones show up inside a 3 minute demo (explicit env values still win). */
-const DEMO_TIMERS: Record<string, number> = { CHECKIN_INTERVAL_S: 30, CHECKIN_INTERVAL_CRITICAL_S: 20, CHECKIN_INTERVAL_HIGH_S: 25, CHECKIN_WINDOW_S: 30, CHECKIN_REMINDER_S: 20, CHECKIN_REMINDER_SLOW_S: 60, SILENCE_THRESHOLD_S: 60, HEARTBEAT_INTERVAL_S: 15, DEADZONE_QUIET_S: 120 };
+const DEMO_TIMERS: Record<string, number> = { CHECKIN_INTERVAL_S: 30, CHECKIN_INTERVAL_CRITICAL_S: 20, CHECKIN_INTERVAL_HIGH_S: 25, CHECKIN_WINDOW_S: 30, CHECKIN_REMINDER_S: 20, CHECKIN_REMINDER_SLOW_S: 60, SILENCE_THRESHOLD_S: 60, HEARTBEAT_INTERVAL_S: 15, DEADZONE_QUIET_S: 120, RESPONDER_PRESENCE_TIMEOUT_S: 30 };
 
 /** Tests must not sleep through production backoffs. Explicit env values still win. */
-const TEST_DEFAULTS: Record<string, string> = { AI_TRIAGE_BACKOFF_MS: '20,20,20', AI_TRIAGE_BREAKER_WAIT_MS: '50', AI_TRIAGE_DEMO_DELAY_MS: '0' };
+const TEST_DEFAULTS: Record<string, string> = { AI_TRIAGE_BACKOFF_MS: '20,20,20', AI_TRIAGE_BREAKER_WAIT_MS: '50', AI_TRIAGE_DEMO_DELAY_MS: '0', AGENT_EXTERNAL_TOOLS: 'false', FACILITIES_BACKOFF_MS: '20,20,20', AGENT_SWEEP_S: '3600' };
 
 export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
   const env = rawEnv.NODE_ENV === 'test' ? { ...TEST_DEFAULTS, ...rawEnv } : rawEnv;
@@ -101,11 +125,12 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
     const msg = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment: ${msg}`);
   }
-  const { VALIDATE_RESPONSES, JOBS_ENABLED, ...rest } = parsed.data;
+  const { VALIDATE_RESPONSES, JOBS_ENABLED, AGENT_ENABLED, ...rest } = parsed.data;
   const cfg = {
     ...rest,
     validateResponses: VALIDATE_RESPONSES ? VALIDATE_RESPONSES === 'true' : rest.NODE_ENV !== 'production',
     jobsEnabled: JOBS_ENABLED ? JOBS_ENABLED === 'true' : rest.NODE_ENV !== 'test',
+    agentEnabled: AGENT_ENABLED ? AGENT_ENABLED === 'true' || AGENT_ENABLED === '1' : !!rest.NEMOTRON_BASE_URL && rest.NODE_ENV !== 'test',
   };
   if (cfg.DEMO_MODE) for (const [k, v] of Object.entries(DEMO_TIMERS)) if (!env[k]) (cfg as Record<string, unknown>)[k] = v;
   if (cfg.DEMO_MODE && !env.AI_TRIAGE_DEMO_DELAY_MS) cfg.AI_TRIAGE_DEMO_DELAY_MS = 1500;

@@ -62,6 +62,7 @@ export async function caseSilenceTick(ctx: Ctx, now = new Date()): Promise<CaseS
       await addEvent(ctx.db, c.id, 'silent_flagged', { kind: 'system' }, { source: 'silence', reason: 'no_heartbeat', gap_seconds: gap, contact_state: 'lost_contact', score });
     } else out.escalated++;
     await broadcastSos(ctx, c.silent ? 'sos.updated' : 'sos.silent', c.id);
+    if (!c.silent) void ctx.agent.trigger(c.id, 'contact_change');
   }
   return out;
 }

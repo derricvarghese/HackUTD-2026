@@ -122,6 +122,7 @@ export function createAiTriage(ctx: Ctx): AiTriage {
       if (done) {
         ctx.log.info({ sos_id: id, ms: Date.now() - started, attempts, score: outcome.score, model: outcome.model }, 'ai triage complete');
         await broadcastSos(ctx, 'sos.updated', id);
+        void ctx.agent.trigger(id, 'new_case'); // the agent builds on the finished extraction
       } else {
         const r = running.get(id); if (r) r.again = true; // inputs changed meanwhile: the new generation is already provisional, go again
       }
@@ -144,6 +145,7 @@ export function createAiTriage(ctx: Ctx): AiTriage {
     if (done) {
       ctx.log.warn({ sos_id: id, attempts }, 'ai triage failed; rules score stands');
       await broadcastSos(ctx, 'sos.updated', id);
+      void ctx.agent.trigger(id, 'new_case'); // rules + welfare signals still deserve a dispatch plan
     } else { const r = running.get(id); if (r) r.again = true; }
   }
 

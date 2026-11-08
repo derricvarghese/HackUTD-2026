@@ -12,12 +12,25 @@ export interface LlmInput {
   /** Coarse, sanitised vulnerability facts (see `llmProfileContext`). Never contains name, phone, address or contacts. */
   profile_context?: { age_range: string | null; vulnerability_flags: string[]; conditions: string[]; medications: string[]; mobility_needs: string[] };
 }
+export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
+export interface ChatMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string }
+export interface ToolChatRequest {
+  messages: ChatMessage[];
+  tools: unknown[];
+  toolChoice?: 'auto' | 'required' | { type: 'function'; function: { name: string } };
+  thinking: boolean;
+  maxTokens?: number;
+  timeoutMs: number;
+}
+export interface ToolChatResult { message: { content: string | null; tool_calls?: ToolCall[] }; usage?: { prompt_tokens?: number; completion_tokens?: number }; model: string }
 export interface LlmResult { extraction: LlmExtraction; model: string }
 export interface TriageLlm {
   readonly model: string;
   /** Returns null when the LLM is unavailable (timeout, breaker open, bad output): callers fall back to rules only. */
   extract(input: LlmInput): Promise<LlmResult | null>;
   health(): { status: 'ok' | 'degraded' | 'down'; model: string; latency_ms?: number };
+  /** Tool-calling chat (OpenAI-compatible `tools` + `tool_choice`) for the dispatch agent. Null = unavailable (timeout, breaker open, transport error). Absent = no agent. */
+  chatTools?(req: ToolChatRequest): Promise<ToolChatResult | null>;
   /** False while the circuit breaker is open: the triage queue then waits instead of burning attempts. Absent = always available. */
   available?(): boolean;
   /** Active reachability probe (GET /models). Optional: implementations without a remote endpoint just use `health()`. */
@@ -139,6 +152,37 @@ export class NemotronClient implements TriageLlm {
     this.breaker.failure();
     this.lastOk = false;
     return null;
+  }
+
+  /** One tool-calling turn. Uses the same client, model and circuit breaker as `extract`; never throws. */
+  async chatTools(req: ToolChatRequest): Promise<ToolChatResult | null> {
+    if (!this.breaker.allow()) { this.lastOk = false; return null; }
+    this.everCalled = true;
+    const started = Date.now();
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), req.timeoutMs);
+    try {
+      const res = await this.client.chat.completions.create(
+        {
+          model: this.o.model, temperature: 0, max_tokens: req.maxTokens ?? 1200,
+          messages: req.messages, tools: req.tools, tool_choice: req.toolChoice ?? 'auto',
+          ...(req.thinking ? {} : { chat_template_kwargs: { enable_thinking: false } }),
+        },
+        { signal: ac.signal, timeout: req.timeoutMs },
+      );
+      const m = res?.choices?.[0]?.message;
+      if (!m) throw new Error('empty completion');
+      this.breaker.success();
+      this.lastOk = true;
+      this.lastLatency = Date.now() - started;
+      return { message: { content: typeof m.content === 'string' ? m.content : null, tool_calls: Array.isArray(m.tool_calls) && m.tool_calls.length ? m.tool_calls : undefined }, usage: res?.usage, model: this.o.model };
+    } catch {
+      this.breaker.failure();
+      this.lastOk = false;
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Reachable + breaker closed + last extraction fine = ok; reachable but struggling = degraded; unreachable = down. */

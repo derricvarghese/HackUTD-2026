@@ -9,6 +9,8 @@ import type { TriageLlm } from './llm/nemotron';
 import type { TokenBuckets } from './domain/rateLimit';
 import type { PushProvider } from './services/push';
 import type { AiTriage } from './services/aiTriage';
+import type { AgentRunner } from './agent/runner';
+import type { FacilitiesService } from './agent/facilities';
 import type { KeyObject } from 'node:crypto';
 
 export interface DeviceAuth { id: string; publicKey: KeyObject; senderHash: string; flagged: boolean }
@@ -33,6 +35,12 @@ export interface Ctx {
   idle(): Promise<void>;
   /** asynchronous LLM triage queue (provisional rules score first, AI result later) */
   aiTriage: AiTriage;
+  /** dispatch agent: tool-calling Nemotron loop that proposes a dispatch for human approval */
+  agent: AgentRunner;
+  /** background Overpass ingestion of hospitals, shelters and fire stations per event */
+  facilities: FacilitiesService;
+  /** outbound HTTP for the agent's external tools (tests inject a fake); defaults to global fetch */
+  fetch?: typeof fetch;
   /** serialises dedupe across processes (Postgres advisory lock) so two simultaneous ingests cannot both miss each other */
   dedupeLock<T>(fn: () => Promise<T>): Promise<T>;
 }

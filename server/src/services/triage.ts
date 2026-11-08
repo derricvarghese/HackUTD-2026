@@ -70,7 +70,9 @@ export type PersistMode =
   /** AI result for the claim generation `gen`; discarded when the inputs changed meanwhile */
   | { mode: 'ai'; gen: number; attempts: number }
   /** AI gave up for this round; the rules score stands */
-  | { mode: 'failed'; gen: number; attempts: number };
+  | { mode: 'failed'; gen: number; attempts: number }
+  /** dispatch agent adjustment on top of the stored rules + extraction result: no status or generation change */
+  | { mode: 'agent' };
 
 /**
  * Persists a triage outcome (history kept) and syncs the case row. Returns true when it was applied.
@@ -82,7 +84,7 @@ export async function persistTriage(ctx: Ctx, sosId: string, o: TriageOutcome, a
   const applied = await ctx.db.transaction().execute(async (trx) => {
     const before = await trx.selectFrom('sos').select(['triage_gen', 'triage_status', 'silence_boost', 'heartbeat_boost', 'contact_boost', 'urgent_boost', 'duplicate_count']).where('id', '=', sosId).forUpdate().executeTakeFirst();
     if (!before) return false;
-    if (how.mode !== 'rules' && (before.triage_gen !== how.gen || before.triage_status !== 'pending')) return false; // inputs changed while the AI was running
+    if ((how.mode === 'ai' || how.mode === 'failed') && (before.triage_gen !== how.gen || before.triage_status !== 'pending')) return false; // inputs changed while the AI was running
     await trx.insertInto('triage_results').values(triageRow(sosId, o)).execute();
     let score = withBoosts(o.score, before.silence_boost, before.heartbeat_boost, before.contact_boost, before.urgent_boost);
     if (before.duplicate_count > 0) {
@@ -92,11 +94,13 @@ export async function persistTriage(ctx: Ctx, sosId: string, o: TriageOutcome, a
     const patch =
       how.mode === 'rules'
         ? { triage_status: 'provisional' as const, triage_gen: before.triage_gen + 1, triage_attempts: 0, triage_sweeps: 0, triage_requested_at: sql<Date>`now()`, triage_next_at: sql<Date>`now()`, triage_claimed_at: null }
+        : how.mode === 'agent'
+          ? {}
         : how.mode === 'ai'
           ? { triage_status: 'complete' as const, triage_attempts: how.attempts, triage_updated_at: sql<Date>`now()`, triage_claimed_at: null }
           : { triage_status: 'failed' as const, triage_attempts: how.attempts, triage_claimed_at: null, triage_next_at: sql<Date>`now() + make_interval(secs => ${ctx.cfg.AI_TRIAGE_FAILED_RETRY_S})` };
     await trx.updateTable('sos').set((eb) => ({ ...patch, score, confidence: o.confidence, version: eb('version', '+', 1), updated_at: now })).where('id', '=', sosId).execute();
-    await addEvent(trx, sosId, 'triaged', actor, { score: o.score, confidence: o.confidence, llm_used: o.llm_used, model: o.model, source: how.mode === 'rules' ? 'rules' : how.mode === 'ai' ? 'ai' : 'rules_fallback' });
+    await addEvent(trx, sosId, 'triaged', actor, { score: o.score, confidence: o.confidence, llm_used: o.llm_used, model: o.model, source: how.mode === 'rules' ? 'rules' : how.mode === 'ai' ? 'ai' : how.mode === 'agent' ? 'agent' : 'rules_fallback' });
     return true;
   });
   if (applied && how.mode === 'rules') ctx.aiTriage.enqueue(sosId);
