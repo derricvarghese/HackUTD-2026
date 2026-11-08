@@ -395,7 +395,7 @@ export function MapView(p: MapViewProps) {
     }
   }, [p.facilities]);
 
-  // responders (only for non-volunteers, pin only when in_app and location set, grey when location_updated_at > 15m)
+  // responders (only for non-volunteers, pin only when in_app and location set, hidden when location_updated_at > 15m)
   useEffect(() => {
     const g = groups.current;
     if (!g) return;
@@ -405,13 +405,14 @@ export function MapView(p: MapViewProps) {
     for (const r of p.responders ?? []) {
       if (!r.location || !r.in_app || r.role === 'admin') continue; // pin only when location set, in_app, and not admin
       const isStale = !r.location_updated_at || (now - Date.parse(r.location_updated_at)) > 15 * 60 * 1000;
+      if (isStale) continue; // stale positions are not shown
       const initials = r.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
-      const color = isStale ? '#94A3B8' : r.available ? '#16A34A' : '#2563EB';
+      const color = r.available ? '#16A34A' : '#2563EB';
       const m = L.marker([r.location.lat, r.location.lng], {
         icon: dotIcon(color, initials),
-        title: `${r.name}${r.available ? ' (available)' : ''}${isStale ? ' · stale location (>15m)' : ''}`,
+        title: `${r.name}${r.available ? ' (available)' : ''}`,
       });
-      m.bindTooltip(`${r.name}${r.organization ? ` · ${r.organization}` : ''} (${r.available ? 'Available' : 'Assigned'})${isStale ? ' [stale location]' : ''}`);
+      m.bindTooltip(`${r.name}${r.organization ? ` · ${r.organization}` : ''} (${r.available ? 'Available' : 'Assigned'})`);
       m.addTo(g.responders);
     }
   }, [p.responders, p.canAct]);

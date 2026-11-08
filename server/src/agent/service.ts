@@ -61,6 +61,8 @@ export async function approveProposal(ctx: Ctx, sosId: string, proposalId: strin
   if (actor.role !== 'admin' && p.responder_id !== actor.id) throw forbidden('Only an admin or the responder named in the proposal can approve it');
   if (p.status !== 'proposed') throw conflict(`Proposal is already ${p.status}`, { status: p.status });
   if (!responderId) throw invalid('This proposal names no responder; an admin must pass responder_id', { responder_id: 'required' });
+  const target = await ctx.db.selectFrom('responders').select('role').where('id', '=', responderId).executeTakeFirst();
+  if (target?.role === 'admin') throw invalid('Admins are never assigned to cases from agent proposals', { responder_id: 'admin' });
   const now = new Date();
   // conditional UPDATE = the arbiter between two simultaneous approvals
   const won = await ctx.db.updateTable('agent_proposals').set({ status: 'approved', decided_by: actor.id, decided_at: now, decision_note: b.note?.trim() || null, responder_id: responderId, updated_at: now })

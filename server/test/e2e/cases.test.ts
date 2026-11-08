@@ -368,8 +368,9 @@ describe('responders and auth', () => {
     const dave = created.body.id;
     expect((await t.request.post('/v1/auth/login').send({ username: uname, password: 'dave-password' })).status).toBe(200);
 
-    const list = await t.request.get('/v1/responders?skill=boat&available=true').set(auth(bob));
-    expect(list.body.data.map((r: any) => r.username).sort()).toEqual(['alice', uname]);
+    const list = await t.request.get('/v1/responders?skill=boat&available=false').set(auth(bob));
+    expect(list.body.data.map((r: any) => r.username)).toContain(uname); // new responders default to unavailable
+    expect(created.body.available).toBe(false);
     const page = await t.request.get('/v1/responders?limit=2').set(auth(bob));
     expect(page.body.data).toHaveLength(2);
     expect(page.body.next_cursor).toBeTruthy();
