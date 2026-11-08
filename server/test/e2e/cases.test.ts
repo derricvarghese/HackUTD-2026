@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { startTestApp, type TestEnv } from '../helpers';
@@ -394,12 +395,20 @@ describe('system', () => {
     expect(si.hop_limits).toHaveLength(5);
     expect(si.hop_limits.find((x: any) => x.tier === 'heartbeat')).toEqual({ tier: 'heartbeat', max_hops: 2, ttl_seconds: 1800 });
     expect(si.encryption_public_key).toBeTruthy();
-    const root = await t.request.get('/');
-    expect(root.status).toBe(200);
-    expect(root.headers['content-type']).toMatch(/html/);
-    const spa = await t.request.get('/cases/123/detail');
-    expect(spa.status).toBe(200);
-    expect(spa.text).toContain('<title>Beacon</title>');
+    // the dashboard is build output (web/ -> server/public), so the test serves a fixture via PUBLIC_DIR
+    const fixture = path.join(__dirname, '..', 'fixtures', 'public');
+    const web = await startTestApp({ env: { PUBLIC_DIR: fixture } });
+    try {
+      const root = await web.request.get('/');
+      expect(root.status).toBe(200);
+      expect(root.headers['content-type']).toMatch(/html/);
+      const spa = await web.request.get('/cases/123/detail');
+      expect(spa.status).toBe(200);
+      expect(spa.text).toContain('<title>Beacon</title>');
+      expect((await web.request.get('/v1/does-not-exist')).status).toBe(404);
+    } finally {
+      await web.close();
+    }
     const nf = await t.request.get('/v1/does-not-exist');
     expect(nf.status).toBe(404);
     expect(nf.body.code).toBe('not_found');

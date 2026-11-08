@@ -1,67 +1,70 @@
+#if canImport(Network)
 import Foundation
 import Network
 
-/// Watches connectivity and POSTs held envelopes to the backend when this phone is a gateway.
+/// Apple glue around `GatewaySync`: watches connectivity (NWPathMonitor) and drives periodic sync cycles.
+/// All callbacks arrive on the main queue.
 public final class GatewayUploader {
-    public var backendURL: URL?
-    /// Demo switch: pretend there is no internet even when there is.
-    public var forceOffline = false {
-        didSet { if oldValue && !forceOffline && pathOnline { onOnline?() } }
-    }
+    public let sync: GatewaySync
     public var onOnline: (() -> Void)?
-    public var onUploaded: ((String) -> Void)?
-    public var log: (String) -> Void = { _ in }
+    public var onChange: (() -> Void)?
 
-    public var isOnline: Bool { pathOnline && !forceOffline && backendURL != nil }
+    /// Demo switch: pretend there is no internet even when there is.
+    public var forceOffline: Bool {
+        get { sync.forceOffline }
+        set {
+            let was = isOnline
+            sync.forceOffline = newValue
+            if !was && isOnline { becameOnline() }
+            onChange?()
+        }
+    }
+
+    /// Internet reachable, not forced offline.
+    public var isOnline: Bool { sync.isOnline }
+    public var hasInternet: Bool { sync.reachable }
 
     private let monitor = NWPathMonitor()
-    private var pathOnline = false
-    private var inFlight = Set<String>()
-    private let relayId: String
+    private var timer: Timer?
 
-    public init(relayId: String, backendURL: URL?) {
-        self.relayId = relayId
-        self.backendURL = backendURL
+    public init(sync: GatewaySync) {
+        self.sync = sync
+        sync.hop = { work in DispatchQueue.main.async(execute: work) }
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 guard let self else { return }
                 let was = self.isOnline
-                self.pathOnline = path.status == .satisfied
-                if !was && self.isOnline { self.onOnline?() }
+                self.sync.reachable = path.status == .satisfied
+                if !was && self.isOnline { self.becameOnline() }
+                self.onChange?()
             }
         }
+    }
+
+    public func start() {
         monitor.start(queue: DispatchQueue(label: "beacon.mesh.path"))
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.tick() }
     }
 
-    deinit { monitor.cancel() }
-
-    /// Call on the main queue.
-    public func upload(_ msg: StoredMessage) {
-        guard let base = backendURL, !inFlight.contains(msg.id), !msg.uploaded else { return }
-        guard let envelopeObj = try? JSONSerialization.jsonObject(with: msg.envelope.jsonData()) else { return }
-        let body: [String: Any] = [
-            "envelope": envelopeObj,
-            "gateway": relayId,
-            "receivedAt": msg.receivedAt,
-        ]
-        var req = URLRequest(url: base.appendingPathComponent("api/mesh/ingest"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 15
-        inFlight.insert(msg.id)
-        URLSession.shared.dataTask(with: req) { [weak self] _, response, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.inFlight.remove(msg.id)
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if (200..<300).contains(code) {
-                    self.log("UPLOAD \(msg.id.prefix(8)) ok")
-                    self.onUploaded?(msg.id)
-                } else {
-                    self.log("UPLOAD \(msg.id.prefix(8)) failed: \(error?.localizedDescription ?? "HTTP \(code)")")
-                }
-            }
-        }.resume()
+    public func stop() {
+        monitor.cancel()
+        timer?.invalidate()
     }
+
+    /// Periodic work: sync (upload, outbox, statuses, check-ins) and the heartbeat when due.
+    /// Also called from BLE callbacks, which is what keeps the app useful while backgrounded.
+    public func tick() {
+        sync.requestCycle()
+        Task { await sync.heartbeatIfDue() }
+    }
+
+    public func syncNow() { sync.requestCycle(force: true) }
+
+    private func becameOnline() {
+        onOnline?()
+        sync.requestCycle(force: true)
+    }
+
+    deinit { monitor.cancel(); timer?.invalidate() }
 }
+#endif

@@ -72,10 +72,13 @@ import kotlinx.coroutines.delay
 /** Max readable width of a content column on tablets / unfolded foldables. */
 val ContentMaxWidth = 840.dp
 
-/** Large expressive app bar (compact app bar in short landscape windows) around scrollable content. */
+/**
+ * Large expressive app bar (compact app bar in short landscape windows) around scrollable content.
+ * Pass a null [title] for a screen with no app bar at all (the Home screen).
+ */
 @Composable
 fun ScreenScaffold(
-    title: String,
+    title: String?,
     modifier: Modifier = Modifier,
     navigationIcon: @Composable () -> Unit = {},
     actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
@@ -90,7 +93,9 @@ fun ScreenScaffold(
         containerColor = Color.Transparent,
         floatingActionButton = floatingActionButton,
         topBar = {
-            if (shortWindow) {
+            if (title == null) {
+                // No app bar: content starts below the status bar via the scaffold insets.
+            } else if (shortWindow) {
                 TopAppBar(
                     title = { Text(title, maxLines = 1) },
                     navigationIcon = navigationIcon,

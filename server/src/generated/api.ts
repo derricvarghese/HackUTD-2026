@@ -967,7 +967,7 @@ export interface components {
             /** @description Base64 X.509 ECDSA P-256 public key from Android Keystore */
             public_key: string;
             /** @enum {string} */
-            platform: "android";
+            platform: "android" | "ios";
             app_version?: string;
             push_token?: string;
             display_name?: string;

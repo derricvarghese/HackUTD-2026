@@ -5,3 +5,6 @@ docs
 **/dist
 **/.env
 **/*.log
+server/public
+web/.vite
+**/coverage

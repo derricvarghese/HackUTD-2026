@@ -1,4 +1,12 @@
 # Build context is the repo root (the build copies ../openapi.yaml), see server/docker-compose.yml.
+# Dashboard: web/ builds straight into /build/server/public (see web/vite.config.ts).
+FROM node:22-alpine AS web
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM node:22-alpine AS build
 WORKDIR /build/server
 COPY server/package.json server/package-lock.json ./
@@ -17,7 +25,7 @@ ENV NODE_ENV=production PORT=3000
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /build/server/dist ./dist
-COPY --from=build /build/server/public ./public
+COPY --from=web /build/server/public ./public
 COPY server/package.json ./
 USER node
 EXPOSE 3000

@@ -9,7 +9,8 @@ public enum Framing {
     public static func chunk(_ payload: Data, transferId: UInt32, maxWriteLength: Int) -> [Data] {
         let dataPerChunk = max(1, maxWriteLength - headerSize)
         let count = max(1, (payload.count + dataPerChunk - 1) / dataPerChunk)
-        precondition(count <= maxChunks, "envelope too large for mesh transport")
+        // Too large for the transport: callers send nothing (Android throws here; neither side may crash).
+        guard count <= maxChunks else { return [] }
         var frames: [Data] = []
         frames.reserveCapacity(count)
         let bytes = [UInt8](payload)

@@ -53,3 +53,26 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+  web:
+    name: Web dashboard (typecheck, lint, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Generated API types are up to date
+        run: |
+          npm run typegen
+          git diff --exit-code src/api/types.ts

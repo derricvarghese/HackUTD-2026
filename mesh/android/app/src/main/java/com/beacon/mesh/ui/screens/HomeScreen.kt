@@ -94,7 +94,7 @@ fun HomeScreen(
     val now = rememberNow()
 
     ScreenScaffold(
-        title = stringResource(R.string.app_name),
+        title = null,
         floatingActionButton = {
             FloatingActionButtonMenu(
                 expanded = menuOpen,

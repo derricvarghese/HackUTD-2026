@@ -1888,7 +1888,7 @@ components:
       required: [public_key, platform]
       properties:
         public_key: { type: string, description: Base64 X.509 ECDSA P-256 public key from Android Keystore }
-        platform: { type: string, enum: [android] }
+        platform: { type: string, enum: [android, ios] }
         app_version: { type: string }
         push_token: { type: string }
         display_name: { type: string, maxLength: 60 }

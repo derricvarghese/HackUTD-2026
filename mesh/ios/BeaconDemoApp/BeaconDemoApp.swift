@@ -8,8 +8,7 @@ struct BeaconDemoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MeshDemoView(node: node)
-                .onAppear { node.start() }
+            BeaconRootView(node: node)
         }
     }
 }

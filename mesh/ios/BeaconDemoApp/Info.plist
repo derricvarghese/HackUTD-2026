@@ -3,20 +3,27 @@
 <!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE = YES). -->
 <plist version="1.0">
 <dict>
+    <key>CFBundleDisplayName</key>
+    <string>Beacon</string>
+    <key>CFBundleName</key>
+    <string>Beacon</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Beacon passes SOS messages phone-to-phone over Bluetooth when cell service is down.</string>
+    <string>Beacon passes SOS messages from phone to phone over Bluetooth when cell service is down.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Your location is attached to SOS messages so responders can find you.</string>
+    <string>Beacon attaches your location to SOS messages, encrypted so only responders can read it.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>bluetooth-central</string>
         <string>bluetooth-peripheral</string>
     </array>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <!-- Lets a hackathon backend on plain http (e.g. a laptop IP) work. Remove for production. -->
-        <key>NSAllowsArbitraryLoads</key>
-        <true/>
-    </dict>
+    <!-- Backend settings, filled from the Xcode build settings of the same names (Build Settings > User-Defined).
+         BEACON_ENC_PUBLIC_KEY / BEACON_SIGN_PUBLIC_KEY are the server's public keys (base64 X.509 SPKI) so a phone that
+         has never been online can still encrypt. Override them with an xcconfig or -BEACON_ENC_PUBLIC_KEY=... -->
+    <key>BEACON_BACKEND_URL</key>
+    <string>$(BEACON_BACKEND_URL)</string>
+    <key>BEACON_ENC_PUBLIC_KEY</key>
+    <string>$(BEACON_ENC_PUBLIC_KEY)</string>
+    <key>BEACON_SIGN_PUBLIC_KEY</key>
+    <string>$(BEACON_SIGN_PUBLIC_KEY)</string>
 </dict>
 </plist>

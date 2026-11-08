@@ -1,6 +1,6 @@
 # Beacon server
 
-TypeScript / Node 22 / Express 5 backend for Beacon: REST API (`/v1`), WebSocket hub (`/v1/ws`) and the responder dashboard (static, SPA fallback).
+TypeScript / Node 22 / Express 5 backend for Beacon: REST API (`/v1`), WebSocket hub (`/v1/ws`) and the responder dashboard (static React build, SPA fallback).
 Contract: `../openapi.yaml` (source of truth; every request and, in dev/test, every response is validated against it). Design: `../docs/server-design.md`. Crypto wire format for the Android app: `docs/crypto.md`.
 
 ## Run with Docker
@@ -11,7 +11,7 @@ cp .env.example .env && npm run keys -- --write   # JWT_SECRET + backend keys ar
 docker compose up -d --build                      # db + server (built from server/Dockerfile) on :3000
 ```
 
-The compose file builds the image from `server/Dockerfile` (context = repo root, since the build embeds `openapi.yaml`). Migrations and seeding run on boot; the dashboard in `server/public` is served at `/`. Set `NEMOTRON_BASE_URL`, `NEMOTRON_API_KEY`, `NEMOTRON_MODEL` and `DEMO_MODE` in `.env` to configure triage and demo mode.
+The compose file builds the image from `server/Dockerfile` (context = repo root, since the build embeds `openapi.yaml` and builds `web/`). Migrations and seeding run on boot; the dashboard is served at `/` (log in with `admin` / `beacon-demo`; set `DEMO_MODE=true` to get the seed and simulate tools). Set `NEMOTRON_BASE_URL`, `NEMOTRON_API_KEY`, `NEMOTRON_MODEL` and `DEMO_MODE` in `.env` to configure triage and demo mode.
 
 ## Quick start
 
@@ -41,7 +41,7 @@ Seeded responders (password `beacon-demo`, override with `SEED_PASSWORD`): `admi
 Config is env based (`src/config.ts`, zod): `DATABASE_URL, JWT_SECRET, BACKEND_ENC_PRIVATE_KEY, BACKEND_SIGN_PRIVATE_KEY, NEMOTRON_BASE_URL, NEMOTRON_API_KEY, NEMOTRON_MODEL, DEMO_MODE, PORT, SEED_PASSWORD, ...`.
 Without `BACKEND_*_PRIVATE_KEY` (non-production) the server uses ephemeral keys and warns: phones would have to refetch `/server-info` after each restart. Production refuses to start without secrets.
 With `NEMOTRON_BASE_URL` empty a deterministic stub triage provider (`stub-nemotron`) is used; set it to the Brev/NIM OpenAI-compatible endpoint (e.g. `http://host:8000/v1`) for real extraction.
-Dashboard: put the built React app in `server/public` (or set `PUBLIC_DIR`); a placeholder `index.html` ships.
+Dashboard: the React app in `../web` builds into `server/public` (`cd ../web && npm run build`; or set `PUBLIC_DIR`). `server/public` is gitignored build output, the Docker image builds it in a `web` stage. Without a build the server simply serves no UI. For development run `npm run dev` in `../web` (proxies `/v1` and the websocket to this server). See `../web/README.md`.
 
 ## What is implemented (build-order steps 1-7)
 

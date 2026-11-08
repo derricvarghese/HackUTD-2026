@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 *.log
+
+# built dashboard (web/ builds into server/public; the Dockerfile builds it too)
+public/*
+!public/.gitkeep
