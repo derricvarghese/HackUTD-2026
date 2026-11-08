@@ -105,6 +105,14 @@ class ResponderClient(
 
     suspend fun setAvailable(available: Boolean) { patchSelf(JSONObject().put("available", available)) }
 
+    /** Sets responder presence (PUT /v1/auth/me/presence {state, client: "app"}). Returns updated `available` flag. */
+    suspend fun setPresence(online: Boolean): Boolean? {
+        val body = JSONObject().put("state", if (online) "online" else "offline").put("client", "app")
+        val r = authed("PUT", "/v1/auth/me/presence", null, body)
+        val j = try { JSONObject(r.body) } catch (e: Exception) { null }
+        return if (j != null && j.has("available") && !j.isNull("available")) j.optBoolean("available") else null
+    }
+
     /** Also refreshes `last_seen_at` server-side. */
     suspend fun shareLocation(lat: Double, lng: Double) {
         patchSelf(JSONObject().put("location", JSONObject().put("lat", lat).put("lng", lng)))
@@ -115,7 +123,23 @@ class ResponderClient(
 
     private suspend fun patchSelf(body: JSONObject) {
         val id = tokens?.account?.id ?: throw ResponderException(ResponderException.Kind.SIGNED_OUT)
-        authed("PATCH", "/v1/responders/$id", null, body)
+        authed("PATCH", "/v1/responders/$id", null, body, extraHeaders = mapOf("X-Beacon-Client" to "app"))
+    }
+
+    // ---- Case images ----
+
+    suspend fun listCaseImages(sosId: String): List<CaseImage> =
+        CaseImage.parseList(authed("GET", "/v1/sos/$sosId/images").body)
+
+    suspend fun uploadCaseImage(sosId: String, imageId: String, imageBytes: ByteArray, caption: String? = null): CaseImage {
+        val q = if (caption != null && caption.isNotBlank()) "caption=" + URLEncoder.encode(caption.take(200), "UTF-8") else null
+        val r = authedRaw("PUT", "/v1/sos/$sosId/images/$imageId", query = q, body = imageBytes, contentType = "image/jpeg")
+        return CaseImage.from(JSONObject(r.body)) ?: throw ResponderException(ResponderException.Kind.BAD_RESPONSE)
+    }
+
+    suspend fun getCaseImageBytes(sosId: String, imageId: String): ByteArray {
+        val r = authedRaw("GET", "/v1/sos/$sosId/images/$imageId")
+        return r.rawBytes ?: r.body.toByteArray(Charsets.ISO_8859_1)
     }
 
     /** A valid access token for the WebSocket handshake (refreshes when close to expiry). */
@@ -127,13 +151,35 @@ class ResponderClient(
 
     // ---- plumbing ----
 
-    private suspend fun authed(method: String, path: String, query: String? = null, body: JSONObject? = null): HttpResponse {
+    private suspend fun authed(
+        method: String,
+        path: String,
+        query: String? = null,
+        body: JSONObject? = null,
+        extraHeaders: Map<String, String>? = null,
+    ): HttpResponse = authedRaw(
+        method = method,
+        path = path,
+        query = query,
+        body = body?.toString()?.toByteArray(Charsets.UTF_8),
+        contentType = if (body != null) "application/json" else null,
+        extraHeaders = extraHeaders,
+    )
+
+    private suspend fun authedRaw(
+        method: String,
+        path: String,
+        query: String? = null,
+        body: ByteArray? = null,
+        contentType: String? = null,
+        extraHeaders: Map<String, String>? = null,
+    ): HttpResponse {
         var t = tokens ?: throw ResponderException(ResponderException.Kind.SIGNED_OUT)
         if (t.access == null || t.accessExpiresAtMs - EXPIRY_SLACK_MS < now()) t = refresh(t)
-        var r = send(method, path, query, body, t.access)
+        var r = sendBytes(method, path, query, body, contentType, t.access, extraHeaders)
         if (r.code == 401) {
             t = refresh(t)
-            r = send(method, path, query, body, t.access)
+            r = sendBytes(method, path, query, body, contentType, t.access, extraHeaders)
         }
         if (r.code !in 200..299) throw error(r)
         return r
@@ -143,7 +189,7 @@ class ResponderClient(
     private suspend fun refresh(stale: Tokens): Tokens = refreshLock.withLock {
         val current = tokens ?: throw ResponderException(ResponderException.Kind.SIGNED_OUT)
         if (current !== stale && current.access != null && current.accessExpiresAtMs - EXPIRY_SLACK_MS > now()) return current
-        val r = send("POST", "/v1/auth/refresh", null, JSONObject().put("refresh_token", current.refresh), bearer = null)
+        val r = sendBytes("POST", "/v1/auth/refresh", null, JSONObject().put("refresh_token", current.refresh).toString().toByteArray(Charsets.UTF_8), "application/json", bearer = null)
         if (r.code !in 200..299) {
             if (r.code == 401 || r.code == 422) {
                 tokens = null
@@ -180,15 +226,34 @@ class ResponderClient(
         }
     }
 
-    private suspend fun send(method: String, path: String, query: String?, body: JSONObject?, bearer: String?): HttpResponse {
+    private suspend fun send(method: String, path: String, query: String?, body: JSONObject?, bearer: String?, extraHeaders: Map<String, String>? = null): HttpResponse =
+        sendBytes(
+            method = method,
+            path = path,
+            query = query,
+            body = body?.toString()?.toByteArray(Charsets.UTF_8),
+            contentType = if (body != null) "application/json" else null,
+            bearer = bearer,
+            extraHeaders = extraHeaders,
+        )
+
+    private suspend fun sendBytes(
+        method: String,
+        path: String,
+        query: String?,
+        body: ByteArray?,
+        contentType: String?,
+        bearer: String?,
+        extraHeaders: Map<String, String>? = null,
+    ): HttpResponse {
         val headers = HashMap<String, String>()
         headers["Accept"] = "application/json"
-        val bytes = body?.toString()?.toByteArray(Charsets.UTF_8)
-        if (bytes != null) headers["Content-Type"] = "application/json"
+        extraHeaders?.let { headers.putAll(it) }
+        if (body != null && contentType != null) headers["Content-Type"] = contentType
         if (bearer != null) headers["Authorization"] = "Bearer $bearer"
         val url = baseUrl + path + (query?.let { "?$it" } ?: "")
         return try {
-            withContext(io) { http.execute(method, url, headers, bytes) }
+            withContext(io) { http.execute(method, url, headers, body) }
         } catch (e: IOException) {
             throw ResponderException(ResponderException.Kind.OFFLINE)
         }

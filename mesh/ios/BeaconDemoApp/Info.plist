@@ -11,6 +11,10 @@
     <string>Beacon passes SOS messages from phone to phone over Bluetooth when cell service is down.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Beacon attaches your location to SOS messages, encrypted so only responders can read it.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Beacon lets you attach photos of damage or injuries to your SOS report.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Beacon lets you take photos to attach to your SOS report.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>bluetooth-central</string>

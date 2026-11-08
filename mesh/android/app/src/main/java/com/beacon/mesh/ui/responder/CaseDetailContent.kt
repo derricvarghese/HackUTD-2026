@@ -1,16 +1,27 @@
 package com.beacon.mesh.ui.responder
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
@@ -21,10 +32,14 @@ import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Navigation
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PanTool
+import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -35,23 +50,32 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.beacon.mesh.R
+import com.beacon.mesh.image.ImageProcessor
 import com.beacon.mesh.responder.CaseDetail
 import com.beacon.mesh.responder.CaseRules
 import com.beacon.mesh.responder.FullProfile
@@ -68,6 +92,10 @@ import com.beacon.mesh.ui.components.categoryStyle
 import com.beacon.mesh.ui.haptics.HapticEvent
 import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.theme.LocalCategoryColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /** What a responder can do with a case. Everything is a plain callback so the content works in a sheet or a side pane. */
 class CaseActions(
@@ -75,6 +103,8 @@ class CaseActions(
     val onAdvance: (status: String, outcome: String?) -> Unit,
     val onAddNote: (text: String, done: (Boolean) -> Unit) -> Unit,
     val onRetryDetail: () -> Unit,
+    val onAddPhoto: ((bytes: ByteArray, caption: String?, done: (Boolean) -> Unit) -> Unit)? = null,
+    val onGetImageBytes: (suspend (imageId: String) -> ByteArray?)? = null,
 )
 
 @Composable
@@ -234,6 +264,7 @@ fun CaseDetailContent(
             }
             HistorySection(d, now)
             if (account?.canAct == true) NotesSection(d, actions)
+            PhotosSection(c, d, mine || account?.canAct == true, actions)
         }
     }
 
@@ -399,5 +430,222 @@ private fun NotesSection(d: CaseDetail, actions: CaseActions) {
             shapes = ButtonDefaults.shapes(),
             modifier = Modifier.heightIn(min = 48.dp),
         ) { Icon(Icons.Rounded.AddComment, null, Modifier.size(18.dp)); Text(stringResource(R.string.responder_note_add), Modifier.padding(start = 8.dp)) }
+    }
+}
+
+@Composable
+private fun PhotosSection(c: ResponderCase, d: CaseDetail, canAct: Boolean, actions: CaseActions) {
+    val context = LocalContext.current
+    val haptics = LocalHaptics.current
+    val scope = rememberCoroutineScope()
+    val bitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
+    var uploading by remember { mutableStateOf(false) }
+    var cameraTempFile by remember { mutableStateOf<File?>(null) }
+    var pendingFileForCaption by remember { mutableStateOf<File?>(null) }
+    var captionText by remember { mutableStateOf("") }
+    var showCaptionDialog by remember { mutableStateOf(false) }
+
+    // Fetch bitmaps for any images that don't have them yet
+    LaunchedEffect(d.images) {
+        d.images.forEach { img ->
+            if (bitmaps[img.id] == null && actions.onGetImageBytes != null) {
+                val bytes = actions.onGetImageBytes.invoke(img.id)
+                if (bytes != null) {
+                    bitmaps[img.id] = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            }
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val temp = cameraTempFile
+        if (success && temp != null && temp.exists()) {
+            pendingFileForCaption = temp
+            captionText = ""
+            showCaptionDialog = true
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val tempDir = File(context.cacheDir, "responder_images")
+                tempDir.mkdirs()
+                val temp = File(tempDir, "pick_${System.currentTimeMillis()}.jpg")
+                val stream = context.contentResolver.openInputStream(uri)
+                if (stream != null) {
+                    temp.outputStream().use { out -> stream.copyTo(out) }
+                    withContext(Dispatchers.Main) {
+                        pendingFileForCaption = temp
+                        captionText = ""
+                        showCaptionDialog = true
+                    }
+                }
+            }
+        }
+    }
+
+    fun startCamera() {
+        val tempDir = File(context.cacheDir, "camera")
+        tempDir.mkdirs()
+        val tempFile = File(tempDir, "resp_${System.currentTimeMillis()}.jpg")
+        cameraTempFile = tempFile
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            tempFile,
+        )
+        cameraLauncher.launch(uri)
+    }
+
+    ElevatedSection {
+        SectionTitle(stringResource(R.string.responder_section_photos))
+
+        if (d.images.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                d.images.forEach { img ->
+                    Card(
+                        modifier = Modifier.width(160.dp),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Column {
+                            val bmp = bitmaps[img.id]
+                            if (bmp != null) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = img.caption,
+                                    modifier = Modifier.fillMaxWidth().height(120.dp).clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            } else {
+                                Box(
+                                    Modifier.fillMaxWidth().height(120.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                            if (!img.caption.isNullOrBlank()) {
+                                Text(
+                                    img.caption,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    maxLines = 2,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else if ((c.imageCount ?: 0) > 0) {
+            Text(
+                stringResource(R.string.responder_photos_restricted, c.imageCount ?: 0),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                stringResource(R.string.responder_photos_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (canAct && actions.onAddPhoto != null && d.images.size < 6) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = haptics.onClick { startCamera() },
+                    enabled = !uploading,
+                    modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                ) {
+                    Icon(Icons.Rounded.PhotoCamera, null, Modifier.size(18.dp))
+                    Text(stringResource(R.string.sos_photo_camera), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+                OutlinedButton(
+                    onClick = haptics.onClick { galleryLauncher.launch("image/*") },
+                    enabled = !uploading,
+                    modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                ) {
+                    Icon(Icons.Rounded.PhotoLibrary, null, Modifier.size(18.dp))
+                    Text(stringResource(R.string.sos_photo_gallery), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+
+        if (uploading) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+    }
+
+    if (showCaptionDialog && pendingFileForCaption != null) {
+        val fileToUpload = pendingFileForCaption!!
+        AlertDialog(
+            onDismissRequest = {
+                fileToUpload.delete()
+                pendingFileForCaption = null
+                showCaptionDialog = false
+            },
+            title = { Text(stringResource(R.string.sos_photo_caption)) },
+            text = {
+                OutlinedTextField(
+                    value = captionText,
+                    onValueChange = { captionText = it.take(200) },
+                    label = { Text(stringResource(R.string.sos_photo_caption_hint)) },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Default),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cap = captionText.trim().ifEmpty { null }
+                    showCaptionDialog = false
+                    uploading = true
+                    scope.launch(Dispatchers.IO) {
+                        val processedDest = File(context.cacheDir, "processed_${System.currentTimeMillis()}.jpg")
+                        val processed = runCatching {
+                            fileToUpload.inputStream().use { stream ->
+                                ImageProcessor.processStream(stream, processedDest, caption = cap)
+                            }
+                        }.getOrNull()
+                        fileToUpload.delete()
+
+                        if (processed != null) {
+                            val bytes = processed.file.readBytes()
+                            processed.file.delete()
+                            withContext(Dispatchers.Main) {
+                                actions.onAddPhoto?.invoke(bytes, cap) { ok ->
+                                    uploading = false
+                                    if (ok) {
+                                        actions.onRetryDetail()
+                                    }
+                                } ?: run { uploading = false }
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                uploading = false
+                            }
+                        }
+                    }
+                }) {
+                    Text(stringResource(R.string.responder_add_photo))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    fileToUpload.delete()
+                    pendingFileForCaption = null
+                    showCaptionDialog = false
+                }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }

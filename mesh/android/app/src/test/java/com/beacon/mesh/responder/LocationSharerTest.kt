@@ -140,10 +140,40 @@ class LocationSharerTest {
         http.on("PATCH", "/v1/responders/r-1") { http.json(200, RF.tokens().let { """{"id":"r-1","username":"a","name":"A","role":"responder"}""" }) }
         val c = ResponderClient("https://x.example", http, InMemorySessionStore(), { 1L }, StandardTestDispatcher(testScheduler))
         c.login("a", "b")
-        c.shareLocation(1.5, 2.5); c.clearLocation(); c.setAvailable(true)
-        val bodies = http.callsTo("PATCH", "/v1/responders/r-1").map { JSONObject(it.body) }
+        c.shareLocation(1.5, 2.5); c.clearLocation(); c.setAvailable(true); c.setAvailable(false)
+        val calls = http.callsTo("PATCH", "/v1/responders/r-1")
+        assertEquals(4, calls.size)
+        calls.forEach { call ->
+            assertEquals("app", call.headers["X-Beacon-Client"])
+        }
+        val bodies = calls.map { JSONObject(it.body) }
         assertEquals(2.5, bodies[0].getJSONObject("location").getDouble("lng"), 0.0)
         assertTrue(bodies[1].has("location") && bodies[1].isNull("location"))
         assertTrue(bodies[2].getBoolean("available"))
+        assertFalse(bodies[3].getBoolean("available"))
+    }
+
+    @Test fun clientPresenceOnlineAndOffline() = runTest {
+        val http = FakeHttp(); http.loginOk()
+        http.on("PUT", "/v1/auth/me/presence") { call ->
+            val b = JSONObject(call.body)
+            val state = b.getString("state")
+            val client = b.getString("client")
+            assertEquals("app", client)
+            val avail = state == "online"
+            http.json(200, """{"id":"r-1","username":"a","name":"A","role":"responder","available":$avail,"in_app":$avail}""")
+        }
+        val c = ResponderClient("https://x.example", http, InMemorySessionStore(), { 1L }, StandardTestDispatcher(testScheduler))
+        c.login("a", "b")
+        val onAvail = c.setPresence(true)
+        assertTrue(onAvail == true)
+        val offAvail = c.setPresence(false)
+        assertTrue(offAvail == false)
+        val calls = http.callsTo("PUT", "/v1/auth/me/presence")
+        assertEquals(2, calls.size)
+        assertEquals("online", JSONObject(calls[0].body).getString("state"))
+        assertEquals("app", JSONObject(calls[0].body).getString("client"))
+        assertEquals("offline", JSONObject(calls[1].body).getString("state"))
+        assertEquals("app", JSONObject(calls[1].body).getString("client"))
     }
 }

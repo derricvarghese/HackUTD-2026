@@ -432,4 +432,22 @@
     <string name="profile_sec_notes">Notes</string>
     <string name="profile_mesh_line">Profile: %1$s</string>
     <string name="profile_dbg_line">Profile sync: %1$s, server version %2$d</string>
+
+    <!-- Case images -->
+    <string name="sos_photos_title">Photos</string>
+    <string name="sos_photos_count">%1$d/6</string>
+    <string name="sos_add_photo">Add photo</string>
+    <string name="sos_photo_camera">Take photo</string>
+    <string name="sos_photo_gallery">Choose from gallery</string>
+    <string name="sos_photo_caption">Caption (optional)</string>
+    <string name="sos_photo_caption_hint">Brief description (max 200 chars)</string>
+    <string name="sos_photo_remove">Remove photo</string>
+    <string name="sos_photos_offline_note">Photos are stored securely and uploaded when online. Max 6 photos.</string>
+    <string name="responder_section_photos">Photos</string>
+    <string name="responder_add_photo">Add photo</string>
+    <string name="responder_photos_empty">No photos attached</string>
+    <string name="responder_photos_restricted">Photos (%1$d) are restricted to the assigned responder and admins.</string>
+    <string name="responder_photos_pending">%1$d photo(s) pending upload from device</string>
+    <string name="responder_photo_by">By %1$s</string>
+    <string name="responder_photo_device">From device</string>
 </resources>

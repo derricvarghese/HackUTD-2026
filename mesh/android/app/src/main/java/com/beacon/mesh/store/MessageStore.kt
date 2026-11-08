@@ -138,7 +138,24 @@ interface MessageStore {
     fun prompts(): List<CheckinPrompt>
     fun answerPrompt(checkinId: String, response: String)
     fun deletePrompt(checkinId: String)
+
+    fun savePendingImage(image: PendingImage)
+    fun pendingImages(sosId: String? = null): List<PendingImage>
+    fun markImageUploaded(id: String)
+    fun deletePendingImage(id: String)
 }
+
+/** A case photo queued for upload (offline retry queue). */
+data class PendingImage(
+    val id: String,
+    val sosId: String,
+    val filePath: String,
+    val caption: String? = null,
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val uploaded: Boolean = false,
+    val attempts: Int = 0,
+    val source: String = "device", // "device" or "responder"
+)
 
 class InMemoryMessageStore : MessageStore {
     private val messages = LinkedHashMap<String, StoredMessage>()
@@ -167,6 +184,15 @@ class InMemoryMessageStore : MessageStore {
         checkins[checkinId]?.let { checkins[checkinId] = it.copy(response = response) }
     }
     override fun deletePrompt(checkinId: String) { checkins.remove(checkinId) }
+
+    private val pendingImagesMap = LinkedHashMap<String, PendingImage>()
+    override fun savePendingImage(image: PendingImage) { pendingImagesMap[image.id] = image }
+    override fun pendingImages(sosId: String?): List<PendingImage> =
+        pendingImagesMap.values.filter { sosId == null || it.sosId == sosId }.sortedBy { it.createdAtMs }
+    override fun markImageUploaded(id: String) {
+        pendingImagesMap[id]?.let { pendingImagesMap[id] = it.copy(uploaded = true) }
+    }
+    override fun deletePendingImage(id: String) { pendingImagesMap.remove(id) }
 }
 
 /**
@@ -175,7 +201,7 @@ class InMemoryMessageStore : MessageStore {
  * not valid contract messages and could never be uploaded.
  */
 class SqliteMessageStore(context: Context) :
-    SQLiteOpenHelper(context, "beacon_mesh.db", null, 3), MessageStore {
+    SQLiteOpenHelper(context, "beacon_mesh.db", null, 4), MessageStore {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -204,6 +230,22 @@ class SqliteMessageStore(context: Context) :
             )"""
         )
         createCheckins(db)
+        createCaseImages(db)
+    }
+
+    private fun createCaseImages(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS case_images (
+                id TEXT PRIMARY KEY,
+                sos_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                caption TEXT,
+                created_at INTEGER NOT NULL,
+                uploaded INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'device'
+            )"""
+        )
     }
 
     private fun createCheckins(db: SQLiteDatabase) {
@@ -236,11 +278,17 @@ class SqliteMessageStore(context: Context) :
             // v2 -> v3 only reshapes the check-in table (welfare check-ins); held messages and the inbox are kept.
             db.execSQL("DROP TABLE IF EXISTS checkins")
             createCheckins(db)
+            createCaseImages(db)
+            return
+        }
+        if (oldVersion == 3) {
+            createCaseImages(db)
             return
         }
         db.execSQL("DROP TABLE IF EXISTS messages")
         db.execSQL("DROP TABLE IF EXISTS inbox")
         db.execSQL("DROP TABLE IF EXISTS checkins")
+        db.execSQL("DROP TABLE IF EXISTS case_images")
         onCreate(db)
     }
 
@@ -373,6 +421,53 @@ class SqliteMessageStore(context: Context) :
 
     override fun deletePrompt(checkinId: String) {
         writableDatabase.delete("checkins", "checkin_id = ?", arrayOf(checkinId))
+    }
+
+    override fun savePendingImage(image: PendingImage) {
+        val v = ContentValues().apply {
+            put("id", image.id)
+            put("sos_id", image.sosId)
+            put("file_path", image.filePath)
+            put("caption", image.caption)
+            put("created_at", image.createdAtMs)
+            put("uploaded", if (image.uploaded) 1 else 0)
+            put("attempts", image.attempts)
+            put("source", image.source)
+        }
+        writableDatabase.insertWithOnConflict("case_images", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    override fun pendingImages(sosId: String?): List<PendingImage> {
+        val out = ArrayList<PendingImage>()
+        val sql = if (sosId == null) {
+            "SELECT id, sos_id, file_path, caption, created_at, uploaded, attempts, source FROM case_images ORDER BY created_at"
+        } else {
+            "SELECT id, sos_id, file_path, caption, created_at, uploaded, attempts, source FROM case_images WHERE sos_id = ? ORDER BY created_at"
+        }
+        val args = if (sosId == null) null else arrayOf(sosId)
+        readableDatabase.rawQuery(sql, args).use { c ->
+            while (c.moveToNext()) {
+                out += PendingImage(
+                    id = c.getString(0),
+                    sosId = c.getString(1),
+                    filePath = c.getString(2),
+                    caption = if (c.isNull(3)) null else c.getString(3),
+                    createdAtMs = c.getLong(4),
+                    uploaded = c.getInt(5) == 1,
+                    attempts = c.getInt(6),
+                    source = c.getString(7) ?: "device",
+                )
+            }
+        }
+        return out
+    }
+
+    override fun markImageUploaded(id: String) {
+        writableDatabase.execSQL("UPDATE case_images SET uploaded = 1 WHERE id = ?", arrayOf(id))
+    }
+
+    override fun deletePendingImage(id: String) {
+        writableDatabase.delete("case_images", "id = ?", arrayOf(id))
     }
 }
 

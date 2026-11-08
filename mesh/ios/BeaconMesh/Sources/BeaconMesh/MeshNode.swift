@@ -90,6 +90,7 @@ public final class MeshNode: NSObject, ObservableObject {
     private let location = CLLocationManager()
     private var lastLocation: CLLocation?
     public let welfare: WelfareManager
+    public let imageQueue: CaseImageUploadQueue
     private var lastWakeMs: Int64 = 0
     private var pruneTimer: Timer?
     private var started = false
@@ -97,13 +98,15 @@ public final class MeshNode: NSObject, ObservableObject {
     public init(signer: MeshSigner = KeychainKeyStore.loadOrCreate(),
                 store: MessageStore = FileMessageStore.defaultStore(),
                 keyValueStore: KeyValueStore = UserDefaultsKeyValueStore(),
-                profileStore: ProfileStoring = ProfileKeychainStore()) {
+                profileStore: ProfileStoring = ProfileKeychainStore(),
+                imageStore: CaseImageStoring = DiskCaseImageStore()) {
         let cfg = BackendConfig(store: keyValueStore,
                                 builtInEncryptionKey: BackendBuildConfig.encryptionPublicKey,
                                 builtInSigningKey: BackendBuildConfig.signingPublicKey)
         config = cfg
         welfare = WelfareManager(store: FileWelfareStore.defaultStore(), notifier: WelfareNotificationCenter.shared,
                                  reminderSeconds: { cfg.checkinReminderSeconds })
+        imageQueue = CaseImageUploadQueue(store: imageStore)
         let rotating = RotatingSigner(signer)
         rotatingSigner = rotating
         router = MeshRouter(signer: rotating, store: store, config: config)
@@ -118,6 +121,7 @@ public final class MeshNode: NSObject, ObservableObject {
             cancelCheckins: { [weak self] in self?.dropCheckinsOfOldIdentity() })
         sync.profileSync = profile
         sync.welfare = welfare
+        sync.imageQueue = imageQueue
         router.welfare = welfare
         welfare.onChange = { [weak self] in self?.refresh() }
         welfare.log = { [weak self] in self?.append($0) }   // short ids only, never check-in text
@@ -203,7 +207,7 @@ public final class MeshNode: NSObject, ObservableObject {
     public var canEncrypt: Bool { encryptionKeyStatus != .none }
 
     @discardableResult
-    public func sendSOS(_ category: Category, text: String? = nil, people: Int? = nil) -> SendResult {
+    public func sendSOS(_ category: Category, text: String? = nil, people: Int? = nil, imageCount: Int? = nil) -> SendResult {
         let fix = currentCoordinate()
         do {
             let msg = try router.originate(
@@ -212,7 +216,8 @@ public final class MeshNode: NSObject, ObservableObject {
                 lat: fix?.0, lng: fix?.1,
                 accuracy: lastLocation.flatMap { $0.horizontalAccuracy >= 0 ? $0.horizontalAccuracy : nil },
                 people: people,
-                nonCriticalHopCap: demoHopCap)
+                nonCriticalHopCap: demoHopCap,
+                imageCount: imageCount)
             // The first SOS is the right moment to ask for notifications (check-ins arrive as notifications), and the
             // server should hear from this phone right away.
             WelfareNotificationCenter.shared.requestAuthorizationIfNeeded()

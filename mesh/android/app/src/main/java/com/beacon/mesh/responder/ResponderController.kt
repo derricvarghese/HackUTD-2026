@@ -70,6 +70,11 @@ class ResponderController(
 
     suspend fun logout() {
         stopLive()
+        stopPresence(sendOffline = false)
+        if (_state.value.account != null) {
+            runCatching { client.setPresence(false) }
+            runCatching { client.clearLocation() }
+        }
         client.logout()
         held = LinkedHashMap(); cursorMs = null
         _state.value = ResponderState()
@@ -158,12 +163,52 @@ class ResponderController(
         }
     }
 
+    suspend fun uploadImage(sosId: String, imageId: String, bytes: ByteArray, caption: String? = null): Boolean = act {
+        client.uploadCaseImage(sosId, imageId, bytes, caption)
+    }
+
     fun clearError() = _state.update { it.copy(error = null) }
 
-    // ---- live ----
+    // ---- live & presence ----
+
+    private var presenceJob: Job? = null
+    private var offlineJob: Job? = null
 
     fun setActive(active: Boolean) {
-        if (active && _state.value.account != null) startLive() else stopLive()
+        if (active && _state.value.account != null) {
+            startLive()
+            startPresence()
+        } else {
+            stopLive()
+            stopPresence(sendOffline = true)
+        }
+    }
+
+    private fun startPresence() {
+        offlineJob?.cancel()
+        offlineJob = null
+        if (presenceJob?.isActive == true) return
+        presenceJob = scope.launch {
+            while (true) {
+                runCatching {
+                    val avail = client.setPresence(true)
+                    if (avail != null) _state.update { it.copy(available = avail) }
+                }
+                delay(PRESENCE_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopPresence(sendOffline: Boolean) {
+        presenceJob?.cancel()
+        presenceJob = null
+        if (sendOffline && _state.value.account != null) {
+            offlineJob?.cancel()
+            offlineJob = scope.launch {
+                runCatching { client.setPresence(false) }
+                runCatching { client.clearLocation() }
+            }
+        }
     }
 
     private fun startLive() {
@@ -224,6 +269,8 @@ class ResponderController(
 
     private fun handleSignedOut() {
         liveJob?.cancel(); liveJob = null
+        presenceJob?.cancel(); presenceJob = null
+        offlineJob?.cancel(); offlineJob = null
         held = LinkedHashMap(); cursorMs = null
         _state.update { ResponderState(error = ResponderException(ResponderException.Kind.SIGNED_OUT)) }
     }
@@ -233,5 +280,6 @@ class ResponderController(
         const val RESYNC_MS = 120_000L
         const val DEBOUNCE_MS = 300L
         const val OVERLAP_MS = 1_000L
+        const val PRESENCE_INTERVAL_MS = 60_000L
     }
 }

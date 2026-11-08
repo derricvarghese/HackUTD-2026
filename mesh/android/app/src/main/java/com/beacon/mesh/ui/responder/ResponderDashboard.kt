@@ -165,6 +165,15 @@ fun ResponderDashboard(
             onAdvance = { s, o -> selectedCase?.let { vm.advance(it, s, o) } },
             onAddNote = { text, done -> selectedCase?.let { vm.addNote(it, text, done) } ?: done(false) },
             onRetryDetail = vm::retryDetail,
+            onAddPhoto = { bytes, caption, done ->
+                selectedCase?.let { c ->
+                    val imageId = java.util.UUID.randomUUID().toString().lowercase()
+                    vm.uploadImage(c.id, imageId, bytes, caption, done)
+                } ?: done(false)
+            },
+            onGetImageBytes = { imageId ->
+                selectedCase?.let { c -> vm.fetchImageBytes(c.id, imageId) }
+            },
         )
     }
 

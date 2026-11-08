@@ -70,6 +70,8 @@ data class ResponderCase(
     val assigneeId: String?,
     val assigneeName: String?,
     val mergedInto: String?,
+    val imageCount: Int = 0,
+    val imageHint: Int? = null,
 ) {
     val hasExactLocation: Boolean get() = exactLat != null && exactLng != null
     val lat: Double get() = exactLat ?: approxLat
@@ -123,6 +125,8 @@ data class ResponderCase(
                 assigneeId = a?.str("responder_id"),
                 assigneeName = a?.str("responder_name"),
                 mergedInto = j.str("merged_into"),
+                imageCount = j.optInt("image_count", 0),
+                imageHint = j.intOrNull("image_hint"),
             )
         }
 
@@ -168,6 +172,41 @@ data class FullProfile(
     }
 }
 
+/** Metadata of one stored case photo (bytes downloaded via `GET /sos/{id}/images/{imageId}`). */
+data class CaseImage(
+    val id: String,
+    val contentType: String,
+    val bytes: Int,
+    val width: Int,
+    val height: Int,
+    val caption: String?,
+    val uploadedByKind: String,
+    val responderName: String?,
+    val createdAtMs: Long?,
+) {
+    companion object {
+        fun from(j: JSONObject?): CaseImage? {
+            if (j == null) return null
+            val id = j.str("id") ?: return null
+            val ct = j.str("content_type") ?: "image/jpeg"
+            val b = j.optInt("bytes", 0)
+            val w = j.optInt("width", 0)
+            val h = j.optInt("height", 0)
+            val caption = j.str("caption")
+            val up = j.optJSONObject("uploaded_by")
+            val upKind = up?.str("kind") ?: "device"
+            val respName = up?.str("responder_name")
+            val created = j.str("created_at")?.let(Iso::parse)
+            return CaseImage(id, ct, b, w, h, caption, upKind, respName, created)
+        }
+
+        fun parseList(body: String): List<CaseImage> {
+            val arr = try { JSONObject(body).optJSONArray("data") } catch (e: Exception) { null } ?: return emptyList()
+            return arr.objects().mapNotNull { from(it) }
+        }
+    }
+}
+
 /** `SosDetail`: the case plus triage reasoning, check-ins, event trail and (assignee only) the full profile. */
 data class CaseDetail(
     val case: ResponderCase,
@@ -179,6 +218,7 @@ data class CaseDetail(
     val notes: List<CaseNote>,
     val profileFull: FullProfile?,
     val welfareMissed: Int,
+    val images: List<CaseImage> = emptyList(),
 ) {
     companion object {
         fun parse(body: String): CaseDetail? {
@@ -207,6 +247,7 @@ data class CaseDetail(
                 },
                 profileFull = FullProfile.from(j.optJSONObject("profile_full")),
                 welfareMissed = j.intOrNull("welfare_missed") ?: 0,
+                images = j.optJSONArray("images").objects().mapNotNull { CaseImage.from(it) },
             )
         }
     }

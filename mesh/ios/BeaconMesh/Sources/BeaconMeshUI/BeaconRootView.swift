@@ -41,6 +41,7 @@ public struct BeaconRootView: View {
                     SettingsView(node: node, path: $settingsPath)
                         .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
                 }
+                .background(TabBarTapHandler(onReTap: { _ in popToRoot(tab) }))
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if responderMode && responder.sharing {
                         SharingChip().frame(maxWidth: .infinity).padding(.vertical, 4).background(.bar)
@@ -82,9 +83,72 @@ public struct BeaconRootView: View {
     }
 
     private func popToRoot(_ tabIndex: Int) {
-        if tabIndex == 3 { settingsPath = NavigationPath() }
+        if tabIndex == 3 {
+            guard !settingsPath.isEmpty else { return }
+            settingsPath = NavigationPath()
+            haptics.play(.select)
+        }
     }
 }
+
+#if canImport(UIKit)
+import UIKit
+
+/// Attaches a tap recognizer to the underlying UITabBar so that tapping an already-selected tab
+/// reliably triggers pop-to-root, overcoming SwiftUI's TabView limitation where re-tapping doesn't fire.
+struct TabBarTapHandler: UIViewControllerRepresentable {
+    var onReTap: (Int) -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        let c = Controller()
+        c.onReTap = onReTap
+        return c
+    }
+
+    func updateUIViewController(_ uiViewController: Controller, context: Context) {
+        uiViewController.onReTap = onReTap
+    }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        var onReTap: ((Int) -> Void)?
+        private var tapGesture: UITapGestureRecognizer?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            attachRecognizer()
+        }
+
+        private func attachRecognizer() {
+            guard let tabBar = tabBarController?.tabBar else { return }
+            if let existing = tapGesture, tabBar.gestureRecognizers?.contains(existing) == true {
+                return
+            }
+            let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+            tap.cancelsTouchesInView = false
+            tap.delegate = self
+            tabBar.addGestureRecognizer(tap)
+            tapGesture = tap
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let tabBar = tabBarController?.tabBar,
+                  let items = tabBar.items, !items.isEmpty,
+                  let tbc = tabBarController else { return }
+            let loc = gesture.location(in: tabBar)
+            let itemWidth = tabBar.bounds.width / CGFloat(items.count)
+            guard itemWidth > 0 else { return }
+            let tappedIndex = Int(loc.x / itemWidth)
+            if tappedIndex == tbc.selectedIndex {
+                onReTap?(tappedIndex)
+            }
+        }
+    }
+}
+#endif
 
 struct OnboardingView: View {
     let done: () -> Void

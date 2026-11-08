@@ -18,8 +18,8 @@ class BackoffTest {
     }
 
     @Test fun wsUrlSwitchesSchemeAndEncodesTheToken() {
-        assertEquals("wss://h.example/v1/ws?token=a.b-c", LiveEvents.url("https://h.example/", "a.b-c"))
-        assertEquals("ws://10.0.2.2:3000/v1/ws?token=a%2Bb", LiveEvents.url("http://10.0.2.2:3000", "a+b"))
+        assertEquals("wss://h.example/v1/ws?token=a.b-c&client=app", LiveEvents.url("https://h.example/", "a.b-c"))
+        assertEquals("ws://10.0.2.2:3000/v1/ws?token=a%2Bb&client=app", LiveEvents.url("http://10.0.2.2:3000", "a+b"))
     }
 
     @Test fun onlyCaseAffectingEventsAreRelevant() {

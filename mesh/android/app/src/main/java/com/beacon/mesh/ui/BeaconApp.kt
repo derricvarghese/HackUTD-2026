@@ -344,6 +344,9 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
             locationAllowed = system.locationPermission && system.locationOn,
             onNote = vm::setNote,
             onPeople = vm::setPeople,
+            onAddImage = vm::addImage,
+            onRemoveImage = vm::removeImage,
+            onImageCaption = vm::updateImageCaption,
             onConfirm = vm::confirmSos,
             onDismiss = vm::cancelSos,
         )

@@ -45,7 +45,7 @@ object LiveEvents {
             b.startsWith("http://") -> "ws://" + b.removePrefix("http://")
             else -> b
         }
-        return "$ws/v1/ws?token=" + java.net.URLEncoder.encode(token, "UTF-8")
+        return "$ws/v1/ws?token=" + java.net.URLEncoder.encode(token, "UTF-8") + "&client=app"
     }
 }
 

@@ -199,12 +199,14 @@ struct Chip: View {
 /// The profile form. Everything but the name is optional. Validation runs on every change and is shown inline per field.
 struct ProfileFormView: View {
     @State private var draft: ProfileDraft
+    private let initialDraft: ProfileDraft
     let requireName: Bool
     let saveTitle: String
     let onSave: (UserProfile) -> [String: String]
     let onCancel: (() -> Void)?
     @ObservedObject private var haptics = Haptics.shared
     @State private var showAllErrors = false
+    @State private var showDiscardConfirm = false
     @State private var serverIssues: [String: String] = [:]
     @FocusState private var focused: String?
 
@@ -213,12 +215,14 @@ struct ProfileFormView: View {
         var start = initial.map(ProfileDraft.init) ?? ProfileDraft()
         start.setHeightSystem(UnitSettings.current)
         _draft = State(initialValue: start)
+        self.initialDraft = start
         self.requireName = requireName
         self.saveTitle = saveTitle
         self.onCancel = onCancel
         self.onSave = onSave
     }
 
+    private var hasUnsavedChanges: Bool { draft != initialDraft }
     private var nowYear: Int { ProfileDerive.utcYear(ms: Int64(Date().timeIntervalSince1970 * 1000)) }
     private var errors: [String: String] { serverIssues.merging(draft.validate(nowYear: nowYear, requireName: requireName)) { _, new in new } }
 
@@ -266,9 +270,29 @@ struct ProfileFormView: View {
                 Button("Done") { haptics.play(.tap); focused = nil }
             }
             ToolbarItem(placement: .cancellationAction) {
-                if let onCancel { Button("Cancel") { haptics.play(.sheetDismiss); onCancel() } }
+                if let onCancel {
+                    Button("Cancel") {
+                        if hasUnsavedChanges {
+                            haptics.play(.warning)
+                            showDiscardConfirm = true
+                        } else {
+                            haptics.play(.sheetDismiss)
+                            onCancel()
+                        }
+                    }
+                }
             }
         }
+        .confirmationDialog("Discard Unsaved Changes?", isPresented: $showDiscardConfirm, titleVisibility: .visible) {
+            Button("Discard Changes", role: .destructive) {
+                haptics.play(.sheetDismiss)
+                onCancel?()
+            }
+            Button("Keep Editing", role: .cancel) { }
+        } message: {
+            Text("You have unsaved changes to your profile that will be lost.")
+        }
+        .interactiveDismissDisabled(hasUnsavedChanges)
         .onAppear { haptics.prepare() }
     }
 

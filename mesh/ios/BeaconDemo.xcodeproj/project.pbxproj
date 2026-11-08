@@ -199,6 +199,7 @@
 				BEACON_BACKEND_URL = "https://hackutd.alecj.com";
 				BEACON_ENC_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMKGYDLIFVk9bEqFdel5jbq+OcWTtyQfiZTJMlbljEds6UY01Dkmvu3aSnQpuRgSs0o3KXGMjMZ7pouXIAL8Pjg==";
 				BEACON_SIGN_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbRUn5miioijHsPNvV2egclM2qvrfhVSwXdzT+smBijGXuqwsH8hUdFvMhQRJ7hy/l/LgoixrqtQDdbU6gKwExQ==";
+				CODE_SIGN_ENTITLEMENTS = BeaconDemoApp/BeaconDemoApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
@@ -228,6 +229,7 @@
 				BEACON_BACKEND_URL = "https://hackutd.alecj.com";
 				BEACON_ENC_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMKGYDLIFVk9bEqFdel5jbq+OcWTtyQfiZTJMlbljEds6UY01Dkmvu3aSnQpuRgSs0o3KXGMjMZ7pouXIAL8Pjg==";
 				BEACON_SIGN_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbRUn5miioijHsPNvV2egclM2qvrfhVSwXdzT+smBijGXuqwsH8hUdFvMhQRJ7hy/l/LgoixrqtQDdbU6gKwExQ==";
+				CODE_SIGN_ENTITLEMENTS = BeaconDemoApp/BeaconDemoApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";

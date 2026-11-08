@@ -2,6 +2,9 @@
 import BeaconMesh
 import MapKit
 import Network
+#if canImport(PhotosUI)
+import PhotosUI
+#endif
 import SwiftUI
 import UIKit
 
@@ -43,6 +46,9 @@ final class ResponderSession: ObservableObject {
     private var foreground = true
     private var pumpTask: Task<Void, Never>?
     private var monitor: NWPathMonitor?
+    private var isPresenceActive = false
+    private var presenceTask: Task<Void, Never>?
+    private var webSocket: ResponderWebSocket?
 
     init(baseURL: String) {
         let c = ResponderClient(baseURL: baseURL, store: KeychainResponderTokenStore())
@@ -51,6 +57,10 @@ final class ResponderSession: ObservableObject {
         available = c.account?.available ?? true
         sharer = ResponderLocationSharer(client: c, now: { Int64(Date().timeIntervalSince1970 * 1000) })
         sharer.onSessionLost = { [weak self] in self?.sessionLost() }
+        webSocket = ResponderWebSocket(urlProvider: { [weak c] in c?.webSocketURL() })
+        webSocket?.onEvent = { [weak self] event, data in
+            Task { @MainActor [weak self] in self?.handleWsEvent(event, data) }
+        }
     }
 
     func login(username: String, password: String) async {
@@ -61,6 +71,7 @@ final class ResponderSession: ObservableObject {
             signedInThisSession = true
             available = account?.available ?? true
             error = nil
+            await setActive(true)
             await refresh()
             // The switch was left on last time: resume, visibly (the chip shows as soon as it starts).
             if UserDefaults.standard.bool(forKey: ResponderPrefs.shareKey), foreground { shareRequested = true; beginSharing() }
@@ -72,18 +83,71 @@ final class ResponderSession: ObservableObject {
     }
 
     func logout() async {
-        stopSharing(clear: true, notice: nil)
-        // Best-effort clear while the token still works; after sign-out nothing more can be sent.
-        for attempt in 0..<2 where sharer.phase == .clearing {
-            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
-            await sharer.pump()
-        }
+        stopSharing(clear: false, notice: nil)
+        await setActive(false)
         sharer.abandon()
         await client.logout()
         signedInThisSession = false
         account = nil
         cases = []
         lastUpdated = nil
+    }
+
+    /// Sets responder active presence.
+    /// When active (foreground on Responder tab): sends online presence, starts 60 s keepalive, opens websocket.
+    /// When inactive (background / left responder mode): sends offline presence and clears location (location: null).
+    func setActive(_ active: Bool) async {
+        guard active != isPresenceActive else { return }
+        isPresenceActive = active
+        if active {
+            guard account != nil else { return }
+            do {
+                if let updated = try await client.setPresence(state: "online", client: "app") {
+                    account = updated
+                    available = updated.available ?? available
+                }
+            } catch { }
+            presenceTask?.cancel()
+            presenceTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    guard let self, self.isPresenceActive, self.account != nil else { break }
+                    do {
+                        if let updated = try await self.client.setPresence(state: "online", client: "app") {
+                            self.account = updated
+                            self.available = updated.available ?? self.available
+                        }
+                    } catch { }
+                }
+            }
+            webSocket?.connect()
+            if sharing { provider.start() }
+        } else {
+            presenceTask?.cancel()
+            presenceTask = nil
+            webSocket?.disconnect()
+            provider.stop()
+            guard account != nil else { return }
+            let bgTask = UIApplication.shared.beginBackgroundTask { }
+            _ = try? await client.setPresence(state: "offline", client: "app")
+            _ = try? await client.sendLocation(nil)
+            if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
+        }
+    }
+
+    private func handleWsEvent(_ event: String, _ data: JSONValue) {
+        switch event {
+        case "sos.created", "sos.updated", "sos.merged", "sos.silent", "assignment.created", "assignment.updated":
+            Task { await self.refresh() }
+        case "responder.updated":
+            if let id = data.optString("id"), id == account?.id {
+                if let avail = data["available"]?.boolValue {
+                    self.available = avail
+                }
+            }
+        default:
+            break
+        }
     }
 
     func refresh() async {
@@ -179,8 +243,7 @@ final class ResponderSession: ObservableObject {
     /// The Responder UI is on screen and the app is active (fixes only arrive while true).
     func setForeground(_ active: Bool) {
         foreground = active
-        guard sharing else { return }
-        if active { provider.start() } else { provider.stop() }
+        Task { await setActive(active) }
     }
 
     func openSystemSettings() {
@@ -553,6 +616,7 @@ struct ResponderDashboard: View {
         }
         .task { await session.poll() }
         .onAppear { session.setForeground(scenePhase == .active) }
+        .onDisappear { session.setForeground(false) }
         .onChange(of: scenePhase) { phase in session.setForeground(phase == .active) }
     }
 
@@ -662,6 +726,11 @@ struct CaseDetailSheet: View {
     @ObservedObject var session: ResponderSession
     @Environment(\.dismiss) private var dismiss
     @State private var confirmResolve = false
+    @State private var photos: [CaseImageMeta] = []
+    @State private var loadingPhotos = false
+    #if canImport(PhotosUI)
+    @State private var selectedPickerItems: [PhotosPickerItem] = []
+    #endif
     @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
     private var units: UnitSystem { UnitSettings.system(for: unitPref) }
 
@@ -718,6 +787,41 @@ struct CaseDetailSheet: View {
                     if c.channel == "mesh", let h = c.hopCount, let m = c.maxHops { LabeledContent("Relayed", value: "\(h) of \(m) phone hops") }
                 }
 
+                if !photos.isEmpty || mine {
+                    Section("Photos\(photos.isEmpty ? "" : " (\(photos.count))")") {
+                        if !photos.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 12) {
+                                    ForEach(photos) { photo in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            CaseImageView(client: session.client, sosId: c.id, imageId: photo.id)
+                                                .frame(width: 100, height: 100)
+                                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            if let caption = photo.caption {
+                                                Text(caption).font(.caption2).lineLimit(2).frame(width: 100, alignment: .leading)
+                                            }
+                                            Text(photo.responderName.map { "By \($0)" } ?? photo.uploadedByKind)
+                                                .font(.system(size: 9))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        if mine && photos.count < 6 {
+                            #if canImport(PhotosUI)
+                            PhotosPicker(selection: $selectedPickerItems, maxSelectionCount: 6 - photos.count, matching: .images) {
+                                Label("Add on-scene photo", systemImage: "camera.badge.ellipsis")
+                            }
+                            .onChange(of: selectedPickerItems) { items in
+                                uploadPhotos(items)
+                            }
+                            #endif
+                        }
+                    }
+                }
+
             }
             .navigationTitle("Case")
             .navigationBarTitleDisplayMode(.inline)
@@ -728,8 +832,39 @@ struct CaseDetailSheet: View {
                     Button(o.1) { Task { await session.advance(c, to: "resolved", outcome: o.0); dismiss() } }
                 }
             }
+            .task { await loadPhotos() }
         }
     }
+
+    private func loadPhotos() async {
+        loadingPhotos = true
+        defer { loadingPhotos = false }
+        do {
+            photos = try await session.client.listCaseImages(sosId: c.id)
+        } catch {
+            photos = []
+        }
+    }
+
+    #if canImport(PhotosUI)
+    private func uploadPhotos(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        Task {
+            for item in items {
+                guard photos.count < 6 else { break }
+                if let rawData = try? await item.loadTransferable(type: Data.self),
+                   let processed = ImageProcessor.process(data: rawData) {
+                    let imageId = UUID().uuidString.lowercased()
+                    _ = try? await session.client.uploadCaseImage(sosId: c.id, imageId: imageId, data: processed)
+                }
+            }
+            await MainActor.run {
+                selectedPickerItems = []
+            }
+            await loadPhotos()
+        }
+    }
+    #endif
 
     private func action(_ title: String, _ icon: String, role: ButtonRole? = nil, _ op: @escaping () async -> Void) -> some View {
         Button(role: role) { Task { await op() } } label: { Label(title, systemImage: icon) }
@@ -740,6 +875,42 @@ struct CaseDetailSheet: View {
         let item = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: c.lat, longitude: c.lng)))
         item.name = c.displayName
         item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+    }
+}
+
+struct CaseImageView: View {
+    let client: ResponderClient
+    let sosId: String
+    let imageId: String
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Color(.secondarySystemFill)
+                ProgressView()
+            }
+        }
+        .task {
+            if let img = await fetchImage() {
+                image = img
+            }
+        }
+    }
+
+    private func fetchImage() async -> UIImage? {
+        guard let url = URL(string: "\(client.baseURL)/v1/sos/\(sosId)/images/\(imageId)") else { return nil }
+        var req = URLRequest(url: url)
+        if let token = client.tokens?.accessToken {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+        return UIImage(data: data)
     }
 }
 

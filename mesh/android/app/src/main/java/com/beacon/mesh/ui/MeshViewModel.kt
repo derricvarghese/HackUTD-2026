@@ -46,12 +46,15 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
     private val _settings = MutableStateFlow(prefs.load())
     val settings: StateFlow<UiSettings> = _settings
 
+    private val _draftImages = MutableStateFlow<List<com.beacon.mesh.image.ProcessedImage>>(emptyList())
+
     val draft: StateFlow<SosDraft?> = combine(
         handle.getStateFlow<String?>(KEY_CATEGORY, null),
         handle.getStateFlow(KEY_NOTE, ""),
         handle.getStateFlow(KEY_PEOPLE, 1),
-    ) { cat, note, people ->
-        Category.entries.firstOrNull { it.wire == cat }?.let { SosDraft(it, note, people) }
+        _draftImages,
+    ) { cat, note, people, images ->
+        Category.entries.firstOrNull { it.wire == cat }?.let { SosDraft(it, note, people, images) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
@@ -63,18 +66,37 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
         handle[KEY_CATEGORY] = category.wire
         handle[KEY_NOTE] = ""
         handle[KEY_PEOPLE] = 1
+        _draftImages.value = emptyList()
         node.warmUpLocation() // fresh, accurate fix while the user confirms
     }
 
     fun setNote(value: String) { handle[KEY_NOTE] = SosDraft(Category.OTHER).withNote(value).note }
     fun setPeople(value: Int) { handle[KEY_PEOPLE] = SosDraft(Category.OTHER).withPeople(value).people }
-    fun cancelSos() { handle[KEY_CATEGORY] = null }
+    fun addImage(image: com.beacon.mesh.image.ProcessedImage) {
+        if (_draftImages.value.size < SosDraft.MAX_IMAGES) {
+            _draftImages.value = _draftImages.value + image
+        }
+    }
+    fun removeImage(id: String) {
+        _draftImages.value = _draftImages.value.filter { it.id != id }
+    }
+    fun updateImageCaption(id: String, caption: String) {
+        _draftImages.value = _draftImages.value.map {
+            if (it.id == id) it.copy(caption = caption.take(200)) else it
+        }
+    }
+    fun cancelSos() {
+        handle[KEY_CATEGORY] = null
+        _draftImages.value = emptyList()
+    }
 
     fun confirmSos() {
         val d = draft.value ?: return
         handle[KEY_CATEGORY] = null
+        val images = d.images
+        _draftImages.value = emptyList()
         val people = d.people.takeIf { it > 1 || d.category != Category.SAFE }
-        when (val r = node.sendSos(d.category, d.noteOrNull, people)) {
+        when (val r = node.sendSos(d.category, d.noteOrNull, people, images = images)) {
             is SendResult.Sent -> _events.trySend(UiEvent.SosSent(r.message.id, d.category))
             is SendResult.Failed -> _events.trySend(UiEvent.SosFailed(r.error))
         }

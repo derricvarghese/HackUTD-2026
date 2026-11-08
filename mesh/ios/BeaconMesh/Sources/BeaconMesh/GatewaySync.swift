@@ -53,6 +53,8 @@ public final class GatewaySync {
     public var sample: () -> HeartbeatSample? = { nil }
     /// Welfare check-ins: fed from the heartbeat reply, `GET /checkins/pending` and (via the router) mesh requests.
     public var welfare: WelfareManager?
+    /// Offline retry queue for photos attached to SOS cases.
+    public var imageQueue: CaseImageUploadQueue?
     /// Interface type of the current network path (set by the connectivity monitor); feeds `HeartbeatCreate.network`.
     public var interface: NetworkInterfaceKind = .unknown
     /// Profile sync runs inside the same online cycle (after registration and uploads); it has its own backoff and never fails the cycle.
@@ -103,6 +105,7 @@ public final class GatewaySync {
             var stepError: Error?
             do {
                 try await flushUploads()
+                await flushQueuedImages()
                 try await pollOutbox()
                 try await pollStatuses()
                 try await pollCheckins()
@@ -235,6 +238,30 @@ public final class GatewaySync {
         let msgs = try await client.fetchOutbox()
         guard !msgs.isEmpty else { return }
         _ = await main { [self] in router.inject(messages: msgs, receipts: []) }
+    }
+
+    /// Uploads photos attached to SOS cases that were queued offline.
+    func flushQueuedImages() async {
+        guard let imageQueue else { return }
+        _ = await imageQueue.flush { [weak self] item in
+            guard let self else { return .retry(afterSeconds: nil) }
+            do {
+                let res = try await self.client.uploadCaseImage(sosId: item.sosId, imageId: item.id, data: item.data, caption: item.caption)
+                if res.status == 200 || res.status == 201 {
+                    self.log("Uploaded photo \(item.id.prefix(8)) for case \(item.sosId.prefix(8))")
+                    return .success(CaseImageMeta.fromJSON(res.json))
+                } else if res.status == 409 || res.status == 413 || res.status == 415 || res.status == 422 {
+                    self.log("Dropped photo \(item.id.prefix(8)) (HTTP \(res.status))")
+                    return .drop(status: res.status, message: res.json.optString("message"))
+                } else if res.status == 429 {
+                    return .retry(afterSeconds: res.retryAfter)
+                } else {
+                    return .retry(afterSeconds: nil)
+                }
+            } catch {
+                return .retry(afterSeconds: nil)
+            }
+        }
     }
 
     /// GET /sos/{id}/status for own, uploaded, unfinished cases (newest 10).

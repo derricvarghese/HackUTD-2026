@@ -38,11 +38,15 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
     /// delivered to this delegate only if it is already set. Calling it again is harmless.
     public func install() { center.delegate = self }
 
-    /// Asks for alert + sound the first time (call at the right moment: after the first SOS, not at launch).
+    /// Asks for alert + sound + timeSensitive the first time (call at the right moment: after the first SOS, not at launch).
     public func requestAuthorizationIfNeeded() {
         center.getNotificationSettings { [center] settings in
             guard settings.authorizationStatus == .notDetermined else { return }
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            var options: UNAuthorizationOptions = [.alert, .sound]
+            if #available(iOS 15.0, *) {
+                options.insert(.timeSensitive)
+            }
+            center.requestAuthorization(options: options) { _, _ in }
         }
     }
 

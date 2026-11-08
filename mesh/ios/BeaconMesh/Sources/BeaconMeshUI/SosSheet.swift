@@ -1,9 +1,20 @@
 #if canImport(UIKit) && canImport(SwiftUI) && canImport(CoreBluetooth) && canImport(CoreLocation) && canImport(Combine) && canImport(Network)
 import BeaconMesh
+#if canImport(PhotosUI)
+import PhotosUI
+#endif
 import SwiftUI
+import UIKit
 
-/// Confirmation sheet: optional note and head count, then a hold-to-send (critical and high) or a plain button.
+/// Confirmation sheet: optional note, head count, and up to 6 photos, then a hold-to-send or plain button.
 struct SosSheet: View {
+    struct AttachedPhoto: Identifiable {
+        let id = UUID()
+        var data: Data
+        var preview: UIImage
+        var caption: String = ""
+    }
+
     @ObservedObject var node: MeshNode
     let category: Category
     /// nil = dismissed without sending.
@@ -12,6 +23,10 @@ struct SosSheet: View {
     @ObservedObject private var haptics = Haptics.shared
     @State private var note = ""
     @State private var people = 1
+    @State private var attachedPhotos: [AttachedPhoto] = []
+    #if canImport(PhotosUI)
+    @State private var selectedPickerItems: [PhotosPickerItem] = []
+    #endif
     @FocusState private var noteFocused: Bool
 
     private let maxNote = 280
@@ -34,6 +49,53 @@ struct SosSheet: View {
                         .onChange(of: people) { _ in haptics.play(.select) }
                         .accessibilityLabel("Number of people")
                         .accessibilityValue("\(people)")
+                }
+                Section("Photos (optional, max 6)") {
+                    if !attachedPhotos.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(attachedPhotos.indices, id: \.self) { idx in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ZStack(alignment: .topTrailing) {
+                                            Image(uiImage: attachedPhotos[idx].preview)
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: 80, height: 80)
+                                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            Button {
+                                                haptics.play(.tap)
+                                                attachedPhotos.remove(at: idx)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .foregroundStyle(.white, .red)
+                                                    .font(.title3)
+                                            }
+                                            .offset(x: 6, y: -6)
+                                        }
+                                        TextField("Caption", text: $attachedPhotos[idx].caption)
+                                            .font(.caption2)
+                                            .frame(width: 80)
+                                            .textFieldStyle(.roundedBorder)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    if attachedPhotos.count < 6 {
+                        #if canImport(PhotosUI)
+                        PhotosPicker(
+                            selection: $selectedPickerItems,
+                            maxSelectionCount: 6 - attachedPhotos.count,
+                            matching: .images
+                        ) {
+                            Label(attachedPhotos.isEmpty ? "Attach photos (up to 6)" : "Add more photos", systemImage: "photo.badge.plus")
+                        }
+                        .onChange(of: selectedPickerItems) { items in
+                            loadPickerItems(items)
+                        }
+                        #endif
+                    }
                 }
                 Section {
                     if category.requiresHold {
@@ -79,10 +141,49 @@ struct SosSheet: View {
         }
     }
 
+    #if canImport(PhotosUI)
+    private func loadPickerItems(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        Task {
+            for item in items {
+                guard attachedPhotos.count < 6 else { break }
+                if let rawData = try? await item.loadTransferable(type: Data.self),
+                   let processed = ImageProcessor.process(data: rawData),
+                   let preview = UIImage(data: processed) {
+                    await MainActor.run {
+                        if attachedPhotos.count < 6 {
+                            attachedPhotos.append(AttachedPhoto(data: processed, preview: preview))
+                        }
+                    }
+                }
+            }
+            await MainActor.run {
+                selectedPickerItems = []
+                haptics.play(.select)
+            }
+        }
+    }
+    #endif
+
     private func send() {
         noteFocused = false
         let n = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = node.sendSOS(category, text: n.isEmpty ? nil : n, people: (people > 1 || category != .safe) ? people : nil)
+        let imageCount = attachedPhotos.count
+        let result = node.sendSOS(
+            category,
+            text: n.isEmpty ? nil : n,
+            people: (people > 1 || category != .safe) ? people : nil,
+            imageCount: imageCount > 0 ? imageCount : nil
+        )
+        if case .sent(let msg) = result {
+            for photo in attachedPhotos {
+                try? node.imageQueue.enqueue(
+                    sosId: msg.id,
+                    data: photo.data,
+                    caption: photo.caption.isEmpty ? nil : photo.caption
+                )
+            }
+        }
         finish(result)
     }
 }

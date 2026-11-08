@@ -130,7 +130,19 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
         Triple(id, cases.firstOrNull { it.id == id }?.let { it.updatedAtMs to it.status to it.assignmentStatus }, r)
     }.distinctUntilChanged()
 
-    fun setActive(active: Boolean) = controller.setActive(active)
+    fun setActive(active: Boolean) {
+        controller.setActive(active)
+        if (!active) {
+            if (_armed.value) {
+                source.stop()
+                sharer.stop(clearRemote = false)
+            }
+        } else {
+            if (_sharePref.value && !_armed.value && state.value.account != null) {
+                beginSharing()
+            }
+        }
+    }
 
     fun setUsername(v: String) { handle[KEY_USER] = v }
     fun setPassword(v: String) { _password.value = v }
@@ -237,6 +249,19 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
     /** Returns through [done] so the note field only clears on success. */
     fun addNote(c: ResponderCase, text: String, done: (Boolean) -> Unit) {
         viewModelScope.launch { done(controller.addNote(c, text.trim())) }
+    }
+
+    fun uploadImage(sosId: String, imageId: String, bytes: ByteArray, caption: String? = null, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = controller.uploadImage(sosId, imageId, bytes, caption)
+            onDone(ok)
+        }
+    }
+
+    suspend fun fetchImageBytes(sosId: String, imageId: String): ByteArray? = try {
+        client.getCaseImageBytes(sosId, imageId)
+    } catch (e: Exception) {
+        null
     }
 
     private companion object {

@@ -95,6 +95,7 @@ class MeshRouter(
         accuracy: Double? = null,
         people: Int? = null,
         nonCriticalHopCap: Int? = null,
+        imageCount: Int? = null,
     ): StoredMessage {
         if (lat == null || lng == null) throw SendException(SendError.NO_LOCATION)
         val payload = JSONObject().apply {
@@ -106,6 +107,10 @@ class MeshRouter(
             if (category == Category.TRAPPED) put("trapped", true)
             if (category == Category.INJURED || category == Category.MEDICAL) put("injured", true)
             if (category.kind == "sos" || category.kind == "safe") profileSummary()?.let { put("profile_summary", it) }
+            if (imageCount != null && imageCount > 0) {
+                put("image_count", imageCount.coerceIn(0, 50))
+                put("has_images", true)
+            }
         }
         val msg = create(
             kind = category.kind, tier = category.priority, apiCategory = category.apiCategory,

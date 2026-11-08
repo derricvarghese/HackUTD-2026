@@ -3,7 +3,7 @@ package com.beacon.mesh.net
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class HttpResponse(val code: Int, val body: String, val headers: Map<String, String> = emptyMap())
+data class HttpResponse(val code: Int, val body: String, val headers: Map<String, String> = emptyMap(), val rawBytes: ByteArray? = null)
 
 /** Seam for tests: the app uses [UrlConnectionHttp], tests use a fake. Blocking; call off the main thread. */
 interface HttpClient {
@@ -26,10 +26,11 @@ class UrlConnectionHttp(private val connectTimeoutMs: Int = 10_000, private val 
             }
             val code = conn.responseCode
             val stream = if (code in 200..399) conn.inputStream else conn.errorStream
-            val text = stream?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
+            val raw = stream?.use { it.readBytes() }
+            val text = raw?.toString(Charsets.UTF_8) ?: ""
             val h = HashMap<String, String>()
             conn.headerFields.forEach { (k, v) -> if (k != null && v.isNotEmpty()) h[k.lowercase()] = v.first() }
-            return HttpResponse(code, text, h)
+            return HttpResponse(code, text, h, raw)
         } finally {
             conn.disconnect()
         }

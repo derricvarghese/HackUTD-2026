@@ -88,10 +88,10 @@ public final class MeshRouter {
     ///   anything from 1 up to the tier cap).
     @discardableResult
     public func originate(category: Category, text: String? = nil, lat: Double?, lng: Double?, accuracy: Double? = nil,
-                          people: Int? = nil, nonCriticalHopCap: Int? = nil) throws -> StoredMessage {
+                          people: Int? = nil, nonCriticalHopCap: Int? = nil, imageCount: Int? = nil) throws -> StoredMessage {
         guard let lat, let lng else { throw MeshError.noLocation }
         let payload = MeshPayload.sos(category: category, text: text, lat: lat, lng: lng, accuracy: accuracy, people: people,
-                                      profileSummary: profileSummary())
+                                      profileSummary: profileSummary(), imageCount: imageCount)
         let own = OwnInfo(category: category.rawValue, text: text, people: people, lat: lat, lng: lng, accuracy: accuracy)
         let msg = try build(kind: category.kind, tier: category.tier, payload: payload,
                             routing: Routing.build(lat: lat, lng: lng, category: category.apiCategory),

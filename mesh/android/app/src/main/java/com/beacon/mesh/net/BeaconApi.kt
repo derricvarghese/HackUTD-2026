@@ -110,6 +110,28 @@ class BeaconApi(
         return signedCall("PATCH", "/v1/checkins/$checkinId", body.toString()) { }
     }
 
+    fun uploadCaseImage(
+        sosId: String,
+        imageId: String,
+        imageBytes: ByteArray,
+        caption: String? = null,
+    ): ApiResult<com.beacon.mesh.responder.CaseImage> {
+        val q = if (caption != null && caption.isNotBlank()) "?caption=" + java.net.URLEncoder.encode(caption.take(200), "UTF-8") else ""
+        return signedCallBytes(
+            method = "PUT",
+            path = "/v1/sos/$sosId/images/$imageId",
+            bodyBytes = imageBytes,
+            query = q,
+            extraHeaders = mapOf("Content-Type" to "image/jpeg"),
+        ) {
+            com.beacon.mesh.responder.CaseImage.from(JSONObject(it))
+                ?: throw IllegalArgumentException("Invalid CaseImage")
+        }
+    }
+
+    fun listCaseImages(sosId: String): ApiResult<List<com.beacon.mesh.responder.CaseImage>> =
+        signedCall("GET", "/v1/sos/$sosId/images", null) { com.beacon.mesh.responder.CaseImage.parseList(it) }
+
     /** POST /v1/heartbeats (automatic liveness). The 202 body may carry `pending_checkins`. */
     fun heartbeat(payload: JSONObject, now: Long = System.currentTimeMillis()): ApiResult<HeartbeatAck> =
         signedCall("POST", "/v1/heartbeats", payload.toString()) {
@@ -157,8 +179,32 @@ class BeaconApi(
 
     // ---- plumbing ----
 
+    private fun <T> call(
+        method: String, pathAndQuery: String, body: String?, signed: Boolean,
+        extraHeaders: Map<String, String> = emptyMap(), parse: (String) -> T,
+    ): ApiResult<T> = callBytes(
+        method = method,
+        pathAndQuery = pathAndQuery,
+        bodyBytes = body?.toByteArray(Charsets.UTF_8),
+        signed = signed,
+        extraHeaders = if (body != null) mapOf("Content-Type" to "application/json") + extraHeaders else extraHeaders,
+        parse = parse,
+    )
+
     private fun <T> signedCall(
         method: String, path: String, body: String?, query: String = "",
+        extraHeaders: Map<String, String> = emptyMap(), parse: (String) -> T,
+    ): ApiResult<T> = signedCallBytes(
+        method = method,
+        path = path,
+        bodyBytes = body?.toByteArray(Charsets.UTF_8),
+        query = query,
+        extraHeaders = if (body != null) mapOf("Content-Type" to "application/json") + extraHeaders else extraHeaders,
+        parse = parse,
+    )
+
+    private fun <T> signedCallBytes(
+        method: String, path: String, bodyBytes: ByteArray?, query: String = "",
         extraHeaders: Map<String, String> = emptyMap(), parse: (String) -> T,
     ): ApiResult<T> {
         var attempt = 0
@@ -167,10 +213,10 @@ class BeaconApi(
                 is ApiResult.Ok -> r.value
                 is ApiResult.Failure -> return r
             }
-            val bytes = body?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+            val bytes = bodyBytes ?: ByteArray(0)
             val signedPath = basePath + path // the query string is not signed
             val headers = signer.headers(id, method, signedPath, bytes)
-            val res = call(method, path + query, body, signed = true, extraHeaders = headers + extraHeaders, parse = parse)
+            val res = callBytes(method, path + query, bodyBytes, signed = true, extraHeaders = headers + extraHeaders, parse = parse)
             // The server forgot this device (e.g. database reset): register again once and retry.
             if (res is ApiResult.Failure && res.code == 401 && res.errorCode == "unauthorized" && attempt == 0) {
                 config.deviceId = null
@@ -181,15 +227,15 @@ class BeaconApi(
         }
     }
 
-    private fun <T> call(
-        method: String, pathAndQuery: String, body: String?, signed: Boolean,
+    private fun <T> callBytes(
+        method: String, pathAndQuery: String, bodyBytes: ByteArray?, signed: Boolean,
         extraHeaders: Map<String, String> = emptyMap(), parse: (String) -> T,
     ): ApiResult<T> {
         val headers = HashMap<String, String>(extraHeaders)
         headers["Accept"] = "application/json"
-        if (body != null) headers["Content-Type"] = "application/json"
+        if (bodyBytes != null && !headers.containsKey("Content-Type")) headers["Content-Type"] = "application/json"
         val res = try {
-            http.execute(method, base + pathAndQuery, headers, body?.toByteArray(Charsets.UTF_8))
+            http.execute(method, base + pathAndQuery, headers, bodyBytes)
         } catch (e: IOException) {
             return ApiResult.Failure(null, null, e.message ?: e.javaClass.simpleName)
         }

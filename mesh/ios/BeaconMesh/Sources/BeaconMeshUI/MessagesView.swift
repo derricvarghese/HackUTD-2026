@@ -39,7 +39,7 @@ struct MessagesView: View {
                 } else {
                     Section("\(items.count) message\(items.count == 1 ? "" : "s")") {
                         ForEach(items) { item in
-                            NavigationLink { MessageDetail(item: item) } label: { MessageRow(item: item) }
+                            NavigationLink { MessageDetail(node: node, item: item) } label: { MessageRow(item: item) }
                                 .simultaneousGesture(TapGesture().onEnded { haptics.play(.tap) })
                         }
                     }
@@ -79,7 +79,14 @@ struct MessageRow: View {
 }
 
 struct MessageDetail: View {
+    @ObservedObject var node: MeshNode
     let item: MessageItem
+    @State private var serverPhotos: [CaseImageMeta] = []
+
+    private var queuedPhotos: [QueuedImage] {
+        guard item.isOwn else { return [] }
+        return node.imageQueue.queuedImages(for: item.id)
+    }
 
     var body: some View {
         List {
@@ -94,6 +101,50 @@ struct MessageDetail: View {
                 LabeledContent("Created", value: Date(timeIntervalSince1970: Double(item.createdAtMs) / 1000).formatted(date: .abbreviated, time: .standard))
                 LabeledContent("Expires", value: Date(timeIntervalSince1970: Double(item.expiresAtMs) / 1000).formatted(date: .abbreviated, time: .shortened))
             }
+            if !queuedPhotos.isEmpty {
+                Section("Attached photos (\(queuedPhotos.count) queued)") {
+                    Text("These photos will upload to responders as soon as this phone reaches the internet.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(queuedPhotos) { q in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let img = UIImage(data: q.data) {
+                                        Image(uiImage: img)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 80, height: 80)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    if let cap = q.caption {
+                                        Text(cap).font(.caption2).lineLimit(2).frame(width: 80, alignment: .leading)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+            if !serverPhotos.isEmpty {
+                Section("Uploaded photos (\(serverPhotos.count))") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(serverPhotos) { sp in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Photo \(sp.id.prefix(8))").font(.caption).monospaced()
+                                    if let cap = sp.caption {
+                                        Text(cap).font(.caption2).lineLimit(2)
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
             Section("Route") {
                 LabeledContent("Hops", value: "\(item.hop) of \(item.maxHops)")
                 LabeledContent("Relays", value: item.path.isEmpty ? "none yet" : item.path.joined(separator: " > "))
@@ -106,6 +157,15 @@ struct MessageDetail: View {
         }
         .navigationTitle(Fmt.categoryName(item))
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if item.isOwn && item.uploaded {
+                do {
+                    serverPhotos = try await node.sync.client.listCaseImages(sosId: item.id)
+                } catch {
+                    serverPhotos = []
+                }
+            }
+        }
     }
 }
 

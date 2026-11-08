@@ -195,16 +195,47 @@ public final class BackendClient {
         _ = try await call("PATCH", "/v1/checkins/\(id)", body: .object(b), auth: true)
     }
 
+    /// PUT /v1/sos/{sosId}/images/{imageId}?caption=
+    /// Uploads a photo for an SOS case. Signed with device signature. Max 3 MB, JPEG or PNG.
+    public func uploadCaseImage(sosId: String, imageId: String, data: Data, caption: String? = nil) async throws -> (status: Int, json: JSONValue, retryAfter: Int?) {
+        var query: String? = nil
+        if let caption, !caption.isEmpty {
+            let trimmed = String(caption.prefix(CaseImageUploadQueue.maxCaptionLength))
+            if let escaped = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                query = "caption=\(escaped)"
+            }
+        }
+        let req = try makeRequest(method: "PUT", path: "/v1/sos/\(sosId)/images/\(imageId)", query: query,
+                                  body: data, auth: true, contentType: "image/jpeg")
+        let resp: HTTPResponse
+        do {
+            resp = try await http.send(req)
+        } catch let e as BackendError {
+            throw e
+        } catch {
+            throw BackendError.transport(error.localizedDescription)
+        }
+        let json = JSONValue.parse(resp.data) ?? .object([:])
+        let ra = resp.headers["retry-after"].flatMap { Int($0) }
+        return (resp.status, json, ra)
+    }
+
+    /// GET /v1/sos/{sosId}/images: photo metadata of own case.
+    public func listCaseImages(sosId: String) async throws -> [CaseImageMeta] {
+        let json = try await call("GET", "/v1/sos/\(sosId)/images", auth: true)
+        return (json["data"]?.arrayValue ?? []).compactMap(CaseImageMeta.fromJSON)
+    }
+
     // MARK: Plumbing
 
     func adjustedNow() -> Int64 { now() + clockOffsetMs }
 
     /// Builds the signed request (exposed for tests).
     public func makeRequest(method: String, path: String, query: String? = nil, body: Data, auth: Bool,
-                            extraHeaders: [String: String] = [:]) throws -> HTTPRequest {
+                            extraHeaders: [String: String] = [:], contentType: String? = "application/json") throws -> HTTPRequest {
         guard let url = URL(string: baseURL + path + (query.map { "?" + $0 } ?? "")) else { throw BackendError.badResponse }
         var headers = ["Accept": "application/json"]
-        if !body.isEmpty { headers["Content-Type"] = "application/json" }
+        if !body.isEmpty, let contentType { headers["Content-Type"] = contentType }
         if auth {
             guard let device = config.deviceId else { throw BackendError.notRegistered }
             // The signed path excludes the query string; the body bytes hashed are exactly the bytes sent.

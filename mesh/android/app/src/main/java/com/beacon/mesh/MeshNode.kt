@@ -270,6 +270,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         uploader.pollOutbox()
         pollWelfare()
         retryReplies(online = true)
+        retryPendingImages()
         if (tickCount % 2 == 0) {
             val ids = router.messages.filter { it.isOwn && it.envelope.kind in setOf("sos", "safe") && it.expiresAtMs > now && it.remote?.status !in FINAL_STATUSES }.map { it.id }
             uploader.pollStatuses(ids)
@@ -284,9 +285,10 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         heartbeatTick(force = true) // connectivity is back: say so right away
         pollWelfare()
         retryReplies(online = true)
+        retryPendingImages()
     }
 
-    fun sendSos(category: Category, text: String?, people: Int? = null): SendResult {
+    fun sendSos(category: Category, text: String?, people: Int? = null, images: List<com.beacon.mesh.image.ProcessedImage> = emptyList()): SendResult {
         val loc = lastLocation ?: best.fresh(SOS_MAX_FIX_AGE_MS)?.second // an older fix beats none when the alert goes out
         return try {
             val offline = !isGateway
@@ -299,9 +301,24 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
                 accuracy = loc?.accuracy?.toDouble(),
                 people = people,
                 nonCriticalHopCap = demoHopCap,
+                imageCount = images.size,
             )
+            for (img in images) {
+                store.savePendingImage(
+                    com.beacon.mesh.store.PendingImage(
+                        id = img.id,
+                        sosId = msg.id,
+                        filePath = img.file.absolutePath,
+                        caption = img.caption,
+                        source = "device",
+                    )
+                )
+            }
             if (offline) sentTo[msg.id] = peersNow
             notifyChanged()
+            if (uploader.isOnline && images.isNotEmpty()) {
+                retryPendingImages()
+            }
             // A new SOS: heartbeat soon so the server links this device's liveness to it (a few seconds for the upload to land first).
             main.postDelayed({ heartbeatTick(force = true) }, if (offline) 500L else 3_000L)
             SendResult.Sent(msg)
@@ -313,6 +330,41 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
             append("Failed to create SOS: ${e.javaClass.simpleName}")
             SendResult.Failed(SendError.ENCRYPTION_FAILED)
         }
+    }
+
+    fun retryPendingImages() {
+        if (!uploader.isOnline) return
+        val pending = store.pendingImages().filter { !it.uploaded && it.source == "device" }
+        if (pending.isEmpty()) return
+        uploader.background(
+            work = {
+                for (item in pending) {
+                    val file = java.io.File(item.filePath)
+                    if (!file.exists()) {
+                        store.deletePendingImage(item.id)
+                        continue
+                    }
+                    val bytes = file.readBytes()
+                    when (val res = api.uploadCaseImage(item.sosId, item.id, bytes, item.caption)) {
+                        is com.beacon.mesh.net.ApiResult.Ok -> {
+                            store.markImageUploaded(item.id)
+                            append("Case image ${item.id.take(8)} uploaded for case ${item.sosId.take(8)}")
+                        }
+                        is com.beacon.mesh.net.ApiResult.Failure -> {
+                            if (res.isNetwork || res.isRateLimited) {
+                                break
+                            } else if (res.code == 404 || res.code == 409 || res.code == 413 || res.code == 415 || res.code == 422) {
+                                store.markImageUploaded(item.id)
+                                append("Case image ${item.id.take(8)} rejected: ${res.code} ${res.message}")
+                            }
+                        }
+                    }
+                }
+            },
+            done = {
+                notifyChanged()
+            }
+        )
     }
 
     // ---- Welfare check-ins ----

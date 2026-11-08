@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -193,6 +194,61 @@ class ResponderControllerTest {
         c.logout(); runCurrent()
         assertEquals(ResponderState(), c.state.value)
         assertNotNull(http.callsTo("POST", "/v1/auth/logout").singleOrNull())
+    }
+
+    @Test fun presenceKeptAliveWhileActiveAndSendsOnlineThenEverySixtySeconds() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        http.on("PUT", "/v1/auth/me/presence") { call ->
+            val b = JSONObject(call.body)
+            assertEquals("online", b.getString("state"))
+            assertEquals("app", b.getString("client"))
+            http.json(200, """{"id":"r-1","username":"ana","name":"Ana","role":"responder","available":true,"in_app":true}""")
+        }
+        val c = controller(); c.login("ana", "pw")
+        c.setActive(true); runCurrent()
+        assertEquals(1, http.callsTo("PUT", "/v1/auth/me/presence").size)
+        advanceTimeBy(59_000); runCurrent()
+        assertEquals(1, http.callsTo("PUT", "/v1/auth/me/presence").size)
+        advanceTimeBy(1_001); runCurrent()
+        assertEquals(2, http.callsTo("PUT", "/v1/auth/me/presence").size)
+    }
+
+    @Test fun deactivatingSendsOfflinePresenceAndClearsLocation() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        http.on("PUT", "/v1/auth/me/presence") { http.json(200, """{"id":"r-1","available":false,"in_app":false}""") }
+        http.on("PATCH", "/v1/responders/r-1") { call ->
+            assertEquals("app", call.headers["X-Beacon-Client"])
+            val b = JSONObject(call.body)
+            assertTrue(b.has("location") && b.isNull("location"))
+            http.json(200, """{"id":"r-1"}""")
+        }
+        val c = controller(); c.login("ana", "pw")
+        c.setActive(true); runCurrent()
+        http.calls.clear()
+        c.setActive(false); runCurrent()
+        val presCalls = http.callsTo("PUT", "/v1/auth/me/presence")
+        assertEquals(1, presCalls.size)
+        assertEquals("offline", JSONObject(presCalls.single().body).getString("state"))
+        assertEquals("app", JSONObject(presCalls.single().body).getString("client"))
+        val patchCalls = http.callsTo("PATCH", "/v1/responders/r-1")
+        assertEquals(1, patchCalls.size)
+        assertEquals("app", patchCalls.single().headers["X-Beacon-Client"])
+    }
+
+    @Test fun explicitAvailabilityOffPatchesAvailableFalse() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        http.on("PATCH", "/v1/responders/r-1") { call ->
+            assertEquals("app", call.headers["X-Beacon-Client"])
+            val b = JSONObject(call.body)
+            assertFalse(b.getBoolean("available"))
+            http.json(200, """{"id":"r-1","available":false}""")
+        }
+        val c = controller(); c.login("ana", "pw")
+        assertTrue(c.setAvailable(false))
+        assertEquals(false, c.state.value.available)
+        val patch = http.callsTo("PATCH", "/v1/responders/r-1").single()
+        assertEquals("app", patch.headers["X-Beacon-Client"])
+        assertFalse(JSONObject(patch.body).getBoolean("available"))
     }
 
     @Test fun offlineKeepsLastKnownCasesAndShowsAnError() = runTest {
