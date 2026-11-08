@@ -324,7 +324,8 @@ describe('re-triage triggers', () => {
       mobility: { needs: ['cannot_walk'] }, consent: { accepted: true, version: '2026-11-v1', accepted_at: new Date().toISOString() },
     });
     expect([200, 201]).toContain(put.status);
-    const prov = await ws.waitFor('sos.updated', (x) => x.id === id && x.triage_status === 'provisional');
+    // the worker may already have claimed the job (pending) when the first frame is read: both mean the AI result is not applied yet
+    const prov = await ws.waitFor('sos.updated', (x) => x.id === id && (x.triage_status === 'provisional' || x.triage_status === 'pending'));
     expect(prov.data.score).toBeGreaterThan(before.score - 8); // rules with the profile signals, AI not yet applied
     g.open();
     await ws.waitFor('sos.updated', (x) => x.id === id && x.triage_status === 'complete');
