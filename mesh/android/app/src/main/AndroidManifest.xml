@@ -24,16 +24,24 @@
 
     <application
         android:allowBackup="false"
-        android:label="Beacon Mesh"
-        android:icon="@android:drawable/ic_dialog_alert"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:localeConfig="@xml/locales_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Beacon.Splash"
         android:usesCleartextTraffic="true"
-        tools:targetApi="35">
+        tools:targetApi="36">
 
+        <!-- No orientation lock: Compose adapts to rotation, resizing and folding; state lives in ViewModel/SavedState. -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
-            tools:ignore="DiscouragedApi,LockedOrientationActivity">
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

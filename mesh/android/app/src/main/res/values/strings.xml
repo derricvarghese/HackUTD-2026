@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Beacon Mesh</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_messages">Messages</string>
+    <string name="nav_mesh">Mesh</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Common actions -->
+    <string name="action_back">Back</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="action_view">View</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_try_again">Try again</string>
+    <string name="action_turn_on">Turn on</string>
+    <string name="action_open_settings">Open app settings</string>
+    <string name="state_done">Done</string>
+    <string name="state_todo">Needs attention</string>
+    <string name="label_required">Required</string>
+    <string name="label_mine">Mine</string>
+
+    <!-- Categories -->
+    <string name="cat_trapped">Trapped</string>
+    <string name="cat_injured">Injured</string>
+    <string name="cat_medical">Medical</string>
+    <string name="cat_water_meds">Need water / meds</string>
+    <string name="cat_safe">I\'m safe</string>
+    <string name="cat_checkin">Check-in</string>
+    <string name="cat_other">Other</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Reach help even when networks fail</string>
+    <string name="onboarding_body">Beacon passes signed SOS messages between nearby phones over Bluetooth until one of them has internet. Set this up now, so it is ready when you need it.</string>
+    <string name="onboarding_continue">Start relaying</string>
+    <string name="onboarding_skip">Skip for now</string>
+    <string name="onboarding_blocked">Allow Bluetooth access and turn Bluetooth on to start the mesh.</string>
+    <string name="perm_bluetooth_title">Nearby devices (Bluetooth)</string>
+    <string name="perm_bluetooth_why">Lets your phone find, connect to and relay messages for other phones around you. No pairing needed.</string>
+    <string name="service_bluetooth_title">Bluetooth is on</string>
+    <string name="service_bluetooth_why">The mesh runs over Bluetooth Low Energy. It works in airplane mode as long as Bluetooth stays on.</string>
+    <string name="perm_location_title">Precise location</string>
+    <string name="perm_location_why">Attaches your GPS position to an alert so responders can find you. Optional, but strongly recommended.</string>
+    <string name="perm_location_why_required">Android 11 and older only allow Bluetooth scanning with location access. It also attaches your GPS position to alerts.</string>
+    <string name="service_location_title">Location services are on</string>
+    <string name="service_location_why">GPS must be switched on to get a position fix for your alerts.</string>
+    <string name="perm_notifications_title">Notifications</string>
+    <string name="perm_notifications_why">Shows that Beacon is relaying in the background, so Android keeps it running with the screen off.</string>
+    <string name="perm_denied_rationale">Without this permission the feature cannot work. You can allow it now.</string>
+    <string name="perm_denied_permanent">Android will no longer ask. Open app settings, choose Permissions and allow it there.</string>
+
+    <!-- Home -->
+    <string name="home_send_title">Send an alert</string>
+    <string name="home_tile_hint">Nothing is sent until you confirm on the next screen.</string>
+    <string name="home_more_alerts">More alert types</string>
+    <string name="home_my_alerts">Your alerts</string>
+    <string name="home_empty_title">No alerts yet</string>
+    <string name="home_empty_body">Alerts you send appear here with live delivery status.</string>
+    <string name="home_setup_title">The mesh is not running</string>
+    <string name="home_setup_body">Bluetooth access or Bluetooth itself is off. You can still create alerts, but they stay on this phone until it is fixed.</string>
+    <string name="home_setup_action">Fix now</string>
+    <string name="home_searching">Looking for nearby phones</string>
+    <string name="home_role_gateway">Gateway: uploading to responders</string>
+    <string name="home_role_relay">Offline relay: passing messages along</string>
+    <string name="home_open_mesh">Mesh details</string>
+    <plurals name="home_peers">
+        <item quantity="one">%d phone nearby</item>
+        <item quantity="other">%d phones nearby</item>
+    </plurals>
+    <string name="snack_sent">Alert created and sent to the mesh</string>
+    <string name="snack_failed">Could not create the alert</string>
+
+    <!-- SOS sheet -->
+    <string name="sos_sheet_title">Confirm alert</string>
+    <string name="sos_note_label">Note (optional)</string>
+    <string name="sos_note_hint">e.g. water rising, second floor</string>
+    <string name="sos_people_label">People with you</string>
+    <string name="sos_people_less">Fewer people</string>
+    <string name="sos_people_more">More people</string>
+    <string name="sos_offline_explainer">No signal needed. The alert goes to nearby phones and is kept until one with internet can pass it on.</string>
+    <string name="sos_send">Send</string>
+    <string name="sos_hold_to_send">Hold to send</string>
+    <string name="sos_keep_holding">Keep holding</string>
+    <string name="sos_send_now_desc">Send alert now</string>
+
+    <!-- GPS -->
+    <string name="gps_denied">Location unavailable. The alert is sent without GPS.</string>
+    <string name="gps_searching">Searching for GPS</string>
+    <string name="gps_fix">GPS fix, accurate to %d m</string>
+    <string name="gps_fix_unknown">GPS fix</string>
+
+    <!-- Mesh status -->
+    <string name="mesh_relay_id">Relay ID %s</string>
+    <string name="mesh_peers_title">Connected phones</string>
+    <string name="mesh_peer_n">Phone %d</string>
+    <string name="mesh_bt_off">Bluetooth is off. Turn it on to find nearby phones.</string>
+    <string name="mesh_no_peers_title">Searching</string>
+    <string name="mesh_no_peers_body">No phone in range yet. Messages wait here and are handed over when one appears.</string>
+    <string name="mesh_held_title">Held offline</string>
+    <string name="mesh_held_none">Nothing stored yet.</string>
+    <plurals name="mesh_held_summary">
+        <item quantity="one">%1$d of %2$d stored messages is waiting for a gateway</item>
+        <item quantity="other">%1$d of %2$d stored messages are waiting for a gateway</item>
+    </plurals>
+    <string name="mesh_gateway_title">Gateway</string>
+    <string name="mesh_gw_online">Online, acting as gateway</string>
+    <string name="mesh_gw_uploading">Uploading</string>
+    <string name="mesh_gw_forced">Internet found, but forced offline</string>
+    <string name="mesh_gw_no_url">Internet found, no backend URL set</string>
+    <string name="mesh_gw_offline">Offline relay</string>
+    <plurals name="mesh_gw_uploading_n">
+        <item quantity="one">%d message in flight</item>
+        <item quantity="other">%d messages in flight</item>
+    </plurals>
+    <string name="mesh_gw_last_none">No upload yet.</string>
+    <string name="mesh_gw_last_ok">Last upload succeeded, %s</string>
+    <string name="mesh_gw_last_failed">Last upload failed, %1$s: %2$s</string>
+    <string name="mesh_gps_title">GPS</string>
+
+    <!-- Messages -->
+    <string name="filter_all">All</string>
+    <string name="filter_mine">Mine</string>
+    <string name="filter_received">Received</string>
+    <string name="filter_held">Waiting</string>
+    <string name="messages_empty_title">No messages</string>
+    <string name="messages_empty_body">Alerts you send and messages relayed through this phone show up here.</string>
+    <string name="messages_filter_empty_title">Nothing matches</string>
+    <string name="messages_filter_empty_body">Try another filter.</string>
+    <string name="detail_title">Alert details</string>
+    <string name="detail_none_title">Select a message</string>
+    <string name="detail_none_body">Pick a message from the list to see its route and status.</string>
+    <string name="detail_created">Created %s</string>
+    <string name="detail_note">Note</string>
+    <string name="detail_route">Route</string>
+    <string name="detail_location">Location</string>
+    <string name="detail_technical">Technical</string>
+    <string name="detail_id">ID %s</string>
+    <string name="detail_expires">Expires %s</string>
+    <string name="detail_copy_id">Copy ID</string>
+    <string name="detail_share">Share</string>
+    <string name="detail_open_map">Open in maps</string>
+    <string name="detail_share_text">Beacon alert: %1$s. %2$s %3$s</string>
+    <string name="detail_explain_queued">Saved on this phone. It is sent automatically when another phone comes in range.</string>
+    <string name="detail_explain_relayed">Handed to nearby phones, which pass it on until a gateway uploads it.</string>
+    <string name="detail_explain_uploading">A gateway is uploading this message to responders right now.</string>
+    <string name="detail_explain_delivered">Reached the backend. Responders can see it.</string>
+    <string name="detail_explain_relaying">Received from the mesh. This phone is passing it on.</string>
+    <string name="detail_explain_held">The hop limit is reached, so this phone keeps the message but does not forward it.</string>
+    <string name="route_origin">origin</string>
+    <string name="route_you">You</string>
+    <string name="hop_line">hop %1$d/%2$d via %3$s</string>
+    <string name="status_queued">Queued (offline)</string>
+    <plurals name="status_relayed">
+        <item quantity="one">Relayed via %d peer</item>
+        <item quantity="other">Relayed via %d peers</item>
+    </plurals>
+    <string name="status_uploading">Uploading</string>
+    <string name="status_delivered">Reached responders</string>
+    <string name="status_relaying">Relaying</string>
+    <string name="status_held">Hop limit reached</string>
+    <string name="age_now">just now</string>
+    <string name="age_minutes">%d min ago</string>
+    <string name="age_hours">%d h ago</string>
+    <string name="age_days">%d d ago</string>
+
+    <!-- Settings -->
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="settings_dynamic">Dynamic color</string>
+    <string name="settings_dynamic_body">Use colors from your wallpaper. Alert colors always stay red, orange and green.</string>
+    <string name="settings_dynamic_unsupported">Needs Android 12 or newer.</string>
+    <string name="settings_language">App language</string>
+    <string name="settings_gateway">Backend (gateway)</string>
+    <string name="settings_gateway_body">When this phone has internet it uploads held messages here. Leave empty to only relay.</string>
+    <string name="settings_permissions">Permissions and services</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_debug">Debug and demo</string>
+    <string name="settings_debug_body">Hop limit, force offline, backend URL, raw log</string>
+    <string name="settings_about">About</string>
+    <string name="about_version">Version %s</string>
+    <string name="about_body">Signed messages hop between phones over Bluetooth Low Energy and are uploaded by any phone that finds internet.</string>
+    <string name="url_label">Backend URL</string>
+    <string name="url_hint">http://192.168.1.20:3000</string>
+    <string name="url_err_scheme">Start with http:// or https://</string>
+    <string name="url_err_host">Add a host name or IP address</string>
+    <string name="url_err_query">Remove the query or fragment, give the base address only</string>
+    <string name="url_err_format">Not a valid address</string>
+    <string name="url_saved">Saved</string>
+    <string name="url_empty_note">Empty: this phone only relays.</string>
+    <string name="url_ok_note">Looks good. Uploads go to /api/mesh/ingest.</string>
+
+    <!-- Debug -->
+    <string name="debug_hopcap_title">Hop cap</string>
+    <string name="debug_hopcap_body">Limits max hops of non-critical messages you create. Critical alerts ignore it.</string>
+    <string name="debug_hopcap_off">Off (priority table)</string>
+    <string name="debug_hopcap_less">Lower hop cap</string>
+    <string name="debug_hopcap_more">Higher hop cap</string>
+    <string name="debug_hopcap_demo">Demo: 2 hops</string>
+    <string name="debug_hopcap_clear">Turn off</string>
+    <string name="debug_force_offline">Force offline</string>
+    <string name="debug_force_offline_body">Never act as a gateway, even with internet.</string>
+    <string name="debug_log_title">Raw log</string>
+    <string name="debug_log_empty">Nothing logged yet.</string>
+    <string name="debug_log_copy">Copy log</string>
+
+    <!-- Notification -->
+    <string name="notif_channel_name">Mesh relay</string>
+    <string name="notif_channel_desc">Shown while Beacon relays SOS messages in the background.</string>
+    <string name="notif_title">Beacon is relaying SOS messages</string>
+    <string name="notif_action_open">Open Beacon</string>
+    <plurals name="notif_text">
+        <item quantity="one">%1$d phone nearby. Relay ID %2$s</item>
+        <item quantity="other">%1$d phones nearby. Relay ID %2$s</item>
+    </plurals>
+</resources>

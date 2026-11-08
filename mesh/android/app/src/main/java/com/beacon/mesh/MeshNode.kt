@@ -5,6 +5,8 @@ import android.content.Context
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import com.beacon.mesh.crypto.KeystoreSigner
@@ -13,9 +15,39 @@ import com.beacon.mesh.protocol.Category
 import com.beacon.mesh.store.SqliteMessageStore
 import com.beacon.mesh.store.StoredMessage
 import com.beacon.mesh.transport.BleMeshTransport
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** Result of the most recent gateway upload attempt, for the status screen. */
+data class UploadResult(val atMs: Long, val messageId: String, val ok: Boolean, val detail: String?)
+
+/** Last known GPS fix (null in the snapshot when there is none). */
+data class GpsFix(val accuracyM: Float?, val timeMs: Long)
+
+/** Immutable view of everything the UI shows; published by [MeshNode.state]. */
+data class MeshSnapshot(
+    val relayId: String = "",
+    val started: Boolean = false,
+    val peers: List<String> = emptyList(),
+    val messages: List<StoredMessage> = emptyList(),
+    val log: List<String> = emptyList(),
+    /** Acting as gateway: internet validated, backend URL set, not forced offline. */
+    val isGateway: Boolean = false,
+    /** The phone has a validated internet connection (regardless of backend URL / force offline). */
+    val hasInternet: Boolean = false,
+    val forceOffline: Boolean = false,
+    val backendUrl: String = "",
+    val demoHopCap: Int? = null,
+    val uploadingIds: Set<String> = emptySet(),
+    val lastUpload: UploadResult? = null,
+    val gps: GpsFix? = null,
+    /** Own message id -> peers it was pushed to at creation time. */
+    val sentToPeers: Map<String, Int> = emptyMap(),
+)
 
 /**
  * App-wide mesh node: BLE transport + router + SQLite store + gateway uploader + GPS.
@@ -39,6 +71,15 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     val logLines = ArrayDeque<String>()
     private val listeners = LinkedHashSet<() -> Unit>()
 
+    // ---- UI state (additive; the listener API above keeps working) ----
+    private val connectivity = app.getSystemService(ConnectivityManager::class.java)
+    private val inFlight = LinkedHashSet<String>()
+    private var lastUpload: UploadResult? = null
+    private val sentTo = HashMap<String, Int>()
+    private val _state = MutableStateFlow(MeshSnapshot())
+    /** Hot snapshot of peers, messages, log, gateway and GPS state. Updated on the main thread. */
+    val state: StateFlow<MeshSnapshot> = _state.asStateFlow()
+
     /** Demo setting: cap maxHops for non-critical messages (null = priority table). */
     var demoHopCap: Int?
         get() = prefs.getInt("demoHopCap", 0).takeIf { it > 0 }
@@ -59,15 +100,16 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     init {
         router.transport = transport
         router.isOnline = { uploader.isOnline }
-        router.upload = { uploader.upload(it) }
+        router.upload = { if (!it.uploaded) inFlight.add(it.id); uploader.upload(it) }
         router.onChange = { notifyChanged() }
         router.log = { append(it) }
         uploader.forceOffline = forceOffline
         uploader.backendUrl = backendUrl
         uploader.onOnline = { notifyChanged(); router.internetBecameAvailable() }
-        uploader.onUploaded = { router.markUploaded(it) }
-        uploader.log = { append(it) }
+        uploader.onUploaded = { inFlight.remove(it); router.markUploaded(it) }
+        uploader.log = { trackUpload(it); append(it) }
         transport.listener = this
+        _state.value = buildSnapshot()
     }
 
     /** Call after Bluetooth + location permissions are granted. Safe to call repeatedly. */
@@ -77,6 +119,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
             return
         }
         started = true
+        notifyChanged()
         uploader.start()
         transport.start()
         startLocation()
@@ -93,6 +136,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     fun sendSos(category: Category, text: String?, people: Int? = null): StoredMessage? {
         val loc = lastLocation
         return try {
+            val offline = !isGateway
+            val peersNow = router.connectedPeers.size
             router.originate(
                 category = category,
                 text = text?.takeIf { it.isNotBlank() },
@@ -101,7 +146,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
                 accuracy = loc?.accuracy?.toDouble(),
                 people = people,
                 nonCriticalHopCap = demoHopCap,
-            )
+            ).also { if (offline) sentTo[it.id] = peersNow; notifyChanged() }
         } catch (e: Exception) {
             append("Failed to create SOS: ${e.message}")
             null
@@ -112,7 +157,41 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
 
     private fun notifyChanged() {
+        _state.value = buildSnapshot()
         listeners.toList().forEach { it() }
+    }
+
+    private fun buildSnapshot() = MeshSnapshot(
+        relayId = relayId,
+        started = started,
+        peers = router.connectedPeers,
+        messages = messages,
+        log = logLines.toList(),
+        isGateway = isGateway,
+        hasInternet = hasValidatedInternet(),
+        forceOffline = forceOffline,
+        backendUrl = backendUrl,
+        demoHopCap = demoHopCap,
+        uploadingIds = inFlight.toSet(),
+        lastUpload = lastUpload,
+        gps = lastLocation?.let { GpsFix(if (it.hasAccuracy()) it.accuracy else null, it.time) },
+        sentToPeers = sentTo.toMap(),
+    )
+
+    private fun hasValidatedInternet(): Boolean {
+        val cm = connectivity ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /** The uploader reports through its log: "UPLOAD abcd1234 ok" / "UPLOAD abcd1234 failed: reason". */
+    private fun trackUpload(line: String) {
+        val m = UPLOAD_LINE.matchEntire(line) ?: return
+        val (short, outcome, detail) = m.destructured
+        val id = inFlight.firstOrNull { it.startsWith(short) } ?: short
+        inFlight.remove(id)
+        lastUpload = UploadResult(System.currentTimeMillis(), id, outcome == "ok", detail.ifBlank { null })
     }
 
     private fun append(line: String) {
@@ -124,7 +203,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
 
     private fun startLocation() {
         val lm = locationManager ?: return
-        val listener = LocationListener { lastLocation = it }
+        val listener = LocationListener { lastLocation = it; notifyChanged() }
         for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
             try {
                 if (!lm.isProviderEnabled(provider)) continue
@@ -146,6 +225,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     override fun onLog(message: String) = append(message)
 
     companion object {
+        private val UPLOAD_LINE = Regex("UPLOAD (\\w+) (ok|failed)(?:: (.*))?")
+
         @Volatile private var instance: MeshNode? = null
 
         fun get(context: Context): MeshNode =

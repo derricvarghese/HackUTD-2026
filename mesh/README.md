@@ -11,7 +11,7 @@ iPhones and Android phones relay for each other.
 
 * **Wire protocol**: [`PROTOCOL.md`](PROTOCOL.md). Read this first; both apps implement it exactly.
 * **iOS**: [`ios/BeaconMesh`](ios/BeaconMesh), a Swift package (CoreBluetooth + CryptoKit, no dependencies).
-* **Android**: [`android`](android), a Kotlin app module (platform BLE + AndroidKeyStore + SQLite, no dependencies).
+* **Android**: [`android`](android), a Kotlin app module (platform BLE + AndroidKeyStore + SQLite for the mesh; Jetpack Compose + Material 3 Expressive for the UI).
 * **Shared test vector**: [`test-vectors/envelope_v1.json`](test-vectors/envelope_v1.json), an envelope
   signed on iOS that the Android tests (and the backend) must verify.
 
@@ -39,12 +39,23 @@ expired messages. Resetting `hop` therefore can't keep a message alive forever.
 
 ### Android (needs real phones; BLE doesn't work on the emulator)
 
-1. Open `mesh/android` in Android Studio and let it sync (JDK 17, Android SDK 35).
-2. Run on 2+ phones (Android 8.0+). Grant Bluetooth and location permissions at launch.
-   From the command line: `./gradlew :app:installDebug` with the phone connected over USB debugging.
-3. Unit tests: `./gradlew :app:testDebugUnitTest` (router, framing, and the cross-platform vector).
+1. Open `mesh/android` in Android Studio and let it sync (JDK 17, Android SDK 36). Gradle 8.13, AGP 8.13.2, Kotlin 2.2.21.
+2. Run on 2+ phones (Android 8.0+). The app opens with an onboarding screen that asks for Bluetooth,
+   location and notification access and checks that Bluetooth and location are ON; the mesh starts only after that.
+   From the command line: `export JAVA_HOME=<JDK 17>` then `./gradlew :app:installDebug` with the phone connected.
+3. Unit tests: `./gradlew :app:testDebugUnitTest` (router, framing, cross-platform vector, UI logic, one Robolectric Compose test).
+   Lint: `./gradlew :app:lintDebug`.
 4. On an exFAT/external drive, add `-Pbeacon.buildRoot=/tmp/beacon-gradle` to every Gradle command.
    macOS writes `._` AppleDouble files there, and Gradle then can't clean its own build folders.
+
+UI structure (`app/src/main/java/com/beacon/mesh/ui`):
+
+* `MainActivity` (splash screen, edge-to-edge) -> `BeaconApp` (theme, onboarding gate, bottom bar on phones / rail on wide windows, Navigation Compose with predictive back).
+* `MeshViewModel` exposes `MeshNode.state` (a `StateFlow<MeshSnapshot>`: peers, messages, log, gateway and GPS state), UI settings and the SOS draft (SavedStateHandle).
+* `screens/`: Onboarding, Home (SOS tiles, confirmation sheet with hold-to-send), Mesh status, Messages (list-detail), Settings, Debug/demo (hop cap, force offline, backend URL, raw log).
+* `logic/`: pure, unit-tested helpers (permission plan, backend URL validation, message status/hop path mapping, SOS draft rules).
+* Demo hop cap and backend URL moved to Settings -> Debug and demo.
+* Material 3 Expressive needs `material3` 1.5.0 alpha (1.4.0 keeps those APIs internal); newer androidx releases require AGP 9.1 and compileSdk 37.
 
 ### iOS (needs real iPhones; the Simulator has no Bluetooth)
 
@@ -63,10 +74,10 @@ expired messages. Resetting `hop` therefore can't keep a message alive forever.
 1. Put every phone in airplane mode with Bluetooth on. Keep the app **in the foreground** (see caveats).
 2. Line up A, B, C and D far enough apart that each phone only reaches its neighbours,
    or just watch the `hop` and `path` on each phone.
-3. On A set **Hop cap = 2** and tap **Check-in**: it reaches C, and C shows "hop limit reached". D never gets it.
+3. On A open Settings -> Debug and demo, set **Hop cap = 2**, go Home and send a **Check-in** (the + menu): it reaches C, and C shows "hop limit reached". D never gets it.
 4. Tap **Trapped** (critical ignores the cap): it reaches D.
 5. On C, turn Wi-Fi on and set the backend URL: C becomes **GATEWAY** and uploads everything it holds.
-   Use **Force offline** to keep a phone that has Wi-Fi acting as a pure relay.
+   Use **Force offline** (Settings -> Debug and demo) to keep a phone that has Wi-Fi acting as a pure relay.
 
 ## Gateway → backend contract
 

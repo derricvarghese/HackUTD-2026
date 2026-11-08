@@ -52,6 +52,8 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     private var gattServer: BluetoothGattServer? = null
     private var running = false
 
+    private companion object { const val MAX_ATTRIBUTE_LEN = 512 }
+
     private class Link(val address: String) {
         var gatt: BluetoothGatt? = null
         var rx: BluetoothGattCharacteristic? = null
@@ -95,9 +97,14 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     // ---- MeshTransport ----
 
     override fun send(envelopeJson: ByteArray, peer: String) {
-        val link = links[peer] ?: return
-        if (link.rx == null) return
-        val frames = Framing.chunk(envelopeJson, Random.nextInt(), link.mtu - 3)
+        val link = links[peer]
+        if (link == null || link.rx == null) {
+            log("TX to $peer skipped: no ready link (links=${links.keys})")
+            return
+        }
+        // An ATT attribute value is at most 512 bytes: with MTU 517, mtu-3 = 514 makes writeCharacteristic throw.
+        val frames = Framing.chunk(envelopeJson, Random.nextInt(), minOf(link.mtu - 3, MAX_ATTRIBUTE_LEN))
+        log("TX ${envelopeJson.size} B in ${frames.size} frame(s) to $peer (mtu ${link.mtu})")
         link.queue.addAll(frames)
         pump(link)
     }
@@ -136,6 +143,7 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
         link.queue.removeFirstOrNull()
         link.retries = 0
         if (status != BluetoothGatt.GATT_SUCCESS) log("Write to ${link.address} status $status")
+        else if (link.queue.isEmpty()) log("TX to ${link.address} complete")
         pump(link)
     }
 
@@ -175,6 +183,7 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
             }
+            main.post { log("Inbound write ${value?.size ?: -1} B from ${device.address} (prepared=$preparedWrite)") }
             if (characteristic.uuid != MeshProtocol.RX_CHARACTERISTIC_UUID || value == null) return
             if (preparedWrite) {
                 main.post { log("Ignoring long write from ${device.address}") }
@@ -183,7 +192,9 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
             val frame = value.copyOf()
             val peer = device.address
             main.post {
-                reassembler.ingest(frame, peer)?.let { listener?.onEnvelope(it, peer) }
+                val whole = reassembler.ingest(frame, peer)
+                if (whole == null) log("Inbound frame from $peer buffered or invalid (${frame.size} B)")
+                whole?.let { listener?.onEnvelope(it, peer) }
             }
         }
 
