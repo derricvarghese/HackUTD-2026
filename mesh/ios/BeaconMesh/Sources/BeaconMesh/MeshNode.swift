@@ -123,7 +123,6 @@ public final class MeshNode: NSObject, ObservableObject {
         welfare.log = { [weak self] in self?.append($0) }   // short ids only, never check-in text
         let notifications = WelfareNotificationCenter.shared
         notifications.onOpen = { [weak self] id in self?.openCheckin(id) }
-        notifications.onAnswer = { [weak self] id, response in _ = await self?.answerCheckin(id: id, response: response) }
         notifications.install()
         profile.requestGatewayCycle = { [weak self] in self?.sync.requestCycle(force: true) }
         profile.onChange = { [weak self] in self?.refresh() }

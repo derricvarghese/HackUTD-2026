@@ -7,8 +7,8 @@ import UserNotifications
 ///
 /// Rules: exactly ONE notification per check-in id (the request identifier is the check-in id; re-adding replaces it).
 /// The reminder is the same single request: non-repeating at the deadline, then repeating (>= 60 s) once the app has run
-/// overdue; each firing replaces the previous delivery. Three actions: "I'm still here" and "I no longer need help" run in the background
-/// (the reply is sent without opening the app), "I need urgent help" opens the app. Time Sensitive interruption level is
+/// overdue; each firing replaces the previous delivery. The notification has NO answer buttons: a tap opens the in-app
+/// check-in screen (`WelfareSheet`), where the person taps one of the three answers. Time Sensitive interruption level is
 /// requested (needs the Time Sensitive Notifications capability); no critical alerts, no alarm.
 ///
 /// iOS limits: the app only runs in the background for Bluetooth and short wakeups, so a check-in can only be posted when the
@@ -16,18 +16,26 @@ import UserNotifications
 public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUserNotificationCenterDelegate {
     public static let shared = WelfareNotificationCenter()
 
-    /// (checkin id, response) from an action button. Called off the main queue.
-    public var onAnswer: ((String, String) async -> Void)?
-    /// A notification was tapped: show the confirmation sheet for this check-in id.
-    public var onOpen: ((String) -> Void)?
+    /// A notification was tapped: show the confirmation sheet for this check-in id. Set by the app once the UI can show it.
+    /// A tap that arrives before this is set (cold launch) is kept in `pendingOpenId` and delivered as soon as it is set.
+    public var onOpen: ((String) -> Void)? {
+        didSet {
+            guard let onOpen, let id = pendingOpenId else { return }
+            pendingOpenId = nil
+            onOpen(id)
+        }
+    }
+    private var pendingOpenId: String?
 
     private let center = UNUserNotificationCenter.current()
     private static let idKey = "checkin_id"
     private static let sosKey = "sos_id"
+    private static let kindKey = "kind"
 
     private override init() { super.init() }
 
-    /// Call once at launch (the delegate must be set before the app finishes launching to see action responses).
+    /// Call at launch, before the app finishes launching (the app's `init`): a notification tap that launched the app is
+    /// delivered to this delegate only if it is already set. Calling it again is harmless.
     public func install() { center.delegate = self }
 
     /// Asks for alert + sound the first time (call at the right moment: after the first SOS, not at launch).
@@ -43,10 +51,8 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
     public func show(_ p: WelfareCheckin, nowMs: Int64) {
         guard let model = WelfareNotificationModel.build(p, nowMs: nowMs, timeText: Self.clockTime) else { return }
         let request = UNNotificationRequest(identifier: model.identifier, content: content(model), trigger: nil)
-        register(model) { [center] in
-            center.add(request) { _ in }
-            self.removeStrayDelivered(thread: model.identifier)
-        }
+        center.add(request) { _ in }
+        removeStrayDelivered(thread: model.identifier)
     }
 
     public func scheduleReminder(_ p: WelfareCheckin, plan: WelfareReminderPlan) {
@@ -68,7 +74,7 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
         // Overdue wording for both: the first fires at the deadline, the repeating ones after it.
         guard let model = WelfareNotificationModel.build(p, nowMs: max(at, p.deadlineAtMs), timeText: Self.clockTime) else { return }
         let request = UNNotificationRequest(identifier: id, content: content(model), trigger: trigger)
-        register(model) { [center] in center.add(request) { _ in } }
+        center.add(request) { _ in }
     }
 
     public func cancel(_ checkinId: String) {
@@ -81,15 +87,13 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
         let openIds = Set(open.map(\.checkinId))
         center.getDeliveredNotifications { [center] delivered in
             let stale = delivered.filter {
-                $0.request.content.categoryIdentifier.hasPrefix(WelfareNotificationModel.categoryPrefix)
-                    && !openIds.contains($0.request.content.threadIdentifier)
+                Self.isWelfare($0.request.content) && !openIds.contains($0.request.content.threadIdentifier)
             }.map(\.request.identifier)
             center.removeDeliveredNotifications(withIdentifiers: stale)
         }
         center.getPendingNotificationRequests { [center] pending in
             let stale = pending.filter {
-                $0.content.categoryIdentifier.hasPrefix(WelfareNotificationModel.categoryPrefix)
-                    && !openIds.contains($0.content.threadIdentifier)
+                Self.isWelfare($0.content) && !openIds.contains($0.content.threadIdentifier)
             }.map(\.identifier)
             center.removePendingNotificationRequests(withIdentifiers: stale)
         }
@@ -103,25 +107,15 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
         c.title = m.title
         c.body = m.body
         c.sound = .default
-        c.categoryIdentifier = m.categoryId
         c.threadIdentifier = m.identifier
-        c.userInfo = [Self.idKey: m.identifier, Self.sosKey: m.sosId]
+        c.userInfo = [Self.idKey: m.identifier, Self.sosKey: m.sosId, Self.kindKey: WelfareNotificationModel.kind]
         if m.timeSensitive, #available(iOS 15.0, *) { c.interruptionLevel = .timeSensitive }
         return c
     }
 
-    /// Registers the category of this notification (merged with the existing ones), then runs `then`.
-    private func register(_ m: WelfareNotificationModel, then: @escaping () -> Void) {
-        let actions = m.actions.map {
-            UNNotificationAction(identifier: $0.identifier, title: $0.title, options: $0.foreground ? [.foreground] : [])
-        }
-        let category = UNNotificationCategory(identifier: m.categoryId, actions: actions, intentIdentifiers: [], options: [])
-        center.getNotificationCategories { [center] existing in
-            var all = existing.filter { $0.identifier != m.categoryId }
-            all.insert(category)
-            center.setNotificationCategories(all)
-            then()
-        }
+    /// True for the notifications this app posts for welfare check-ins (no category: the tap opens the in-app screen).
+    private static func isWelfare(_ c: UNNotificationContent) -> Bool {
+        (c.userInfo[kindKey] as? String) == WelfareNotificationModel.kind
     }
 
     private static func clockTime(_ ms: Int64) -> String {
@@ -141,9 +135,9 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
 
     private func removeOlderDeliveredReminders() {
         center.getDeliveredNotifications { [center] delivered in
-            let groups = Dictionary(grouping: delivered.filter {
-                $0.request.content.categoryIdentifier.hasPrefix(WelfareNotificationModel.categoryPrefix)
-            }) { $0.request.content.threadIdentifier }
+            let groups = Dictionary(grouping: delivered.filter { Self.isWelfare($0.request.content) }) {
+                $0.request.content.threadIdentifier
+            }
             let old = groups.values.flatMap { $0.sorted { $0.date > $1.date }.dropFirst() }.map(\.request.identifier)
             center.removeDeliveredNotifications(withIdentifiers: old)
         }
@@ -158,14 +152,13 @@ public final class WelfareNotificationCenter: NSObject, WelfareNotifying, UNUser
     }
 
     public func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let info = response.notification.request.content.userInfo
-        guard let id = info[Self.idKey] as? String else { return }
-        let action = response.actionIdentifier
-        if action == UNNotificationDefaultActionIdentifier {
-            onOpen?(id)
-        } else if WelfareResponse.isKnown(action) {
-            // Runs in the background for the two calm replies; the system keeps the app alive until this returns.
-            await onAnswer?(id, action)
+        // Only the default tap (the notification body) is handled: it opens the in-app check-in screen. Nothing is answered here.
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let id = response.notification.request.content.userInfo[Self.idKey] as? String else { return }
+        if let onOpen {
+            onOpen(id)
+        } else {
+            pendingOpenId = id   // cold launch: the UI is not ready yet; delivered when `onOpen` is set
         }
     }
 }

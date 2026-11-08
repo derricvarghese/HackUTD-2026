@@ -184,29 +184,21 @@ public enum ReplyBackoff {
 
 // MARK: - Notification model (pure)
 
-/// What a check-in notification shows and offers, independent of UserNotifications (unit-tested).
+/// What a check-in notification shows, independent of UserNotifications (unit-tested). The notification has no answer
+/// buttons: a tap opens the in-app check-in screen, where the person picks one of the three answers.
 public struct WelfareNotificationModel: Equatable {
-    public struct Action: Equatable {
-        /// The `CheckinResponse` value; used as the UNNotificationAction identifier.
-        public var identifier: String
-        public var title: String
-        /// Opens the app. Only the urgent reply does, so the other two are sent from the background.
-        public var foreground: Bool
-    }
-
     public static let defaultTitle = "Beacon is checking on you"
     public static let defaultBody = "Please tell responders how you are."
     public static let overdueTitle = "Check-in overdue"
     public static let overdueBody = "Please confirm you're okay: your check-in is overdue."
-    public static let categoryPrefix = "beacon.welfare."
+    /// Marker stored in the notification's userInfo, so the app recognises its own check-in notifications (never a category).
+    public static let kind = "beacon.welfare"
 
     /// Notification request identifier = the check-in id. Re-adding it replaces the notification (never stacks).
     public var identifier: String
     public var sosId: String
     public var title: String
     public var body: String
-    public var actions: [Action]
-    public var categoryId: String
     public var deadlineAtMs: Int64
     /// Past the deadline: overdue wording, no countdown, not auto-removed until answered or resolved.
     public var overdue: Bool
@@ -220,13 +212,9 @@ public struct WelfareNotificationModel: Equatable {
     public static func build(_ p: WelfareCheckin, nowMs: Int64, timeText: (Int64) -> String) -> WelfareNotificationModel? {
         guard p.isOpen else { return nil }
         let overdue = p.isOverdue(nowMs)
-        let actions = WelfareResponse.offered(p.choices).prefix(3).map {
-            Action(identifier: $0, title: WelfareResponse.label($0), foreground: $0 == WelfareResponse.needUrgentHelp)
-        }
         let body = overdue ? overdueBody : "\(p.message ?? defaultBody) Answer by \(timeText(p.deadlineAtMs))."
         return WelfareNotificationModel(
             identifier: p.checkinId, sosId: p.sosId, title: overdue ? overdueTitle : (p.title ?? defaultTitle), body: body,
-            actions: actions, categoryId: categoryPrefix + actions.map(\.identifier).joined(separator: "+"),
             deadlineAtMs: p.deadlineAtMs, overdue: overdue, urgent: overdue || p.attempt > 1 || p.tier == "critical",
             timeSensitive: true)
     }

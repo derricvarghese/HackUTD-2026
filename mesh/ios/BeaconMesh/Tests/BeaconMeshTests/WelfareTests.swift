@@ -234,22 +234,18 @@ private func make(_ clock: Clock = Clock(), store: WelfareStore = InMemoryWelfar
 @Suite struct WelfareNotificationModelTests {
     private func time(_ ms: Int64) -> String { "T\(ms - t0)" }
 
-    @Test func beforeDeadlineHasCountdownAndThreeActions() throws {
+    @Test func beforeDeadlineHasCountdownAndIsTimeSensitive() throws {
         let m = try #require(WelfareNotificationModel.build(checkin(), nowMs: t0, timeText: time))
         #expect(m.identifier == cid && !m.overdue && m.timeSensitive)
         #expect(m.title == "Beacon is checking on you" && m.body.hasSuffix("Answer by T300000."))
-        #expect(m.actions.map(\.identifier) == ["still_here", "no_longer_need_help", "need_urgent_help"])
-        #expect(m.actions.map(\.title) == ["I'm still here", "I no longer need help", "I need urgent help"])
-        #expect(m.actions.map(\.foreground) == [false, false, true], "only the urgent reply opens the app")
-        #expect(m.categoryId == "beacon.welfare.still_here+no_longer_need_help+need_urgent_help")
     }
 
-    @Test func serverTextAndRestrictedChoicesAreUsed() throws {
+    @Test func serverTextIsUsed() throws {
         var p = checkin()
         p.title = "Check in"; p.message = "Are you OK?"; p.choices = ["need_urgent_help", "still_here"]
         let m = try #require(WelfareNotificationModel.build(p, nowMs: t0, timeText: time))
         #expect(m.title == "Check in" && m.body.hasPrefix("Are you OK?"))
-        #expect(m.actions.map(\.identifier) == ["still_here", "need_urgent_help"])
+        #expect(m.identifier == cid)
     }
 
     @Test func overdueWordingHasNoCountdownAndIsUrgent() throws {
