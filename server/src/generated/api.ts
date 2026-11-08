@@ -863,7 +863,11 @@ export interface paths {
         get: operations["listSilentDevices"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Clear all known silent/lost-contact devices (forget their heartbeat history)
+         * @description Removes every silent-device flag and the heartbeat history of those devices so the detector stops listing them. A device that heartbeats again is tracked afresh. Cases are untouched.
+         */
+        delete: operations["clearSilentDevices"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4754,6 +4758,29 @@ export interface operations {
                 };
             };
             422: components["responses"]["ValidationError"];
+        };
+    };
+    clearSilentDevices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cleared */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        cleared: number;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
         };
     };
     getSilentDevice: {

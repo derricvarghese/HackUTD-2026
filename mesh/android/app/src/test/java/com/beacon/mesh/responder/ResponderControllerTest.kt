@@ -251,6 +251,29 @@ class ResponderControllerTest {
         assertFalse(JSONObject(patch.body).getBoolean("available"))
     }
 
+    @Test fun failedAvailabilityToggleRevertsAndReportsError() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        http.on("GET", "/v1/auth/me") { http.json(200, """{"id":"r-1","available":true}""") }
+        http.on("PATCH", "/v1/responders/r-1") { http.json(500, "{}") }
+        val c = controller(); c.login("ana", "pw")
+        assertFalse(c.setAvailable(false))
+        assertTrue(c.state.value.available != false)
+        assertNotNull(c.state.value.error)
+    }
+
+    @Test fun presenceWithDeadSessionSignsOutInsteadOfBeingSwallowed() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        http.on("PUT", "/v1/auth/me/presence") { http.json(401, "{}") }
+        http.on("POST", "/v1/auth/refresh") { http.json(401, "{}") }
+        val c = controller(); c.login("ana", "pw")
+        c.setActive(true); runCurrent()
+        assertNull(c.state.value.account)
+        assertEquals(ResponderException.Kind.SIGNED_OUT, c.state.value.error?.kind)
+        http.calls.clear()
+        advanceTimeBy(61_000); runCurrent()
+        assertTrue(http.callsTo("PUT", "/v1/auth/me/presence").isEmpty())
+    }
+
     @Test fun offlineKeepsLastKnownCasesAndShowsAnError() = runTest {
         http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
         val c = controller(); c.login("ana", "pw")

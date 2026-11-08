@@ -226,6 +226,7 @@ export function buildRoutes(ctx: Ctx): Router {
     const x = q(req);
     res.json(await heartbeats.listSilent(ctx, { limit: limitOf(req), cursor: str(x.cursor), status: asList(x.status), bbox: str(x.bbox), include_acknowledged: asBool(x.include_acknowledged) }));
   });
+  r.delete('/heartbeats/silent', async (req, res) => res.json(await heartbeats.clearSilent(ctx, requireResponder(req))));
   r.get('/heartbeats/silent/:deviceId', async (req, res) => { requireResponder(req); res.json(await heartbeats.getSilent(ctx, req.params.deviceId)); });
   r.patch('/heartbeats/silent/:deviceId', async (req, res) => res.json(await heartbeats.updateSilent(ctx, req.params.deviceId, req.body, requireResponder(req))));
   r.post('/heartbeats/silent/:deviceId/promote', async (req, res) => {

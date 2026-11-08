@@ -286,7 +286,11 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
     }
     /** Returns through [done] so the note field only clears on success. */
     fun addNote(c: ResponderCase, text: String, done: (Boolean) -> Unit) {
-        viewModelScope.launch { done(controller.addNote(c, text.trim())) }
+        viewModelScope.launch {
+            val ok = controller.addNote(c, text.trim())
+            if (ok) retryDetail() // a note may not bump the case's updated_at, so force the detail to reload
+            done(ok)
+        }
     }
 
     fun uploadImage(sosId: String, imageId: String, bytes: ByteArray, caption: String? = null, onDone: (Boolean) -> Unit) {

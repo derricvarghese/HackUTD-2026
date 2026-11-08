@@ -176,6 +176,20 @@ export async function updateSilent(ctx: Ctx, deviceId: string, b: { acknowledged
   return (await silentDtos(ctx, [r]))[0];
 }
 
+/** Forgets every silent/lost-contact device: drops the flags and their heartbeat history so the detector does not re-flag them. Cases are untouched. */
+export async function clearSilent(ctx: Ctx, actor: { role: string }): Promise<{ cleared: number }> {
+  if (actor.role === 'volunteer') throw forbidden('Volunteers cannot clear silent devices');
+  return ctx.db.transaction().execute(async (trx) => {
+    const rows = await trx.selectFrom('silent_devices').select('device_id').where('resolved_at', 'is', null).execute();
+    const ids = rows.map((r) => r.device_id);
+    if (!ids.length) return { cleared: 0 };
+    await trx.deleteFrom('silent_devices').where('device_id', 'in', ids).execute();
+    await trx.deleteFrom('heartbeats').where('device_id', 'in', ids).execute();
+    await trx.updateTable('devices').set({ last_heartbeat_at: null, heartbeat_status: 'unknown', updated_at: new Date() }).where('id', 'in', ids).execute();
+    return { cleared: ids.length };
+  });
+}
+
 /** Turns a silent device into a ranked case (category other, silent, located at its last known cell). */
 export async function promoteSilent(ctx: Ctx, deviceId: string, actor: { id: string; role: string }): Promise<string> {
   if (actor.role === 'volunteer') throw forbidden('Volunteers cannot promote silent devices');

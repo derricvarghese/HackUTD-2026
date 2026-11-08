@@ -39,6 +39,14 @@ export function Queue() {
     invalidate: (qc) => { void qc.invalidateQueries({ queryKey: qk.silent }); void qc.invalidateQueries({ queryKey: ['cases'] }); },
   });
 
+  const clearLost = useAction(() => api.clearSilent(), {
+    success: (r) => `Cleared ${r.cleared} lost-contact device${r.cleared === 1 ? '' : 's'}`,
+    invalidate: (qc) => { void qc.invalidateQueries({ queryKey: qk.silent }); void qc.invalidateQueries({ queryKey: ['cases'] }); },
+  });
+  const onClearLost = () => {
+    if (window.confirm('Forget all lost-contact devices? They will be removed from the queue. This cannot be undone.')) clearLost.mutate(undefined);
+  };
+
   const rows = useMemo<Row[]>(() => {
     // The API's `q` only searches notes, so names are matched here over the open set and merged in.
     const byName = q ? (open.data ?? []).filter((c) => matchesTab(c, 'all') && matchesSearch(c, q, `${shortId(c.id)} ${caseTitle(c, 80)}`)) : [];
@@ -86,6 +94,9 @@ export function Queue() {
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 600, color: '#334155' }}>
               <input type="checkbox" checked={resolved} onChange={(e) => setResolved(e.target.checked)} /> Include resolved
             </label>
+            {canAct && (silentDevs.data?.length ?? 0) > 0 && (
+              <button className="btn sm danger" disabled={clearLost.isPending} onClick={onClearLost}>Clear lost-contact devices</button>
+            )}
             <span className="sortby">Sorted by score, silent first</span>
           </div>
           {list.isError && <ErrorBox error={list.error} onRetry={() => void list.refetch()} />}

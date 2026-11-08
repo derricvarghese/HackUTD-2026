@@ -1671,6 +1671,24 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/SilentDevice" }
         "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [Heartbeats]
+      summary: Clear all known silent/lost-contact devices (forget their heartbeat history)
+      description: Removes every silent-device flag and the heartbeat history of those devices so the detector stops listing them. A device that heartbeats again is tracked afresh. Cases are untouched.
+      operationId: clearSilentDevices
+      security:
+        - responderJwt: []
+      responses:
+        "200":
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /heartbeats/silent/{deviceId}:
     parameters:
       - $ref: "#/components/parameters/DeviceId"

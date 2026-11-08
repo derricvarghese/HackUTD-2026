@@ -121,7 +121,15 @@ class ResponderController(
 
     suspend fun advance(c: ResponderCase, status: String, outcome: String? = null): Boolean {
         val a = c.assignmentId ?: return false
-        return act { client.updateAssignment(a, status, outcome) }
+        // The server only allows assigned -> en_route -> on_scene -> resolved, so step through anything skipped.
+        val order = listOf("assigned", "en_route", "on_scene", "resolved")
+        val from = order.indexOf(c.assignmentStatus)
+        val to = order.indexOf(status)
+        val steps = if (from >= 0 && to > from + 1) order.subList(from + 1, to) else emptyList()
+        return act {
+            for (s in steps) client.updateAssignment(a, s)
+            client.updateAssignment(a, status, outcome)
+        }
     }
 
     suspend fun addNote(c: ResponderCase, text: String): Boolean = act { client.addNote(c.id, text) }
@@ -150,16 +158,32 @@ class ResponderController(
         return ok
     }
 
+    // Guards `available` against stale server answers (presence / initial load) landing after or during a toggle.
+    private var availEpoch = 0
+    private var toggling = 0
+
+    private fun applyServerAvailable(a: Boolean?, epochAtRequest: Int) {
+        if (a != null && toggling == 0 && availEpoch == epochAtRequest) _state.update { it.copy(available = a) }
+    }
+
     suspend fun loadAvailability() {
-        try { val a = client.myAvailability(); _state.update { it.copy(available = a) } } catch (e: ResponderException) { if (e.kind == ResponderException.Kind.SIGNED_OUT) fail(e) }
+        val epoch = availEpoch
+        try { applyServerAvailable(client.myAvailability(), epoch) } catch (e: ResponderException) { if (e.kind == ResponderException.Kind.SIGNED_OUT) fail(e) }
     }
 
     /** Optimistic: flips at once, reverts and reports the error if the server refuses. */
     suspend fun setAvailable(on: Boolean): Boolean {
         val before = _state.value.available
+        val epoch = ++availEpoch
+        toggling++
         _state.update { it.copy(available = on) }
         return try { client.setAvailable(on); true } catch (e: ResponderException) {
-            _state.update { it.copy(available = before) }; fail(e); false
+            // Only revert if no newer toggle superseded this one.
+            if (availEpoch == epoch) _state.update { it.copy(available = before) }
+            fail(e); false
+        } finally {
+            toggling--
+            availEpoch++ // any presence answer requested before the PATCH finished may be stale
         }
     }
 
@@ -190,9 +214,14 @@ class ResponderController(
         if (presenceJob?.isActive == true) return
         presenceJob = scope.launch {
             while (true) {
-                runCatching {
-                    val avail = client.setPresence(true)
-                    if (avail != null) _state.update { it.copy(available = avail) }
+                val epoch = availEpoch
+                try {
+                    applyServerAvailable(client.setPresence(true), epoch)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: ResponderException) {
+                    // Transient errors retry on the next tick; a dead session must stop the loop and sign out.
+                    if (e.kind == ResponderException.Kind.SIGNED_OUT) { fail(e); return@launch }
                 }
                 delay(PRESENCE_INTERVAL_MS)
             }

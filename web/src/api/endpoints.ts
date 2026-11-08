@@ -92,6 +92,8 @@ export const listSilent = (q: Query = {}) => http.get<Page<SilentDevice>>('/hear
 export const ackSilent = (deviceId: string, acknowledged: boolean, note?: string) =>
   http.patch<SilentDevice>(`/heartbeats/silent/${deviceId}`, { acknowledged, note });
 export const promoteSilent = (deviceId: string) => http.post<Sos>(`/heartbeats/silent/${deviceId}/promote`);
+/** Forgets every silent / lost-contact device. Answers how many were cleared. */
+export const clearSilent = () => http.del<{ cleared: number }>('/heartbeats/silent');
 
 // ---- map and mesh
 export const getHeat = (bbox: string, cell_km = 1) => http.get<{ data: HeatCell[] }>('/map/heat', { bbox, cell_km });
