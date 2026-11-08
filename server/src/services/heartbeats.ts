@@ -79,7 +79,7 @@ export async function markDeviceAlive(ctx: Ctx, deviceId: string, at: Date, o: {
   const now = o.now ?? new Date();
   const recent = o.recent ?? true;
   const dev = await ctx.db.updateTable('devices').set((eb) => ({
-    heartbeat_status: recent ? eb.case().when('heartbeat_status', 'in', ['quiet', 'distress']).then('active').else(eb.ref('heartbeat_status')).end() : eb.ref('heartbeat_status'),
+    heartbeat_status: recent ? eb.case().when('heartbeat_status', 'in', ['unknown', 'quiet', 'distress', 'stopped']).then('active').else(eb.ref('heartbeat_status')).end() : eb.ref('heartbeat_status'),
     last_heartbeat_at: sql<Date>`greatest(coalesce(last_heartbeat_at, ${at}), ${at})`,
   })).where('id', '=', deviceId).returning('id').executeTakeFirst();
   if (!dev) return;

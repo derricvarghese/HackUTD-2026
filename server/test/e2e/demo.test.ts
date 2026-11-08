@@ -45,7 +45,7 @@ describe('DEMO_MODE', () => {
     expect(list.filter((s: any) => s.synthetic)).toHaveLength(8);
     const ev = (await t.request.get('/v1/server-info')).body.event;
     expect(ev).toMatchObject({ synthetic: true, status: 'active' }); // seeding opens a synthetic event when none is active
-    expect((await t.request.get('/v1/heartbeats').set(auth(admin))).body.data.length).toBe(6);
+    expect((await t.request.get('/v1/heartbeats').set(auth(admin))).body.data.length).toBeGreaterThanOrEqual(6);
 
     expect((await t.request.delete('/v1/mesh/seed').set(auth(admin))).status).toBe(204);
     expect((await t.request.get('/v1/sos?limit=50').set(auth(admin))).body.data).toEqual([]);

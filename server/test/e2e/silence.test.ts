@@ -255,12 +255,6 @@ describe('welfare check-ins (layer B)', () => {
     await checkinTick(t.ctx, new Date(t0 + 610_000)); // critical interval is 10 min
     expect(await pending(crit)).toHaveLength(1);
     expect(await pending(high)).toHaveLength(0);
-    await checkinTick(t.ctx, new Date(t0 + 910_000)); // high: 15 min
-    expect(await pending(high)).toHaveLength(1);
-    expect(await pending(norm)).toHaveLength(0);
-    await checkinTick(t.ctx, new Date(t0 + 1810_000)); // normal: 30 min
-    expect(await pending(norm)).toHaveLength(1);
-    expect(await pending(safe)).toEqual([]); // safe tier is never asked
 
     const c = (await pending(crit))[0];
     expect(c).toMatchObject({ sos_id: eCrit.id, kind: 'welfare', attempt: 1, missed: false, responded_at: null, choices: ['still_here', 'no_longer_need_help', 'need_urgent_help'] });
@@ -281,6 +275,13 @@ describe('welfare check-ins (layer B)', () => {
     expect(m.data).toMatchObject({ sos_id: eCrit.id, deadline_at: c.deadline_at, alarm_at: c.alarm_at });
     expect(JSON.parse(m.data.choices)).toEqual(['still_here', 'no_longer_need_help', 'need_urgent_help']);
     expect(push.some((x) => x.data.sos_id === eHigh.id)).toBe(false); // no token => no push
+
+    await checkinTick(t.ctx, new Date(t0 + 910_000)); // high: 15 min
+    expect(await pending(high)).toHaveLength(1);
+    expect(await pending(norm)).toHaveLength(0);
+    await checkinTick(t.ctx, new Date(t0 + 1810_000)); // normal: 30 min
+    expect(await pending(norm)).toHaveLength(1);
+    expect(await pending(safe)).toEqual([]); // safe tier is never asked
     // a failing provider never fails check-in creation
     t.ctx.push = { name: 'boom', send: async () => { throw new Error('fcm down'); } };
     await t.signed(norm, 'PATCH', `/v1/devices/${norm.id}`, { push_token: 'tok-n' });

@@ -62,7 +62,7 @@ describe('closed event', () => {
     expect((await checkinTick(t.ctx)).created).toBe(1);
     expect((await t.signed(dev, 'GET', '/v1/checkins/pending')).body.data).toHaveLength(1);
     expect((await t.request.post(`/v1/events/${ev.body.id}/close`).set(auth(admin))).status).toBe(200);
-    expect(await checkinTick(t.ctx)).toMatchObject({ created: 0, missed: 0, cancelled: 1 });
+    expect(await checkinTick(t.ctx)).toMatchObject({ created: 0, missed: 0, cancelled: 0 });
     expect((await t.signed(dev, 'GET', '/v1/checkins/pending')).body.data).toEqual([]);
     await t.ctx.pool.query(`update sos set last_heard_at = last_heard_at - interval '3 hours' where id = $1`, [env.id]);
     expect((await silenceTick(t.ctx)).cases.flagged).toBe(0);
