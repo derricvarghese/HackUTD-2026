@@ -6,6 +6,7 @@ import { bboxAround } from '../domain/geo';
 import { conflict, invalid, notFound } from '../errors';
 import { addEvent, broadcastSos, getRowOrThrow } from './sosView';
 import { nameNormsFor } from './profileStore';
+import { requestAiPass } from './aiTriage';
 
 const cand = (r: SosRow, names?: Map<string, string>): DedupeCandidate => ({
   id: r.id, lat: r.lat, lng: r.lng, approx_lat: r.approx_lat, approx_lng: r.approx_lng, text: r.text,
@@ -36,6 +37,7 @@ export async function mergeInto(ctx: Ctx, primaryId: string, dupIds: string[], a
     await addEvent(trx, primaryId, 'merged', actor, { merged_ids: dupIds, auto });
   });
   ctx.hub.publish('sos.merged', () => ({ primary_id: primaryId, merged_ids: dupIds }));
+  await requestAiPass(ctx, primaryId); // the merged report may add facts: re-run the AI for the primary
   await broadcastSos(ctx, 'sos.updated', primaryId);
 }
 

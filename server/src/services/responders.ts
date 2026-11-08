@@ -81,7 +81,12 @@ export async function updateResponder(ctx: Ctx, id: string, b: Update, actor: { 
   if (b.available !== undefined) patch.available = b.available;
   if (b.organization !== undefined) patch.organization = b.organization;
   if (b.phone !== undefined) patch.phone = b.phone;
-  if (b.location) { patch.lat = b.location.lat; patch.lng = b.location.lng; }
+  // `location: null` stops sharing and clears the stored position; a position also refreshes last_seen_at (staleness).
+  if (b.location !== undefined) {
+    patch.lat = b.location?.lat ?? null;
+    patch.lng = b.location?.lng ?? null;
+    if (b.location) patch.last_seen_at = new Date();
+  }
   if (b.password !== undefined) patch.password_hash = await hashPassword(b.password);
   const r = await ctx.db.updateTable('responders').set(patch).where('id', '=', id).where('active', '=', true).returningAll().executeTakeFirst();
   if (!r) throw notFound('Responder not found');

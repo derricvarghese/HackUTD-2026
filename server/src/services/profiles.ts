@@ -9,7 +9,7 @@ import {
 } from '../domain/profile';
 import { ACTIVE_ASSIGNMENT, canSeeFullProfile, publicSourceFromRow, toProfilePublic, toProfileView, type Viewer } from '../domain/privacy';
 import { decryptSensitive, getProfileRow, triageCtxFor } from './profileStore';
-import { llmPass, persistTriage, rulesOutcome } from './triage';
+import { persistTriage, rulesOutcome } from './triage';
 import { broadcastSos } from './sosView';
 
 const OPEN_STATUSES = ['reported', 'assigned', 'en_route', 'on_scene'] as const;
@@ -85,7 +85,7 @@ export async function deleteProfile(ctx: Ctx, deviceId: string, viewer: Viewer) 
 }
 
 /**
- * Called after a profile was written or erased: re-triage the device's open cases (rules immediately, LLM in the background),
+ * Called after a profile was written or erased: re-triage the device's open cases (rules immediately, provisional again; the AI pass follows in the background),
  * push `sos.updated` per case and one `profile.updated` frame (public fields only).
  */
 export async function onProfileChanged(ctx: Ctx, deviceId: string, row: ProfileRow | null) {
@@ -94,8 +94,7 @@ export async function onProfileChanged(ctx: Ctx, deviceId: string, row: ProfileR
   for (const c of cases) {
     const pctx = await triageCtxFor(ctx, c);
     await persistTriage(ctx, c.id, rulesOutcome(c, pctx), { kind: 'system' });
-    await broadcastSos(ctx, 'sos.updated', c.id);
-    if ((c.text ?? '').trim()) ctx.track(llmPass(ctx, c.id).catch((e) => ctx.log.error({ err: (e as Error).message, sos_id: c.id }, 'profile retriage failed')));
+    await broadcastSos(ctx, 'sos.updated', c.id); // provisional again; persistTriage queued the AI pass
   }
   if (row) {
     const frame = { ...toProfilePublic(publicSourceFromRow(row)), device_id: deviceId, sos_ids: cases.map((c) => c.id) };

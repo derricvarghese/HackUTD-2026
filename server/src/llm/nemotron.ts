@@ -18,6 +18,8 @@ export interface TriageLlm {
   /** Returns null when the LLM is unavailable (timeout, breaker open, bad output): callers fall back to rules only. */
   extract(input: LlmInput): Promise<LlmResult | null>;
   health(): { status: 'ok' | 'degraded' | 'down'; model: string; latency_ms?: number };
+  /** False while the circuit breaker is open: the triage queue then waits instead of burning attempts. Absent = always available. */
+  available?(): boolean;
   /** Active reachability probe (GET /models). Optional: implementations without a remote endpoint just use `health()`. */
   ping?(): Promise<{ status: 'ok' | 'degraded' | 'down'; model: string; latency_ms?: number }>;
 }
@@ -49,6 +51,8 @@ export class CircuitBreaker {
     if (now - this.openedAt >= this.cooldownMs) { this.openedAt = now; return true; } // half-open: let one probe through
     return false;
   }
+  /** Side-effect free `allow()`: would a call be let through right now? */
+  wouldAllow(now = Date.now()): boolean { return this.failures < this.threshold || now - this.openedAt >= this.cooldownMs; }
   success() { this.failures = 0; }
   failure(now = Date.now()) { this.failures++; if (this.failures >= this.threshold) this.openedAt = now; }
   get state(): 'closed' | 'open' { return this.failures >= this.threshold ? 'open' : 'closed'; }
@@ -154,6 +158,8 @@ export class NemotronClient implements TriageLlm {
       clearTimeout(timer);
     }
   }
+
+  available() { return this.breaker.wouldAllow(); }
 
   health() {
     const status = this.breaker.state === 'open' ? 'down' : this.lastOk ? 'ok' : 'degraded';

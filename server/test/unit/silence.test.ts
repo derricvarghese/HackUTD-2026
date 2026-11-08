@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { countNeighbors, evaluateSilence, type SilenceInput } from '../../src/domain/silence';
-import { alarmAt, connectivityOf, contactBoostFor, contactStateOf, tierOfScore, welfareDelta, welfareIntervalS, withBoosts } from '../../src/domain/liveness';
+import { connectivityOf, contactBoostFor, contactStateOf, tierOfScore, welfareDelta, welfareIntervalS, withBoosts } from '../../src/domain/liveness';
 
 const T0 = Date.parse('2026-11-07T12:00:00Z');
 const base: SilenceInput = { now: T0, lastHeartbeatAt: T0 - 600_000, thresholdS: 1200, neighborsActive: 0, neighborK: 3, hasOpenSos: false, batteryPct: 50, charging: false, moving: false, safeMessage: false };
@@ -29,7 +29,7 @@ describe('heartbeat silence state machine', () => {
     expect(v.state).toBe('distress');
     expect(v.priority).toBeGreaterThanOrEqual(80);
   });
-  it('a safe message suppresses the alarm', () => {
+  it('a safe message suppresses the silence flag', () => {
     expect(evaluateSilence({ ...base, lastHeartbeatAt: T0 - 9e6, neighborsActive: 9, safeMessage: true }).state).toBe('active');
   });
   it('low-battery guard: lowers priority, caps at quiet unless an SOS is open, but never drops the flag', () => {
@@ -76,10 +76,13 @@ describe('liveness rules', () => {
   it('welfare boost: +10 per miss, +20 when unresponsive, capped at +30 in total', () => {
     expect(welfareDelta(0, false)).toBe(10);
     expect(welfareDelta(0, true)).toBe(20);
-    expect(welfareDelta(20, true)).toBe(10);
-    expect(welfareDelta(30, true)).toBe(0);
+    expect(welfareDelta(20, true)).toBe(0);
+    expect(welfareDelta(20, true, 600)).toBe(5);
+    expect(welfareDelta(0, true, 99999)).toBe(30);
+    expect(welfareDelta(30, true, 99999)).toBe(0);
+    expect(welfareDelta(0, false, 1200)).toBe(20);
   });
-  it('tier thresholds, intervals and alarm time', () => {
+  it('tier thresholds and intervals', () => {
     expect(tierOfScore(85, {})).toBe('critical');
     expect(tierOfScore(10, { trapped: true })).toBe('critical');
     expect(tierOfScore(55, {})).toBe('high');
@@ -87,9 +90,6 @@ describe('liveness rules', () => {
     expect(tierOfScore(20, {})).toBe('normal');
     const cfg = { CHECKIN_INTERVAL_S: 1800, CHECKIN_INTERVAL_CRITICAL_S: 600, CHECKIN_INTERVAL_HIGH_S: 900 };
     expect([welfareIntervalS(cfg, 'critical'), welfareIntervalS(cfg, 'high'), welfareIntervalS(cfg, 'normal')]).toEqual([600, 900, 1800]);
-    const sent = new Date(T0), dl = new Date(T0 + 300_000);
-    expect(alarmAt(sent, dl, 60).getTime()).toBe(T0 + 240_000);
-    expect(alarmAt(sent, dl, 999).getTime()).toBe(T0);
   });
   it('final score = triage + boosts, capped', () => {
     expect(withBoosts(50, 10, 15)).toBe(75);

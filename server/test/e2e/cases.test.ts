@@ -291,8 +291,10 @@ describe('PATCH / DELETE / retriage / check-ins', () => {
     const ws = await t.ws(alice.token);
     const r = await t.request.post(`/v1/sos/${c.id}/retriage`).set(auth(alice));
     expect(r.status).toBe(200);
-    expect(r.body.reasons.map((x: any) => x.source)).toContain('llm');
-    await ws.waitFor('sos.updated', (d) => d.id === c.id);
+    // rules score straight away; the AI worker may already have claimed the job by the time the response is read
+    expect(['provisional', 'pending']).toContain(r.body.triage_status);
+    await ws.waitFor('sos.updated', (d) => d.id === c.id && d.triage_status === 'complete'); // the AI result follows
+    await t.ctx.idle();
     const detail = (await t.request.get(`/v1/sos/${c.id}`).set(auth(alice))).body;
     expect(detail.triage.extracted.medical).toEqual(expect.arrayContaining(['insulin', 'oxygen']));
     expect(detail.triage.summary).toMatch(/Confidence/);
@@ -413,7 +415,5 @@ describe('system', () => {
     expect(nf.status).toBe(404);
     expect(nf.body.code).toBe('not_found');
     expect((await t.request.post('/v1/auth/login').set('content-type', 'application/json').send('{bad json')).status).toBe(422);
-    const offers = await t.request.get('/v1/offers').set(auth(alice));
-    expect(offers.status).toBe(200);
   });
 });

@@ -22,7 +22,7 @@ info:
     **The absence of heartbeats means the device has no connectivity.** It is a lost-contact signal, not proof of distress. A device that merely
     left coverage and has no open SOS is only listed as `lost_contact`/`quiet` (and in `GET /heartbeats/silent`); it never becomes a case and is never
     escalated. For a device with an OPEN SOS, silence raises priority (it never lowers it): after `silence_threshold_seconds` without any message from
-    that device (heartbeat, SOS, offer, check-in reply) the case becomes `silent` with `contact_state=lost_contact`, a reason
+    that device (heartbeat, SOS, check-in reply) the case becomes `silent` with `contact_state=lost_contact`, a reason
     "Lost contact: no heartbeat for N min (device probably has no connectivity)" and +10 score at the threshold, +10 per further missed heartbeat
     interval, at most +30 (`sos.silent` WebSocket event). The next heartbeat restores it (`silent=false`, a `contact_restored` event, `sos.updated`);
     the score is NOT reduced. Apps MUST keep heartbeating whenever they have an open SOS, even if no event is active. Responders can promote a silent
@@ -32,11 +32,13 @@ info:
     Once a person has filed an SOS (open case, status not `resolved`/`closed`/`merged`, category not `safe`) the server periodically asks them to confirm
     their status: every 10 min for `critical` cases, 15 min for `high`, 30 min for `normal` (`/server-info.checkin_intervals_seconds`; measured from the last answer).
     Each `Checkin` has `choices` (`still_here` "I'm still here", `no_longer_need_help` "I no longer need help", `need_urgent_help` "I need help urgently"),
-    `deadline_at` (= `sent_at` + `checkin_window_seconds`, default 5 min) and `alarm_at` (= `deadline_at` - `checkin_alarm_lead_seconds`, default 60 s).
-    Order of events: check-in created -> notification (mesh `BackendMessage` kind `checkin_request`, push notification when the device has a `push_token`,
-    and REST: `pending_checkins` in the `POST /heartbeats` response and `GET /checkins/pending`) -> **at `alarm_at`, if still unanswered, the APP sounds a
-    local alarm + vibration + full-screen alert as a final try** (the server cannot reach an offline phone, so this is done by the app from the timestamps)
-    -> `deadline_at` passes -> the server marks the check-in `missed`; ONLY NOW is the case `silent`. The server never marks a case silent before `deadline_at`.
+    `deadline_at` (= `sent_at` + `checkin_window_seconds`, default 5 min).
+    Order of events: check-in created -> delivery (mesh `BackendMessage` kind `checkin_request`, push notification when the device has a `push_token`,
+    and REST: `pending_checkins` in the `POST /heartbeats` response and `GET /checkins/pending`) -> `deadline_at` passes -> the server marks the check-in
+    `missed`; ONLY NOW is the case `silent`. The server never marks a case silent before `deadline_at`.
+    A missed check-in does NOT spawn new ones: it stays the single active check-in for the case, now `overdue`, and the server re-delivers the SAME check-in
+    (same `checkin_id`, new BackendMessage id, `reminder` count in the body) every `checkin_reminder_seconds` until the person answers (answering an overdue
+    check-in is accepted and clears `unresponsive`/silence). No new check-in is created while one is open.
     A missed check-in is interpreted together with the heartbeats: heartbeats still arriving = `contact_state=unresponsive` (connected but not answering,
     possible incapacitation, the stronger signal; +20 score for that miss); heartbeats also stopped = `contact_state=lost_contact` (+10). The welfare boost
     is capped at +30 on top of the heartbeat-gap boost (also capped at +30); the total never exceeds 100 and priority never decreases. A reply or heartbeat
@@ -53,8 +55,12 @@ info:
     also raise LOCAL notifications from the REST/mesh delivery so check-ins work without push. The app should poll whenever it regains signal.
 
     ## AI triage
-    Rules score first; free text is then sent to a Nemotron model (NVIDIA NIM, OpenAI-compatible endpoint hosted on Brev) which extracts
-    entities and adds reasons. The LLM endpoint is internal to the server and not part of this API.
+    Every case goes through two steps. (1) Deterministic rules score it instantly: the case is stored, returned and broadcast (`sos.created`) with that
+    provisional score and `triage_status: provisional`; nothing waits for the LLM. (2) A background job then sends the case (category, flags, free text, coarse
+    profile signals, never name/phone/address) to a Nemotron model (NVIDIA NIM, OpenAI-compatible endpoint hosted on Brev) which extracts entities and adds
+    reasons; the combined result replaces the score, `triage_status` becomes `complete` and a `sos.updated` frame announces it, so the score can change shortly
+    after creation (up or down within +/-15, never below the rule floors). If the LLM stays unavailable the status becomes `failed` and the rules score stands;
+    a slow sweep keeps retrying. See `TriageStatus`. The LLM endpoint is internal to the server and not part of this API.
 
     ## Profiles (who is the person behind the phone)
     At install the app asks for the user's name and identifying characteristics and syncs them with `PUT /devices/{deviceId}/profile` (device signature
@@ -68,6 +74,15 @@ info:
     Profiles are personal data: stored with the sensitive part AES-256-GCM encrypted, never logged, deleted with the device, with its last case
     (when the event is purged or the case is erased) or after prolonged inactivity (`PROFILE_RETENTION_DAYS`). Profile changes re-triage the device's open cases
     (vulnerability flags raise the score modestly) and emit a `profile.updated` WebSocket frame carrying public fields only.
+
+    ## Case images
+    People can attach photos to their case (what they see, damage, injuries) and responders on scene can add more: `PUT /sos/{sosId}/images/{imageId}` with a
+    client-generated UUID (retry-safe: `201` first time, `200` on replay), raw `image/jpeg` or `image/png`, max 6 per case and 3 MB each. Photos are personal
+    data: the server strips EXIF/GPS and other metadata, stores them in Postgres, and only the owning device, admins and the ACTIVE assignee can list or
+    download them (`GET /sos/{id}/images[/{imageId}]`); every other dashboard user only sees `Sos.image_count`. Clients must bake the rotation in before
+    uploading (the server drops the EXIF orientation tag). Photos are deleted with the case, purged with the event and erased with the device; they never
+    appear in WebSocket frames (`sos.updated` carries the count only). They do not travel over the mesh: an offline SOS may carry `MeshPayload.image_count`
+    as a hint and the phone uploads the photos when it is online (same pattern as voice notes).
 
     ## Conventions
     - Base URL: `/v1`. JSON only (`application/json`), UTF-8. All timestamps are RFC 3339 UTC.
@@ -102,9 +117,9 @@ info:
 
     ## WebSocket (live updates)
     Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
-    Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones","offers"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
+    Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
     Events (payload schemas under `components/schemas/WsEvent*`):
-    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (an open case lost contact or missed its welfare check-in deadline), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `heartbeat.silent` (a phone that was heartbeating stopped; no case implied), `heartbeat.resumed` (heartbeats are back; payload `connectivity=connected`), `profile.updated` (a device with open cases changed its profile; public fields only), `deadzones.updated`, `mesh.stats`.
+    `sos.created`, `sos.updated` (score/status/dedupe changes, and the AI triage result: `triage_status` moves provisional -> complete/failed and `score` may change), `sos.merged`, `sos.silent` (an open case lost contact or missed its welfare check-in deadline), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `heartbeat.silent` (a phone that was heartbeating stopped; no case implied), `heartbeat.resumed` (heartbeats are back; payload `connectivity=connected`), `profile.updated` (a device with open cases changed its profile; public fields only), `deadzones.updated`, `mesh.stats`.
     After reconnect, clients should refetch via REST (`GET /sos?updated_since=`) to close gaps; events are not replayed.
   license:
     name: MIT
@@ -121,11 +136,12 @@ tags:
   - name: Profiles
     description: Victim identity profile (name + identifying characteristics) synced from the app at install; privacy-tiered, encrypted at rest.
   - name: SOS
+  - name: Images
+    description: Photos attached to a case (what they see, damage, injuries). JPEG/PNG only; metadata is stripped by the server; privacy-tiered like exact location.
   - name: Check-ins
     description: Welfare check-ins asked of people with an open SOS (layer B). Liveness itself is automatic (see Heartbeats).
   - name: Assignments
   - name: Responders
-  - name: Offers
   - name: Mesh
   - name: Events
   - name: Heartbeats
@@ -156,11 +172,13 @@ paths:
                   version: { type: string }
                   triage:
                     type: object
-                    description: Nemotron triage backend (NVIDIA NIM served from Brev). When unreachable, scoring falls back to rules-only (`Triage.llm_used=false`, lower confidence).
+                    description: Nemotron triage backend (NVIDIA NIM served from Brev) plus the AI triage backlog. When the LLM is unreachable, cases keep their rules score (`triage_status` goes `failed` after the retries, `Triage.llm_used=false`) and are retried by a slow sweep.
                     properties:
                       status: { type: string, enum: [ok, degraded, down] }
                       model: { type: string, example: nvidia/nemotron }
                       latency_ms: { type: integer }
+                      queue_depth: { type: integer, minimum: 0, description: "Cases still waiting for their AI pass (`triage_status` provisional or pending), across all server instances" }
+                      oldest_pending_seconds: { type: integer, minimum: 0, description: "Age in seconds of the oldest case still waiting for its AI pass (0 when the queue is empty)" }
 
   /server-info:
     get:
@@ -481,7 +499,7 @@ paths:
       tags: [SOS]
       summary: Create a single SOS (direct from a connected phone; mesh-relayed messages use `/sos/batch`)
       description: |
-        Idempotent on `id`. Server runs rules triage -> Nemotron triage -> dedupe, then broadcasts `sos.created`.
+        Idempotent on `id`. The server runs rules triage and answers immediately (`triage_status: provisional`), broadcasts `sos.created`, then dedupes; the Nemotron triage runs in the background and arrives as `sos.updated`.
         For mesh-relayed messages use `POST /sos/batch` with envelopes instead.
       operationId: createSos
       security:
@@ -676,10 +694,13 @@ paths:
     post:
       tags: [SOS]
       summary: Re-run rules + Nemotron triage
+      description: |
+        Re-runs the rules immediately and returns the case right away with `triage_status: provisional` (the rules score). The AI pass is queued in the background;
+        its result arrives later through a `sos.updated` WebSocket frame (and `GET /sos/{id}`), moving the case to `complete` (or `failed`).
       operationId: retriageSos
       responses:
         "200":
-          description: Updated case
+          description: Case with its fresh rules score, `triage_status` provisional
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sos" }
@@ -829,6 +850,131 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  # ---------------------------------------------------------------- Case images
+  /sos/{sosId}/images:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+    get:
+      tags: [Images]
+      summary: List the photos of a case (metadata only)
+      description: |
+        Visible to the device that owns the case (its own photos), admins and the responder holding the ACTIVE assignment. Every other caller gets `403`
+        and only sees the count (`Sos.image_count`). A primary case also lists the photos of the duplicates merged into it (responders only; the owning
+        device sees just the photos uploaded for its own device). Responder JWT or device signature.
+      operationId: listCaseImages
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Photo metadata, oldest first (never bytes)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/CaseImage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /sos/{sosId}/images/{imageId}:
+    parameters:
+      - $ref: "#/components/parameters/SosId"
+      - $ref: "#/components/parameters/ImageId"
+    put:
+      tags: [Images]
+      summary: Upload a photo for a case (idempotent, retry-safe)
+      description: |
+        `imageId` is a UUID generated by the client, so a retried upload (flaky signal, app restart) never duplicates: the first call answers `201`, a replay of
+        the same id on the same case answers `200` with the stored metadata and changes nothing.
+
+        Body: the raw image bytes with `Content-Type: image/jpeg` or `image/png` (nothing else: no SVG, GIF, WebP or HEIC, apps convert to JPEG first).
+        Max 3 MB (`413`) and 6 photos per case (`409` when the case is full and the id is new). The server checks the magic bytes AND parses the header (size,
+        structure), and answers `422` for truncated or garbage files. Optional `?caption=` (max 200 chars).
+
+        **The server strips metadata** so GPS never leaks: JPEG APP1 (EXIF/XMP), APP13 (IPTC) and COM segments, PNG eXIf/tEXt/iTXt/zTXt chunks. This also drops the
+        EXIF orientation tag, so **clients must bake the rotation into the pixels before uploading** (and should also strip metadata themselves).
+        Recommended client pipeline: downscale to at most 1600 px on the long edge, JPEG quality about 75, bake rotation, strip metadata, `PUT` with a fresh UUID,
+        queue offline and retry with the same UUID until it succeeds. Photos never travel over the mesh: an SOS created offline can say `MeshPayload.image_count`
+        and the phone uploads the photos once it has signal itself.
+
+        Who may upload: the device that sent the case (device signature; a gateway may NOT), an admin, or the responder holding the active assignment (responder
+        JWT); anyone else gets `403`. Rate limited per caller (`IMAGE_UPLOAD_RATE_PER_MIN`, `429` + `Retry-After`). Adding a photo emits `sos.updated`
+        (public fields: `image_count`; never bytes, ids or captions).
+      operationId: uploadCaseImage
+      security:
+        - deviceSignature: []
+        - responderJwt: []
+      parameters:
+        - name: caption
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+          description: "Optional short caption (personal data, never logged)"
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaseImage" }
+        "200":
+          description: Replay of an already stored image id (nothing changed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaseImage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "The case already has the maximum number of photos (details.max), or the image id belongs to another case", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "413": { description: Image larger than the limit, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "415": { description: "Unsupported image type (only image/jpeg and image/png)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { description: "Too many uploads", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    get:
+      tags: [Images]
+      summary: Download a photo (raw bytes)
+      description: |
+        Same access rule as the list. Served with `Cache-Control: private, max-age=3600`, `Content-Disposition: inline` and `X-Content-Type-Options: nosniff`.
+        Bearer/signature headers are required, so dashboards fetch it with `fetch` and an object URL rather than a bare `<img src>`.
+      operationId: getCaseImage
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: The image (metadata already stripped)
+          headers:
+            Cache-Control: { schema: { type: string }, description: "private, max-age=3600" }
+            Content-Disposition: { schema: { type: string }, description: inline }
+            X-Content-Type-Options: { schema: { type: string }, description: nosniff }
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Images]
+      summary: Delete a photo
+      description: Allowed for the uploader, the device that owns the case and admins. Emits `sos.updated`.
+      operationId: deleteCaseImage
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------- Check-ins
   /sos/{sosId}/checkins:
     parameters:
@@ -854,7 +1000,7 @@ paths:
     post:
       tags: [Check-ins]
       summary: Send a welfare check-in now (responder-triggered; the server also creates them automatically on the tier interval)
-      description: Creates a normal welfare check-in (same `choices`, `deadline_at`, `alarm_at`, notification delivery) outside the schedule.
+      description: Creates a normal welfare check-in (same `choices`, `deadline_at`, notification delivery) outside the schedule.
       operationId: createCheckin
       requestBody:
         content:
@@ -878,7 +1024,7 @@ paths:
     get:
       tags: [Check-ins]
       summary: Welfare check-ins awaiting an answer for the calling device (app fetches when online)
-      description: Unanswered, not-yet-missed check-ins of the device's open cases, earliest deadline first. The same objects also arrive as `pending_checkins` in the `POST /heartbeats` response, so a heartbeating app rarely needs to poll this.
+      description: Unanswered check-ins of the device's open cases, earliest deadline first. Overdue ones are included with `overdue=true` (they keep being re-delivered until answered). The same objects also arrive as `pending_checkins` in the `POST /heartbeats` response, so a heartbeating app rarely needs to poll this.
       operationId: listPendingCheckins
       security:
         - deviceSignature: []
@@ -1146,210 +1292,6 @@ paths:
       operationId: deleteResponder
       responses:
         "204": { description: Deleted }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
-  # ---------------------------------------------------------------- Offers (neighbor assist)
-  /offers:
-    post:
-      tags: [Offers]
-      summary: Offer help (user marked Safe offers a boat, water, etc.)
-      operationId: createOffer
-      security:
-        - deviceSignature: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/OfferCreate" }
-      responses:
-        "201":
-          description: Created; server immediately computes nearby matches
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Offer" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-    get:
-      tags: [Offers]
-      summary: List offers
-      operationId: listOffers
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-        - name: kind
-          in: query
-          schema: { $ref: "#/components/schemas/OfferKind" }
-        - name: status
-          in: query
-          schema: { $ref: "#/components/schemas/OfferStatus" }
-        - name: near
-          in: query
-          description: "lat,lng — only offers within `radius_km`"
-          schema: { type: string }
-        - name: radius_km
-          in: query
-          schema: { type: number, default: 5 }
-        - name: mine
-          in: query
-          description: Only the calling device's offers
-          schema: { type: boolean }
-      responses:
-        "200":
-          description: Offers (responders see exact location only if matched to their case; others see approx)
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/Page"
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items: { $ref: "#/components/schemas/Offer" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-  /offers/{offerId}:
-    parameters:
-      - $ref: "#/components/parameters/OfferId"
-    get:
-      tags: [Offers]
-      summary: Get offer
-      operationId: getOffer
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      responses:
-        "200":
-          description: Offer
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Offer" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-    patch:
-      tags: [Offers]
-      summary: Edit/withdraw offer
-      operationId: updateOffer
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/OfferUpdate" }
-      responses:
-        "200":
-          description: Updated
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Offer" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-    delete:
-      tags: [Offers]
-      summary: Delete offer
-      operationId: deleteOffer
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      responses:
-        "204": { description: Deleted }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-  /offers/{offerId}/matches:
-    parameters:
-      - $ref: "#/components/parameters/OfferId"
-    get:
-      tags: [Offers]
-      summary: SOS cases this offer is matched to
-      operationId: listOfferMatches
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      responses:
-        "200":
-          description: Matches
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: "#/components/schemas/OfferMatch" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-    post:
-      tags: [Offers]
-      summary: Manually match this offer to a case (responder)
-      operationId: createOfferMatch
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [sos_id]
-              properties:
-                sos_id: { type: string, format: uuid }
-      responses:
-        "201":
-          description: Match created; offerer is notified
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/OfferMatch" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-  /offers/{offerId}/matches/{matchId}:
-    parameters:
-      - $ref: "#/components/parameters/OfferId"
-      - name: matchId
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
-    patch:
-      tags: [Offers]
-      summary: Accept/decline/complete a match (offerer or responder)
-      operationId: updateOfferMatch
-      security:
-        - responderJwt: []
-        - deviceSignature: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [status]
-              properties:
-                status:
-                  type: string
-                  enum: [accepted, declined, completed]
-      responses:
-        "200":
-          description: Updated
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/OfferMatch" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-    delete:
-      tags: [Offers]
-      summary: Remove a match
-      operationId: deleteOfferMatch
-      responses:
-        "204": { description: Removed }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -1767,6 +1709,7 @@ paths:
                 properties:
                   purged_cases: { type: integer }
                   purged_voice_notes: { type: integer }
+                  purged_images: { type: integer, description: Case photos deleted }
                   purged_profiles: { type: integer, description: "Identity profiles deleted because their device has no case left (see Profiles lifecycle)" }
                   purged_at: { type: string, format: date-time }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1911,10 +1854,12 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
-    OfferId:
-      name: offerId
+
+    ImageId:
+      name: imageId
       in: path
       required: true
+      description: Client-generated UUID of the photo (makes uploads idempotent)
       schema: { type: string, format: uuid }
 
   responses:
@@ -1998,12 +1943,6 @@ components:
     Confidence:
       type: string
       enum: [low, medium, high]
-    OfferKind:
-      type: string
-      enum: [boat, water, food, medical, shelter, transport, other]
-    OfferStatus:
-      type: string
-      enum: [open, matched, completed, withdrawn]
     Role:
       type: string
       enum: [responder, volunteer, admin]
@@ -2058,7 +1997,7 @@ components:
             high: { type: integer, example: 900 }
             normal: { type: integer, example: 1800 }
         checkin_window_seconds: { type: integer, example: 300, description: "Time to answer a check-in: deadline_at = sent_at + this" }
-        checkin_alarm_lead_seconds: { type: integer, example: 60, description: "alarm_at = deadline_at - this; the app sounds its final-try alarm then" }
+        checkin_reminder_seconds: { type: integer, example: 300, description: "While a check-in is overdue and unanswered, the same check-in is re-delivered every this many seconds" }
         heartbeat_interval_seconds: { type: integer, example: 300, description: "Every installed app sends an automatic heartbeat this often (always present, also without an active event; keep sending while an SOS is open)" }
         silence_threshold_seconds: { type: integer, example: 1200, description: "No contact for this long = lost contact (device probably has no connectivity); with an open SOS the case becomes silent" }
         gateway_upload_max_batch: { type: integer, example: 500 }
@@ -2304,7 +2243,7 @@ components:
         sender_public_key: { type: string, description: Include if device not yet registered }
         kind:
           type: string
-          enum: [sos, checkin_reply, safe, offer, heartbeat]
+          enum: [sos, checkin_reply, safe, heartbeat]
         tier: { $ref: "#/components/schemas/Tier" }
         max_hops: { type: integer, minimum: 1, maximum: 10 }
         hop_count: { type: integer, minimum: 0, maximum: 10 }
@@ -2349,6 +2288,8 @@ components:
         category: { $ref: "#/components/schemas/Category" }
         text: { type: string, maxLength: 1000 }
         voice_note_ref: { type: [string, "null"], description: Reserved; voice notes uploaded via gateway later }
+        has_images: { type: boolean, description: "Hint that the person has photos pending. Photos never travel over the mesh: the phone uploads them with `PUT /sos/{id}/images/{imageId}` once it is online itself. Informational only." }
+        image_count: { type: integer, minimum: 0, maximum: 50, description: "Hint: how many photos are pending (surfaces as `Sos.image_hint`)" }
         people_count: { type: integer, minimum: 1 }
         trapped: { type: boolean }
         water_rising: { type: boolean }
@@ -2356,7 +2297,6 @@ components:
         checkin_id: { type: string, format: uuid, description: For kind=checkin_reply }
         response: { $ref: "#/components/schemas/CheckinResponse", description: "For kind=checkin_reply (default still_here)" }
         heartbeat: { $ref: "#/components/schemas/HeartbeatCreate", description: For kind=heartbeat }
-        offer: { $ref: "#/components/schemas/OfferCreate", description: For kind=offer }
         profile_summary: { $ref: "#/components/schemas/ProfileSummary", description: "Optional identity hint for kind=sos/safe (see `ProfileSummary`)" }
     DeliveredReceipt:
       type: object
@@ -2376,10 +2316,24 @@ components:
         source: { type: string, enum: [rule, llm, silence, heartbeat, checkin, manual], description: "`silence` = lost contact or unanswered welfare check-ins; `checkin` = the person asked for urgent help" }
         text: { type: string, example: 2 people trapped with rising water }
         weight: { type: integer, description: Score contribution }
+    TriageStatus:
+      type: string
+      enum: [provisional, pending, complete, failed]
+      description: |
+        Progress of the AI triage pass. Every case is stored and shown at once with a score from deterministic rules; the LLM pass runs afterwards.
+        - `provisional`: the rules score is shown and the AI job is queued (or waiting to retry).
+        - `pending`: the AI job is running.
+        - `complete`: the AI result has been applied (`llm_used: true`).
+        - `failed`: the AI was unavailable after the retries; the rules score stands (`llm_used: false`). A slow background sweep keeps retrying, so a later `sos.updated` may still complete it.
+        A text/category/people edit, a profile change, a merge or `POST /sos/{id}/retriage` re-runs the rules at once and sets the case back to `provisional`.
+        When the AI result arrives the score can move up or down within the AI clamp (+/-15) but never below the rule floors; welfare/heartbeat boosts are kept.
     Triage:
       type: object
-      required: [score, confidence, reasons]
+      required: [score, confidence, reasons, triage_status]
       properties:
+        triage_status: { $ref: "#/components/schemas/TriageStatus" }
+        triage_updated_at: { type: [string, "null"], format: date-time, description: When the last AI pass completed; null until then }
+        triage_attempts: { type: integer, minimum: 0, description: AI attempts used in the current round (resets when the inputs change or a failed case is retried) }
         score: { type: integer, minimum: 0, maximum: 100 }
         confidence: { $ref: "#/components/schemas/Confidence" }
         summary: { type: string, example: "Critical: 2 people trapped, mentions oxygen tank. Confidence: high." }
@@ -2394,7 +2348,7 @@ components:
             medical: { type: array, items: { type: string, example: insulin } }
             hazards: { type: array, items: { type: string, example: rising water } }
         tier: { $ref: "#/components/schemas/Tier" }
-        llm_used: { type: boolean, description: False if the Nemotron endpoint was unavailable and only rules scored the case }
+        llm_used: { type: boolean, description: "False while the case is provisional/pending/failed (only rules scored it); true once the AI result is applied" }
         model: { type: [string, "null"], description: Model id that produced the extraction }
         scored_at: { type: string, format: date-time }
     HopInfo:
@@ -2424,6 +2378,24 @@ components:
         injured: { type: boolean }
         has_voice_note: { type: boolean, description: "Audio will follow via PUT /sos/{id}/voice-note" }
         created_at: { type: string, format: date-time, description: When the user actually pressed SOS (may be much earlier than upload) }
+    CaseImage:
+      type: object
+      description: Metadata of one stored photo (bytes via `GET /sos/{id}/images/{imageId}`)
+      required: [id, content_type, bytes, width, height, uploaded_by, created_at]
+      properties:
+        id: { type: string, format: uuid, description: The client-generated id }
+        content_type: { type: string, enum: [image/jpeg, image/png] }
+        bytes: { type: integer, description: Stored size after metadata stripping }
+        width: { type: integer }
+        height: { type: integer }
+        caption: { type: [string, "null"], maxLength: 200 }
+        uploaded_by:
+          type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [device, responder] }
+            responder_name: { type: string, description: Present when a responder uploaded it }
+        created_at: { type: string, format: date-time }
     SosUpdate:
       type: object
       properties:
@@ -2441,7 +2413,7 @@ components:
         version: { type: integer, description: Optimistic concurrency; 409 if stale }
     Sos:
       type: object
-      required: [id, sender_hash, channel, category, status, score, confidence, approx_location, created_at, last_heard_at]
+      required: [id, sender_hash, channel, category, status, score, confidence, triage_status, approx_location, created_at, last_heard_at]
       properties:
         id: { type: string, format: uuid }
         sender_hash: { type: string }
@@ -2456,13 +2428,18 @@ components:
           description: Exact GPS — present only for the assigned responder or admin
         text: { type: [string, "null"] }
         people_count: { type: [integer, "null"] }
-        score: { type: integer, minimum: 0, maximum: 100 }
+        score: { type: integer, minimum: 0, maximum: 100, description: "Current priority score. While `triage_status` is provisional/pending this is the rules score; when the AI result arrives (`sos.updated`) it can change, up or down within the AI clamp (+/-15) but never below the rule floors." }
         confidence: { $ref: "#/components/schemas/Confidence" }
+        triage_status: { $ref: "#/components/schemas/TriageStatus" }
+        triage_updated_at: { type: [string, "null"], format: date-time, description: When the last AI pass completed; null until then }
+        triage_attempts: { type: integer, minimum: 0, description: AI attempts used in the current round }
         reasons:
           type: array
           items: { $ref: "#/components/schemas/TriageReason" }
         event_id: { type: [string, "null"], format: uuid }
         has_voice_note: { type: boolean }
+        image_count: { type: integer, minimum: 0, description: "Number of photos attached (including those of merged duplicates). A number only: ids and bytes are limited to the owning device, admins and the active assignee, see `SosDetail.images`." }
+        image_hint: { type: integer, minimum: 1, description: "Informational: an SOS created offline said this many photos will follow once the phone has signal. Compare with `image_count`." }
         silent: { type: boolean, description: "Contact lost (no heartbeat/message for the silence threshold) or a welfare check-in deadline passed unanswered; priority already boosted. Only a recent heartbeat or an answer clears it, and never lowers the score." }
         silent_since: { type: [string, "null"], format: date-time }
         last_heard_at: { type: string, format: date-time, description: Last message OR heartbeat OR check-in answer from the case's device }
@@ -2470,7 +2447,7 @@ components:
         connectivity: { $ref: "#/components/schemas/Connectivity" }
         contact_state: { $ref: "#/components/schemas/ContactState" }
         silent_for_seconds: { type: integer, description: Seconds since the device was last heard from (heartbeat or message) }
-        welfare_missed: { type: integer, description: Welfare check-ins missed since the person last answered (0 = none) }
+        welfare_missed: { type: integer, description: "1 while the active welfare check-in is overdue (unanswered past its deadline), else 0" }
         hop: { $ref: "#/components/schemas/HopInfo" }
         merged_into: { type: [string, "null"], format: uuid }
         duplicate_count: { type: integer, description: Number of other reports merged into this case }
@@ -2500,11 +2477,15 @@ components:
         people_count: 2
         score: 92
         confidence: high
+        triage_status: complete
+        triage_updated_at: "2026-11-07T16:21:02Z"
+        triage_attempts: 1
         reasons:
           - { source: rule, text: "Trapped + rising water is always critical", weight: 60 }
           - { source: llm, text: "Mentions oxygen tank", weight: 20 }
         event_id: 0192a000-0000-7000-8000-000000000001
         has_voice_note: false
+        image_count: 0
         silent: false
         silent_since: null
         last_heard_at: "2026-11-07T16:21:00Z"
@@ -2532,6 +2513,10 @@ components:
             profile_full:
               $ref: "#/components/schemas/ProfileFull"
               description: Full profile of the device that filed the case. Present only when the viewer is an admin or the ACTIVE assignee of the case; absent for everyone else (and when no synced profile exists).
+            images:
+              type: array
+              description: Photo metadata (never bytes). Present only when the viewer is an admin or the ACTIVE assignee of the case (same rule as `profile_full` and the exact location); absent for everyone else, who only get `image_count`.
+              items: { $ref: "#/components/schemas/CaseImage" }
             triage: { $ref: "#/components/schemas/Triage" }
             checkins:
               type: array
@@ -2550,9 +2535,6 @@ components:
                   text: { type: [string, "null"] }
                   hop: { $ref: "#/components/schemas/HopInfo" }
                   created_at: { type: string, format: date-time }
-            matched_offers:
-              type: array
-              items: { $ref: "#/components/schemas/OfferMatch" }
             notes:
               type: array
               items:
@@ -2610,7 +2592,7 @@ components:
       type: object
       description: |
         A welfare check-in: the server asks the person to confirm their status (see "Liveness, layer B"). Delivered as a push notification (when a `push_token` exists), a mesh
-        `BackendMessage` `checkin_request`, `pending_checkins` in the heartbeat response and `GET /checkins/pending`. The app sounds a local alarm at `alarm_at` if unanswered.
+        `BackendMessage` `checkin_request`, `pending_checkins` in the heartbeat response and `GET /checkins/pending`.
       required: [id, sos_id, sent_at, channel]
       properties:
         id: { type: string, format: uuid }
@@ -2626,9 +2608,11 @@ components:
           type: array
           description: The replies the app should offer (render as notification action buttons)
           items: { type: string, enum: [still_here, no_longer_need_help, need_urgent_help] }
-        attempt: { type: integer, description: "1-based; grows while check-ins are missed" }
+        attempt: { type: integer, description: "1-based; the number of this check-in for the case (one active check-in at a time)" }
         missed: { type: boolean, description: Deadline passed with no response (the case became silent at that moment) }
-        alarm_at: { type: string, format: date-time, description: "App-side final try: if still unanswered at this time, sound an alarm + vibration + full-screen alert. = deadline_at - checkin_alarm_lead_seconds." }
+        overdue: { type: boolean, description: "Same as missed while unanswered: the check-in stays active and is re-delivered as reminders (answering clears it)" }
+        reminder_count: { type: integer, description: "How many reminder re-deliveries went out after the check-in became overdue" }
+        last_reminded_at: { type: [string, "null"], format: date-time, description: When the last reminder re-delivery went out }
         deadline_at: { type: string, format: date-time, description: Answer by this time; after it the check-in is missed and the case becomes silent (late answers are still accepted) }
       example:
         id: 0192a7f0-0000-7000-8000-0000000000c1
@@ -2642,7 +2626,6 @@ components:
         choices: [still_here, no_longer_need_help, need_urgent_help]
         attempt: 1
         missed: false
-        alarm_at: "2026-11-07T16:34:00Z"
         deadline_at: "2026-11-07T16:35:00Z"
     # ---- assignments
     AssignmentCreate:
@@ -2712,7 +2695,11 @@ components:
         role: { $ref: "#/components/schemas/Role" }
         skills: { type: array, items: { type: string } }
         available: { type: boolean }
-        location: { $ref: "#/components/schemas/LatLng" }
+        location:
+          oneOf:
+            - $ref: "#/components/schemas/LatLng"
+            - type: "null"
+          description: Share the responder's current position (also refreshes `last_seen_at`, which dashboards use to grey out stale positions). Send `null` to stop sharing and clear the stored position.
         organization: { type: string }
         phone: { type: string }
     Responder:
@@ -2732,54 +2719,6 @@ components:
             - type: "null"
         active_assignments: { type: integer }
         last_seen_at: { type: [string, "null"], format: date-time }
-
-    # ---- offers
-    OfferCreate:
-      type: object
-      required: [kind, lat, lng]
-      properties:
-        kind: { $ref: "#/components/schemas/OfferKind" }
-        description: { type: string, maxLength: 500, example: "I have a 14ft boat, seats 4" }
-        capacity: { type: integer, minimum: 1 }
-        lat: { type: number }
-        lng: { type: number }
-        radius_km: { type: number, default: 3, description: How far the offerer will travel }
-        expires_at: { type: string, format: date-time }
-    OfferUpdate:
-      type: object
-      properties:
-        description: { type: string }
-        capacity: { type: integer }
-        radius_km: { type: number }
-        lat: { type: number }
-        lng: { type: number }
-        status: { $ref: "#/components/schemas/OfferStatus" }
-    Offer:
-      type: object
-      required: [id, kind, status, approx_location, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        sender_hash: { type: string }
-        kind: { $ref: "#/components/schemas/OfferKind" }
-        description: { type: string }
-        capacity: { type: [integer, "null"] }
-        status: { $ref: "#/components/schemas/OfferStatus" }
-        approx_location: { $ref: "#/components/schemas/ApproxLocation" }
-        radius_km: { type: number }
-        match_count: { type: integer }
-        expires_at: { type: [string, "null"], format: date-time }
-        created_at: { type: string, format: date-time }
-    OfferMatch:
-      type: object
-      required: [id, offer_id, sos_id, status, distance_km]
-      properties:
-        id: { type: string, format: uuid }
-        offer_id: { type: string, format: uuid }
-        sos_id: { type: string, format: uuid }
-        status: { type: string, enum: [suggested, accepted, declined, completed] }
-        distance_km: { type: number }
-        score: { type: number, description: Match quality 0-1 }
-        created_at: { type: string, format: date-time }
 
     # ---- heartbeats
     HeartbeatStatus:
@@ -2864,7 +2803,7 @@ components:
         kind:
           type: string
           enum: [delivered, checkin_request, status_update]
-          description: "`delivered` = your SOS reached responders; `checkin_request` = a welfare check-in: show a notification with the `choices`, sound the alarm at `body.alarm_at`, answer via PATCH /checkins/{id} or a `checkin_reply` envelope; `status_update` = assignment progress (also 'Marked as resolved. Stay safe.')"
+          description: "`delivered` = your SOS reached responders; `checkin_request` = a welfare check-in: show a notification with the `choices`, answer via PATCH /checkins/{id} or a `checkin_reply` envelope; `status_update` = assignment progress (also 'Marked as resolved. Stay safe.')"
         sos_id: { type: string, format: uuid }
         checkin_id: { type: [string, "null"], format: uuid }
         body:
@@ -2874,10 +2813,10 @@ components:
             eta_minutes: { type: [integer, "null"] }
             message: { type: [string, "null"], example: "Help is on the way, ETA 40 min" }
             deadline_at: { type: [string, "null"], format: date-time, description: "checkin_request: answer by" }
-            alarm_at: { type: [string, "null"], format: date-time, description: "checkin_request: sound the local final-try alarm at this time if unanswered" }
             choices: { type: array, items: { type: string, enum: [still_here, no_longer_need_help, need_urgent_help] }, description: "checkin_request: the replies to offer" }
             title: { type: string, description: "checkin_request: notification title" }
             attempt: { type: integer }
+            reminder: { type: integer, description: "checkin_request: 0 for the first delivery, n for the nth re-delivery of the same checkin_id (dedupe on checkin_id, not on the message id)" }
             tier: { type: string, enum: [critical, high, normal] }
         max_hops: { type: integer, minimum: 1, maximum: 10, example: 5 }
         hop_count: { type: integer, default: 0 }
@@ -3059,7 +2998,7 @@ components:
       properties:
         event:
           type: string
-          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, profile.updated, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
+          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, profile.updated, checkin.sent, checkin.responded, assignment.created, assignment.updated, deadzones.updated, mesh.stats, pong]
         ts: { type: string, format: date-time }
         data: {}
       discriminator:
@@ -3102,14 +3041,6 @@ components:
       description: Payload for `assignment.created` / `assignment.updated`
       allOf:
         - $ref: "#/components/schemas/Assignment"
-    WsEventOffer:
-      description: Payload for `offer.created`
-      allOf:
-        - $ref: "#/components/schemas/Offer"
-    WsEventOfferMatched:
-      description: Payload for `offer.matched`
-      allOf:
-        - $ref: "#/components/schemas/OfferMatch"
     WsEventDeadzones:
       description: Payload for `deadzones.updated`
       type: object

@@ -22,6 +22,7 @@ import { errorHandler, notImplemented } from './http/errorHandler';
 import { startJobs } from './jobs';
 import { tooMany } from './errors';
 import { seedResponders } from './services/responders';
+import { createAiTriage } from './services/aiTriage';
 import { verifyAccess } from './services/auth';
 
 export interface AppOverrides { db?: Db; llm?: TriageLlm; push?: PushProvider; keys?: BackendKeys; logger?: Logger }
@@ -65,12 +66,20 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
       sender: new TokenBuckets(cfg.SENDER_RATE_PER_HOUR, cfg.SENDER_RATE_PER_HOUR / 3600),
       heartbeat: new TokenBuckets(cfg.HEARTBEAT_RATE_PER_MIN, cfg.HEARTBEAT_RATE_PER_MIN / 60),
       profile: new TokenBuckets(cfg.PROFILE_WRITE_RATE_PER_MIN, cfg.PROFILE_WRITE_RATE_PER_MIN / 60),
+      image: new TokenBuckets(cfg.IMAGE_UPLOAD_RATE_PER_MIN, cfg.IMAGE_UPLOAD_RATE_PER_MIN / 60),
       ip: new TokenBuckets(cfg.IP_RATE_PER_MIN, cfg.IP_RATE_PER_MIN / 60),
     },
     cache: new Map(),
     deviceCache: new Map(),
     track(p) { const t = p.catch(() => {}).finally(() => pending.delete(t)); pending.add(t); },
-    async idle() { while (pending.size) await Promise.all([...pending]); },
+    async idle() {
+      for (;;) {
+        if (pending.size) await Promise.all([...pending]);
+        else if (ctx.aiTriage.busy()) await new Promise((r) => setTimeout(r, 5)); // retry backoff timers
+        else return;
+      }
+    },
+    aiTriage: undefined as unknown as Ctx['aiTriage'], // assigned right below (the queue needs the ctx)
     // Local queue first (holds at most ONE pooled connection for the advisory lock, so a burst cannot exhaust the pool),
     // then a session-level Postgres advisory lock so a second server process serialises with us too.
     dedupeLock(fn) {
@@ -85,6 +94,7 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
       return run as Promise<never>;
     },
   };
+  ctx.aiTriage = createAiTriage(ctx);
   if (cfg.SEED_ON_START) await seedResponders(ctx);
 
   const app = express();
@@ -113,6 +123,7 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
     next();
   });
   v1.use('/sos/:sosId/voice-note', express.raw({ type: 'audio/*', limit: cfg.VOICE_MAX_BYTES, verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
+  v1.use('/sos/:sosId/images/:imageId', express.raw({ type: 'image/*', limit: cfg.IMAGE_MAX_BYTES, verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
   v1.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
   v1.use(OpenApiValidator.middleware({
     apiSpec: findSpec(cfg),
@@ -144,11 +155,13 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
   hubRef.hub = hub;
   hub.attach(server);
   const jobs = cfg.jobsEnabled ? startJobs(ctx) : null;
+  if (cfg.jobsEnabled) ctx.aiTriage.start(); // boot recovery + 30 s sweep
 
   return {
     app, server, ctx, hub,
     async close() {
       jobs?.stop();
+      ctx.aiTriage.stop();
       await ctx.idle();
       await hub.close();
       if (server.listening) await new Promise<void>((r) => server.close(() => r()));

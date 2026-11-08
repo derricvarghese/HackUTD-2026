@@ -11,11 +11,10 @@ import type { components } from '../generated/api';
 import { activeEventRow } from './events';
 import { createDeviceRow } from './devices';
 import { dedupeNew } from './merge';
-import { llmPass, rulesOutcome, triageRow } from './triage';
+import { rulesOutcome, triageRow } from './triage';
 import { ingestHeartbeat } from './heartbeats';
 import { noteContact } from './contact';
 import { replyFromMesh } from './checkins';
-import { createOffer, matchSosToOffers } from './offers';
 import { enqueue, listOutbox } from './outbox';
 import { addEvent, broadcastSos } from './sosView';
 import { getProfileRow, parseSummary, summarySchema, triageCtxFor } from './profileStore';
@@ -67,7 +66,7 @@ export async function ingestSos(ctx: Ctx, i: IngestInput): Promise<{ created: bo
   const rules = rulesOutcome(tmp, await triageCtxFor(ctx, { device_id: i.deviceId, profile_summary: summary }));
 
   const result = await ctx.db.transaction().execute(async (trx) => {
-    const ins = await trx.insertInto('sos').values({ ...draft, score: rules.score, confidence: rules.confidence })
+    const ins = await trx.insertInto('sos').values({ ...draft, score: rules.score, confidence: rules.confidence, triage_status: 'provisional' })
       .onConflict((oc) => oc.column('id').doNothing()).returningAll().executeTakeFirst();
     const reportRow = {
       sos_id: i.id, channel: i.channel, envelope: i.envelope ? JSON.stringify(i.envelope) : null, text: i.text ?? null,
@@ -104,13 +103,12 @@ async function flagIfAbusive(ctx: Ctx, deviceId: string, now: Date) {
   if (r) { ctx.deviceCache.delete(deviceId); ctx.log.warn({ device_id: deviceId, cases_last_hour: Number(n.n) }, 'device flagged for abuse'); }
 }
 
-/** After commit: announce, dedupe, then enrich with the LLM. Errors are logged, never thrown into the request. */
+/** After commit: announce (rules score, `provisional`), queue the AI pass, dedupe. Never waits for the LLM; errors are logged, never thrown into the request. */
 export async function postIngest(ctx: Ctx, sosId: string) {
   try {
     await broadcastSos(ctx, 'sos.created', sosId);
+    ctx.aiTriage.enqueue(sosId);
     await dedupeNew(ctx, sosId);
-    await matchSosToOffers(ctx, sosId);
-    await llmPass(ctx, sosId);
   } catch (e) {
     ctx.log.error({ err: (e as Error).message, sos_id: sosId }, 'post-ingest failed');
   }
@@ -120,11 +118,6 @@ export function startPostIngest(ctx: Ctx, sosId: string): Promise<void> {
   const p = postIngest(ctx, sosId);
   ctx.track(p);
   return p;
-}
-
-/** Direct POST /sos uses the caller's budget for the LLM; whatever is not done by then finishes in the background. */
-export async function awaitWithin(p: Promise<unknown>, ms: number) {
-  await Promise.race([p, new Promise((r) => { const t = setTimeout(r, ms); t.unref(); })]);
 }
 
 // ----------------------------------------------------------------------------- mesh envelopes
@@ -137,10 +130,7 @@ const payloadSchema = z.object({
   trapped: z.boolean().optional(), water_rising: z.boolean().optional(), injured: z.boolean().optional(),
   checkin_id: z.string().uuid().optional(), response: z.enum(['still_here', 'no_longer_need_help', 'need_urgent_help', 'ok', 'need_help', 'other']).optional(),
   profile_summary: summarySchema.optional().catch(undefined),
-  offer: z.object({
-    kind: z.enum(['boat', 'water', 'food', 'medical', 'shelter', 'transport', 'other']), description: z.string().max(500).optional(), capacity: z.number().int().min(1).optional(),
-    lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), radius_km: z.number().positive().optional(), expires_at: z.string().datetime({ offset: true }).optional(),
-  }).optional(),
+  has_images: z.boolean().optional().catch(undefined), image_count: z.number().int().min(0).max(50).optional().catch(undefined),
   heartbeat: z.object({
     sent_at: z.string().datetime({ offset: true }),
     approx: z.object({ lat: z.number(), lng: z.number(), radius_m: z.number().optional() }),
@@ -150,9 +140,9 @@ const payloadSchema = z.object({
     open_sos_ids: z.array(z.string().uuid()).max(20).optional().catch(undefined),
   }).optional(),
 }).passthrough();
+const KNOWN_KINDS = new Set<string>(['sos', 'checkin_reply', 'safe', 'heartbeat']);
 // heartbeats only need the heartbeat block; allow lat/lng/category to be absent for them
 const heartbeatPayload = payloadSchema.partial({ lat: true, lng: true, category: true });
-const offerPayload = payloadSchema.partial({ lat: true, lng: true, category: true });
 
 async function reject(ctx: Ctx, env: Envelope, reason: Reject, deviceId: string | null): Promise<BatchResult> {
   await ctx.db.insertInto('rejections').values({ reason, device_id: deviceId, envelope_id: env.id }).execute().catch(() => {});
@@ -182,11 +172,9 @@ export async function processEnvelope(ctx: Ctx, env: Envelope, gatewayDeviceId: 
 
   // 3. idempotency: a known id is a duplicate regardless of expiry (gateways retry)
   const kind = env.kind as Kind;
+  if (!KNOWN_KINDS.has(kind)) return reject(ctx, env, 'malformed', sender.id); // unknown envelope kind
   const hop = { hop_count: env.hop_count, max_hops: env.max_hops, hop_path: env.hop_path ?? [] };
-  if (kind === 'offer') {
-    const exists = await ctx.db.selectFrom('offers').select('id').where('id', '=', env.id).executeTakeFirst();
-    if (exists) return { id: env.id, status: 'duplicate' };
-  } else if (kind !== 'heartbeat' && kind !== 'checkin_reply') {
+  if (kind !== 'heartbeat' && kind !== 'checkin_reply') {
     const exists = await ctx.db.selectFrom('sos').select('id').where('id', '=', env.id).executeTakeFirst();
     if (exists) {
       const r = await ingestExisting(ctx, env, sender.id, gatewayDeviceId, hop);
@@ -208,7 +196,7 @@ export async function processEnvelope(ctx: Ctx, env: Envelope, gatewayDeviceId: 
   } catch (e) {
     return reject(ctx, env, e instanceof SyntaxError ? 'malformed' : 'undecryptable', sender.id);
   }
-  const parsed = (kind === 'heartbeat' ? heartbeatPayload : kind === 'offer' || kind === 'checkin_reply' ? offerPayload : payloadSchema).safeParse(plain);
+  const parsed = (kind === 'heartbeat' ? heartbeatPayload : kind === 'checkin_reply' ? heartbeatPayload : payloadSchema).safeParse(plain);
   if (!parsed.success) return reject(ctx, env, 'malformed', sender.id);
   const p = parsed.data;
 
@@ -223,11 +211,6 @@ export async function processEnvelope(ctx: Ctx, env: Envelope, gatewayDeviceId: 
     const sosId = await replyFromMesh(ctx, p.checkin_id, sender.id, { text: p.text, response: p.response });
     return sosId ? { id: env.id, status: 'created', sos_id: sosId } : reject(ctx, env, 'malformed', sender.id);
   }
-  if (kind === 'offer') {
-    if (!p.offer) return reject(ctx, env, 'malformed', sender.id);
-    const r = await createOffer(ctx, p.offer, sender.id, env.id);
-    return { id: env.id, status: r.created ? 'created' : 'duplicate' };
-  }
   if (p.lat == null || p.lng == null || !p.category) return reject(ctx, env, 'malformed', sender.id);
   const r = await ingestSos(ctx, {
     id: env.id, deviceId: sender.id, senderHash: sender.sender_hash, channel: 'mesh', category: kind === 'safe' ? 'safe' : p.category,
@@ -236,6 +219,8 @@ export async function processEnvelope(ctx: Ctx, env: Envelope, gatewayDeviceId: 
     hop, gatewayDeviceId, envelope: env, profileSummary: p.profile_summary as ProfileSummary | undefined,
   });
   if (r.created) {
+    const hint = p.image_count ?? (p.has_images ? 1 : 0);
+    if (hint > 0) await ctx.db.updateTable('sos').set({ image_hint: hint }).where('id', '=', env.id).execute();
     await enqueue(ctx, { kind: 'delivered', sosId: env.id, body: { status: 'reported', message: 'Your SOS reached responders' } });
     void startPostIngest(ctx, env.id);
   }

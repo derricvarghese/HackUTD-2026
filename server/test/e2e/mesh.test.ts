@@ -129,6 +129,15 @@ describe('POST /sos/batch', () => {
     expect(rej.rows.map((r) => r.reason)).toEqual(expect.arrayContaining(['bad_signature', 'expired', 'hop_limit_exceeded']));
   });
 
+  it('refuses an envelope with an unknown kind and stores nothing', async () => {
+    const dev = await t.registerDevice();
+    const bogus = t.envelope(dev, { ...trapped, lat: 33.7, lng: -97.2, text: 'unknown kind' }, { kind: 'bogus', tier: 'normal' });
+    const up = await t.upload(dev, [bogus]);
+    expect(up.status).toBeGreaterThanOrEqual(400);
+    const stored = await t.ctx.pool.query('select count(*)::int n from sos where id=$1', [bogus.id]);
+    expect(stored.rows[0].n).toBe(0);
+  });
+
   it('auto-registers a sender that carries its public key inline, and rejects a forged signer', async () => {
     const { newTestDevice } = await import('../../src/testing/envelope');
     const fresh = newTestDevice(); // never registered
@@ -167,7 +176,9 @@ describe('POST /sos (direct) and victim status', () => {
     expect(a.status).toBe(201);
     expect(a.body.location).toBeNull();
     expect(a.body.channel).toBe('app');
-    expect(a.body.reasons.some((r: any) => r.source === 'llm')).toBe(true); // stub provider enriched within the inline budget
+    expect(a.body.triage_status).toBe('provisional'); // answered at once with the rules score; the AI pass follows in the background
+    expect(a.body.reasons.some((r: any) => r.source === 'llm')).toBe(false);
+    await t.ctx.idle();
     const b = await t.signed(dev, 'POST', '/v1/sos', body);
     expect(b.status).toBe(200);
     expect(b.body.id).toBe(id);

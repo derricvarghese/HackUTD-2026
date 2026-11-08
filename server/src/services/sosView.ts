@@ -5,13 +5,14 @@ import { livenessOf, toSosView, type Sos, type SosViewInput, type TriageReason, 
 import { notFound } from '../errors';
 import { activeEventRow, eventTimers } from './events';
 import { publicSourcesFor } from './profileStore';
+import { imageCountsFor } from './images';
 
 /** Batch-loads the latest triage reasons and active assignment for each case. */
 export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput[]> {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const deviceIds = [...new Set(rows.map((r) => r.device_id).filter((d): d is string => !!d))];
-  const [triage, assigns, profiles, devs, ev] = await Promise.all([
+  const [triage, assigns, profiles, devs, ev, imageCounts] = await Promise.all([
     ctx.db.selectFrom('triage_results').select(['sos_id', 'reasons'])
       .distinctOn('sos_id').where('sos_id', 'in', ids).orderBy('sos_id').orderBy('scored_at', 'desc').orderBy('created_at', 'desc').execute(),
     ctx.db.selectFrom('assignments').innerJoin('responders', 'responders.id', 'assignments.responder_id')
@@ -20,6 +21,7 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
     publicSourcesFor(ctx, rows),
     deviceIds.length ? ctx.db.selectFrom('devices').select(['id', 'last_heartbeat_at']).where('id', 'in', deviceIds).execute() : Promise.resolve([]),
     activeEventRow(ctx),
+    imageCountsFor(ctx, ids),
   ]);
   const hbBy = new Map(devs.map((d) => [d.id, d.last_heartbeat_at]));
   const now = new Date();
@@ -38,15 +40,15 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
     if (row.silence_boost > 0) {
       reasons.push(row.welfare_missed > 0
         ? { source: 'silence', text: live.connectivity === 'lost_contact'
-            ? `Missed ${row.welfare_missed} welfare check-in(s) and heartbeats stopped (lost contact)`
-            : `Connected but not responding to welfare check-ins (${row.welfare_missed} missed)`, weight: row.silence_boost }
+            ? 'Welfare check-in overdue and heartbeats stopped (lost contact)'
+            : 'Connected but not responding to an overdue welfare check-in', weight: row.silence_boost }
         : { source: 'silence', text: 'Welfare check-in confirmed after missed attempts; priority stays raised', weight: row.silence_boost });
     }
     if (row.urgent_boost > 0) reasons.push({ source: 'checkin', text: 'Requester answered a welfare check-in with "I need help urgently"', weight: row.urgent_boost });
     if (row.heartbeat_boost > 0) reasons.push({ source: 'heartbeat', text: 'Device stopped heartbeating while neighbours still report: priority raised', weight: row.heartbeat_boost });
     if (row.score_override != null) reasons.push({ source: 'manual', text: `Score manually set to ${row.score_override}`, weight: row.score_override });
     const a = assignBy.get(row.id);
-    return { row, liveness: { lastHeartbeatAt: row.device_id ? hbBy.get(row.device_id) ?? null : null, now, heartbeatS, silenceS }, reasons, profile: profiles.get(row.id) ?? null, assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
+    return { row, liveness: { lastHeartbeatAt: row.device_id ? hbBy.get(row.device_id) ?? null : null, now, heartbeatS, silenceS }, reasons, profile: profiles.get(row.id) ?? null, imageCount: imageCounts.get(row.id) ?? 0, assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
   });
 }
 

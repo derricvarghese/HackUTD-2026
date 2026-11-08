@@ -1,5 +1,5 @@
 export type Tier = 'critical' | 'high' | 'normal' | 'safe' | 'heartbeat';
-export type Kind = 'sos' | 'checkin_reply' | 'safe' | 'offer' | 'heartbeat';
+export type Kind = 'sos' | 'checkin_reply' | 'safe' | 'heartbeat';
 
 /** Hop limits by priority tier (openapi.yaml "Privacy rules enforced by the server"). */
 export const HOP_TABLE: Record<Tier, { max_hops: number; ttl_seconds: number }> = {

@@ -39,14 +39,19 @@ export async function queueStatusUpdate(ctx: Ctx, sosId: string, now = new Date(
 }
 
 /**
- * Welfare check-in for an offline phone. Body: `title`/`body` (notification text), `message` (= body, legacy name), `choices`, `deadline_at`, `alarm_at`,
- * `attempt`, `tier`. The message stays servable until the deadline plus 10 minutes (a late answer is still accepted).
+ * Welfare check-in for an offline phone. Body: `title`/`body` (notification text), `message` (= body, legacy name), `choices`, `deadline_at`,
+ * `attempt`, `tier`, `reminder` (0 = first delivery, n = nth re-delivery of the same checkin_id). Only the newest request per checkin_id is kept:
+ * a reminder deletes the older ones, so neither the outbox nor the mesh accumulates a pile. A request stays servable until
+ * the deadline plus 10 minutes (first delivery) or two reminder periods (reminders), and is retired when answered.
  */
-export async function queueCheckinRequest(ctx: Ctx, c: { id: string; sos_id: string; deadline_at: Date; alarm_at: Date | null; attempt: number }, text: { title: string; body: string; tier: string }, now = new Date()) {
-  await enqueue(ctx, {
-    kind: 'checkin_request', sosId: c.sos_id, checkinId: c.id, now, ttlMs: Math.max(60_000, c.deadline_at.getTime() - now.getTime() + 600_000),
-    body: { title: text.title, message: text.body, choices: [...CHECKIN_CHOICES], deadline_at: c.deadline_at.toISOString(), alarm_at: (c.alarm_at ?? c.deadline_at).toISOString(), attempt: c.attempt, tier: text.tier },
+export async function queueCheckinRequest(ctx: Ctx, c: { id: string; sos_id: string; deadline_at: Date; attempt: number }, text: { title: string; body: string; tier: string }, now = new Date(), o: { reminder?: number; cadenceS?: number } = {}) {
+  const reminder = o.reminder ?? 0;
+  const msg = await enqueue(ctx, {
+    kind: 'checkin_request', sosId: c.sos_id, checkinId: c.id, now,
+    ttlMs: reminder > 0 ? Math.max(120_000, 2 * (o.cadenceS ?? 300) * 1000) : Math.max(60_000, c.deadline_at.getTime() - now.getTime() + 600_000),
+    body: { title: text.title, message: text.body, choices: [...CHECKIN_CHOICES], deadline_at: c.deadline_at.toISOString(), attempt: c.attempt, tier: text.tier, reminder },
   });
+  if (reminder > 0) await ctx.db.deleteFrom('mesh_outbox').where('checkin_id', '=', c.id).where('kind', '=', 'checkin_request').where('id', '!=', msg.id).execute();
 }
 
 /** The phone answered / the check-in was cancelled: stop serving its request. */

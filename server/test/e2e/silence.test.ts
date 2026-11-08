@@ -30,7 +30,7 @@ const age = async (deviceId: string | undefined, seconds: number) => {
 
 /** pretend `seconds` have passed since this check-in was sent */
 const ageCheckin = (id: string, seconds: number) =>
-  t.ctx.pool.query(`update checkins set sent_at = sent_at - make_interval(secs => $2), deadline_at = deadline_at - make_interval(secs => $2), alarm_at = alarm_at - make_interval(secs => $2), updated_at = updated_at - make_interval(secs => $2) where id = $1`, [id, seconds]);
+  t.ctx.pool.query(`update checkins set sent_at = sent_at - make_interval(secs => $2), deadline_at = deadline_at - make_interval(secs => $2), updated_at = updated_at - make_interval(secs => $2) where id = $1`, [id, seconds]);
 /** pretend the case was filed `seconds` ago (welfare timer base) */
 const ageCase = (sosId: string, seconds: number) => t.ctx.pool.query(`update sos set received_at = received_at - make_interval(secs => $2) where id = $1`, [sosId, seconds]);
 let spot = 0; // distinct places so the duplicate detector never merges these cases
@@ -241,7 +241,7 @@ describe('automatic heartbeats and the lost-contact detector (layer A)', () => {
 });
 
 describe('welfare check-ins (layer B)', () => {
-  it('are created per tier interval for open cases only (never for safe), carry choices/deadline/alarm, and are delivered on every path', async () => {
+  it('are created per tier interval for open cases only (never for safe), carry choices/deadline, and are delivered on every path', async () => {
     const push: any[] = [];
     t.ctx.push = { name: 'fake', send: async (m) => { push.push(m); } };
     const [crit, high, norm, safe] = [await t.registerDevice(), await t.registerDevice(), await t.registerDevice(), await t.registerDevice()];
@@ -259,20 +259,19 @@ describe('welfare check-ins (layer B)', () => {
     const c = (await pending(crit))[0];
     expect(c).toMatchObject({ sos_id: eCrit.id, kind: 'welfare', attempt: 1, missed: false, responded_at: null, choices: ['still_here', 'no_longer_need_help', 'need_urgent_help'] });
     expect(Date.parse(c.deadline_at) - Date.parse(c.sent_at)).toBe(300_000);
-    expect(Date.parse(c.deadline_at) - Date.parse(c.alarm_at)).toBe(60_000);
     // REST: heartbeat response carries it
     const hbr = await hb(crit);
     expect(hbr.body.pending_checkins.map((x: any) => x.id)).toEqual([c.id]);
-    // mesh: signed checkin_request in the outbox with alarm_at
+    // mesh: signed checkin_request in the outbox
     const gw = await t.registerDevice();
     const out = (await t.signed(gw, 'GET', '/v1/mesh/outbox')).body.data.find((m: any) => m.kind === 'checkin_request' && m.checkin_id === c.id);
-    expect(out.body).toMatchObject({ alarm_at: c.alarm_at, deadline_at: c.deadline_at, choices: ['still_here', 'no_longer_need_help', 'need_urgent_help'], tier: 'critical' });
+    expect(out.body).toMatchObject({ deadline_at: c.deadline_at, choices: ['still_here', 'no_longer_need_help', 'need_urgent_help'], tier: 'critical' });
     expect(out.body.title).toBeTruthy();
     // push: provider called with the token and the contract payload
     await t.ctx.idle();
     const m = push.find((x) => x.data.checkin_id === c.id);
     expect(m).toMatchObject({ token: 'tok-crit', collapseKey: `checkin-${c.id}` });
-    expect(m.data).toMatchObject({ sos_id: eCrit.id, deadline_at: c.deadline_at, alarm_at: c.alarm_at });
+    expect(m.data).toMatchObject({ sos_id: eCrit.id, deadline_at: c.deadline_at });
     expect(JSON.parse(m.data.choices)).toEqual(['still_here', 'no_longer_need_help', 'need_urgent_help']);
     expect(push.some((x) => x.data.sos_id === eHigh.id)).toBe(false); // no token => no push
 
@@ -288,7 +287,7 @@ describe('welfare check-ins (layer B)', () => {
     const manual = await t.request.post(`/v1/sos/${eNorm.id}/checkins`).set(auth(alice)).send({});
     expect(manual.status).toBe(201);
     await t.ctx.idle();
-    expect(manual.body).toMatchObject({ kind: 'welfare', choices: expect.any(Array), alarm_at: expect.any(String) });
+    expect(manual.body).toMatchObject({ kind: 'welfare', choices: expect.any(Array) });
     // scoped to the calling device
     expect((await t.signed(high, 'GET', `/v1/checkins/${c.id}`)).status).toBe(404);
     expect((await t.request.get(`/v1/checkins/${c.id}`).set(auth(carol))).status).toBe(200);
@@ -377,34 +376,33 @@ describe('welfare check-ins (layer B)', () => {
     await ageCase(env.id, 1900);
     await checkinTick(t.ctx);
     const c1 = (await pending(dev))[0];
-    // before the deadline (and even at the alarm time) nothing is silent
-    expect(await checkinTick(t.ctx, new Date(Date.parse(c1.alarm_at) + 1000))).toMatchObject({ missed: 0 });
+    // before the deadline nothing is silent
+    expect(await checkinTick(t.ctx, new Date(Date.parse(c1.deadline_at) - 1000))).toMatchObject({ missed: 0 });
     expect((await sosOf(env.id)).silent).toBe(false);
     // deadline passes with fresh heartbeats
     await ageCheckin(c1.id, 301);
     await hb(dev, { sent_at: new Date().toISOString() });
-    expect(await checkinTick(t.ctx)).toMatchObject({ missed: 1, created: 1 });
+    expect(await checkinTick(t.ctx)).toMatchObject({ missed: 1, created: 0 });
     const s1 = await sosOf(env.id);
     expect(s1).toMatchObject({ silent: true, contact_state: 'unresponsive', connectivity: 'connected', welfare_missed: 1 });
     expect(s1.silent_since).toBeTruthy();
     expect(s1.score).toBe(before.score + 20);
-    expect(s1.reasons.find((x: any) => x.source === 'silence')).toMatchObject({ text: 'Connected but not responding to welfare check-ins (1 missed)', weight: 20 });
+    expect(s1.reasons.find((x: any) => x.source === 'silence')).toMatchObject({ text: 'Connected but not responding to an overdue welfare check-in', weight: 20 });
     expect(s1.events.map((e: any) => e.type)).toEqual(expect.arrayContaining(['checkin_missed', 'silent_flagged']));
     await ws.waitFor('sos.silent', (d) => d.id === env.id && d.contact_state === 'unresponsive');
     // a heartbeat alone does not clear unresponsive (the person has not answered)
     await hb(dev, { sent_at: new Date(Date.now() + 1000).toISOString() });
     expect((await sosOf(env.id)).silent).toBe(true);
-    // second miss: +10 more (cap +30)
+    // still overdue 10 min later (heartbeats stopped by then, so no extra points): same check-in, no new one, score never lowered
     const c2 = (await pending(dev))[0];
-    await ageCheckin(c2.id, 301);
-    await checkinTick(t.ctx);
-    expect((await sosOf(env.id)).score).toBe(before.score + 30);
-    // the person answers the newest attempt
-    const c3 = (await pending(dev))[0];
-    await t.signed(dev, 'PATCH', `/v1/checkins/${c3.id}`, { response: 'still_here' });
+    expect(c2).toMatchObject({ id: c1.id, overdue: true });
+    await checkinTick(t.ctx, new Date(Date.parse(c1.deadline_at) + 601_000));
+    expect((await sosOf(env.id)).score).toBe(before.score + 20);
+    // the person answers the (late) check-in
+    await t.signed(dev, 'PATCH', `/v1/checkins/${c1.id}`, { response: 'still_here' });
     const back = await sosOf(env.id);
     expect(back).toMatchObject({ silent: false, silent_since: null, welfare_missed: 0, contact_state: 'connected' });
-    expect(back.score).toBe(before.score + 30); // never decreases
+    expect(back.score).toBe(before.score + 20); // never decreases
     expect(back.events.map((e: any) => e.type)).toContain('contact_restored');
     expect(back.reasons.find((x: any) => x.source === 'silence').text).toMatch(/confirmed/);
     ws.close();

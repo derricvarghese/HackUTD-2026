@@ -12,11 +12,11 @@ import * as responders from '../services/responders';
 import * as checkins from '../services/checkins';
 import * as events from '../services/events';
 import * as heartbeats from '../services/heartbeats';
-import * as offers from '../services/offers';
 import * as outbox from '../services/outbox';
 import * as mesh from '../services/mesh';
 import * as map from '../services/map';
 import * as voice from '../services/voice';
+import * as images from '../services/images';
 import * as profiles from '../services/profiles';
 import { triageHealth, VERSION } from '../services/health';
 import { activeEventRow, eventTimers, toEvent } from '../services/events';
@@ -33,7 +33,7 @@ export function buildRoutes(ctx: Ctx): Router {
   // ---------------------------------------------------------------- System
   r.get('/health', async (_req, res) => {
     await ctx.pool.query('select 1');
-    res.json({ status: 'ok', time: new Date().toISOString(), version: VERSION, triage: await triageHealth(ctx) });
+    res.json({ status: 'ok', time: new Date().toISOString(), version: VERSION, triage: { ...(await triageHealth(ctx)), ...(await ctx.aiTriage.stats()) } });
   });
   r.get('/server-info', async (_req, res) => {
     const ev = await activeEventRow(ctx);
@@ -46,7 +46,7 @@ export function buildRoutes(ctx: Ctx): Router {
       checkin_interval_seconds: eventTimers(ctx.cfg, ev).checkinS,
       checkin_intervals_seconds: { critical: ctx.cfg.CHECKIN_INTERVAL_CRITICAL_S, high: ctx.cfg.CHECKIN_INTERVAL_HIGH_S, normal: ctx.cfg.CHECKIN_INTERVAL_S },
       checkin_window_seconds: ctx.cfg.CHECKIN_WINDOW_S,
-      checkin_alarm_lead_seconds: ctx.cfg.CHECKIN_ALARM_LEAD_S,
+      checkin_reminder_seconds: ctx.cfg.CHECKIN_REMINDER_S,
       heartbeat_interval_seconds: eventTimers(ctx.cfg, ev).heartbeatS,
       silence_threshold_seconds: eventTimers(ctx.cfg, ev).silenceS,
       gateway_upload_max_batch: 500,
@@ -149,6 +149,20 @@ export function buildRoutes(ctx: Ctx): Router {
   });
   r.delete('/sos/:sosId/voice-note', async (req, res) => { await voice.deleteVoiceNote(ctx, req.params.sosId, requireResponder(req)); res.status(204).end(); });
 
+  // ---------------------------------------------------------------- Case images (bytes and captions are never logged)
+  const imageActor = (req: Request): images.ImageActor =>
+    req.responder ? { kind: 'responder', id: req.responder.id, role: req.responder.role } : { kind: 'device', id: requireDevice(req).id };
+  r.put('/sos/:sosId/images/:imageId', async (req, res) => {
+    const out = await images.putImage(ctx, req.params.sosId, req.params.imageId, imageActor(req), req.headers['content-type'], req.body, str(q(req).caption));
+    res.status(out.created ? 201 : 200).json(out.image);
+  });
+  r.get('/sos/:sosId/images', async (req, res) => { res.json({ data: await images.listImages(ctx, req.params.sosId, imageActor(req)) }); });
+  r.get('/sos/:sosId/images/:imageId', async (req, res) => {
+    const img = await images.getImageBytes(ctx, req.params.sosId, req.params.imageId, imageActor(req));
+    res.status(200).set({ 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=3600', 'Content-Disposition': 'inline', 'X-Content-Type-Options': 'nosniff', 'Content-Length': String(img.data.length) }).end(img.data);
+  });
+  r.delete('/sos/:sosId/images/:imageId', async (req, res) => { await images.deleteImage(ctx, req.params.sosId, req.params.imageId, imageActor(req)); res.status(204).end(); });
+
   // ---------------------------------------------------------------- Check-ins
   r.get('/sos/:sosId/checkins', async (req, res) => { requireResponder(req); res.json({ data: await checkins.listCheckins(ctx, req.params.sosId) }); });
   r.post('/sos/:sosId/checkins', async (req, res) => res.status(201).json(await checkins.createCheckin(ctx, req.params.sosId, req.body, requireResponder(req))));
@@ -181,24 +195,6 @@ export function buildRoutes(ctx: Ctx): Router {
   r.get('/responders/:responderId', async (req, res) => { requireResponder(req); res.json(await responders.getResponderView(ctx, req.params.responderId)); });
   r.patch('/responders/:responderId', async (req, res) => res.json(await responders.updateResponder(ctx, req.params.responderId, req.body, actorOf(req))));
   r.delete('/responders/:responderId', async (req, res) => { await responders.deactivateResponder(ctx, req.params.responderId, actorOf(req)); res.status(204).end(); });
-
-  // ---------------------------------------------------------------- Offers
-  const offerActor = (req: Request): offers.OfferActor => {
-    if (req.responder) return { kind: 'responder', id: req.responder.id, role: req.responder.role };
-    return { kind: 'device', id: requireDevice(req).id };
-  };
-  r.post('/offers', async (req, res) => { const o = await offers.createOffer(ctx, req.body, requireDevice(req).id); res.status(201).json(o.offer); });
-  r.get('/offers', async (req, res) => {
-    const x = q(req);
-    res.json(await offers.listOffers(ctx, { limit: limitOf(req), cursor: str(x.cursor), kind: str(x.kind), status: str(x.status), near: str(x.near), radius_km: x.radius_km === undefined ? undefined : Number(x.radius_km), mine: asBool(x.mine) }, offerActor(req)));
-  });
-  r.get('/offers/:offerId', async (req, res) => { offerActor(req); res.json(await offers.getOffer(ctx, req.params.offerId)); });
-  r.patch('/offers/:offerId', async (req, res) => res.json(await offers.updateOffer(ctx, req.params.offerId, req.body, offerActor(req))));
-  r.delete('/offers/:offerId', async (req, res) => { await offers.deleteOffer(ctx, req.params.offerId, offerActor(req)); res.status(204).end(); });
-  r.get('/offers/:offerId/matches', async (req, res) => res.json({ data: await offers.listMatches(ctx, req.params.offerId, offerActor(req)) }));
-  r.post('/offers/:offerId/matches', async (req, res) => res.status(201).json(await offers.createMatch(ctx, req.params.offerId, req.body.sos_id, offerActor(req))));
-  r.patch('/offers/:offerId/matches/:matchId', async (req, res) => res.json(await offers.updateMatch(ctx, req.params.offerId, req.params.matchId, req.body.status, offerActor(req))));
-  r.delete('/offers/:offerId/matches/:matchId', async (req, res) => { await offers.deleteMatch(ctx, req.params.offerId, req.params.matchId, offerActor(req)); res.status(204).end(); });
 
   // ---------------------------------------------------------------- Mesh
   r.get('/mesh/stats', async (req, res) => { requireResponder(req); res.json(await mesh.cachedMeshStats(ctx, asInt(q(req).window_minutes, 60))); });

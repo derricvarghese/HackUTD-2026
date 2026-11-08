@@ -7,7 +7,7 @@ import { addEvent, broadcastSos } from './sosView';
 const OPEN = ['reported', 'assigned', 'en_route', 'on_scene'] as const;
 
 /**
- * Records that the device was heard from (heartbeat, SOS, offer, legacy check-in reply): moves `last_heard_at` of its open cases forward and,
+ * Records that the device was heard from (heartbeat, SOS, legacy check-in reply): moves `last_heard_at` of its open cases forward and,
  * when the evidence is recent, ends "lost contact" silence. A case that still has unanswered welfare check-ins (`welfare_missed > 0`) stays
  * silent as `unresponsive`: a heartbeat proves the phone is alive, not that the person is fine. Scores are never lowered.
  */
@@ -31,7 +31,7 @@ export async function noteContact(ctx: Ctx, deviceId: string, at: Date, o: { rec
 export interface CaseSilenceResult { checked: number; flagged: number; escalated: number }
 
 /**
- * Heartbeat-gap rule: an open case whose device has produced no contact (heartbeat, SOS, offer, reply) for `silence_threshold_seconds` becomes
+ * Heartbeat-gap rule: an open case whose device has produced no contact (heartbeat, SOS, reply) for `silence_threshold_seconds` becomes
  * `silent` ("lost contact"). The score gains +10 at the threshold and +10 per further heartbeat interval, at most +30 in total (`contact_boost`).
  * Runs for cases without an event and cases of the active event (a closed event stops detection). A device WITHOUT an open case is never escalated (see silenceTick for the device list).
  */

@@ -151,8 +151,9 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
     const sosIds = trx.selectFrom('sos').select('id').where('event_id', '=', id);
     const devs = await trx.selectFrom('sos').select('device_id').distinct().where('event_id', '=', id).where('device_id', 'is not', null).execute();
     const voice = await trx.deleteFrom('voice_notes').where('sos_id', 'in', sosIds).returning('id').execute();
+    const imgs = await trx.deleteFrom('case_images').where('sos_id', 'in', sosIds).returning('id').execute();
     const cases = await trx.updateTable('sos').set(() => ({
-      lat: null, lng: null, geohash7: null, text: null, device_id: null, gateway_device_id: null, sender_hash: 'purged', profile_summary: null, hop_path: [], has_voice_note: false,
+      lat: null, lng: null, geohash7: null, text: null, device_id: null, gateway_device_id: null, sender_hash: 'purged', profile_summary: null, hop_path: [], has_voice_note: false, image_hint: null,
       accuracy_m: null, approx_lat: sql<number>`round(approx_lat::numeric, 1)::double precision`, approx_lng: sql<number>`round(approx_lng::numeric, 1)::double precision`, updated_at: now,
     })).where('event_id', '=', id).returning('id').execute();
     await trx.updateTable('sos_reports').set({ envelope: null, text: null, hop_path: [], gateway_device_id: null }).where('sos_id', 'in', sosIds).execute();
@@ -161,13 +162,12 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
     await trx.updateTable('sos_events').set({ data: '{}' }).where('sos_id', 'in', sosIds).execute();
     await trx.updateTable('checkins').set({ response_text: null, message: null }).where('sos_id', 'in', sosIds).execute();
     await trx.deleteFrom('mesh_outbox').where('sos_id', 'in', sosIds).execute();
-    await trx.deleteFrom('offers').where('event_id', '=', id).execute();
     await trx.deleteFrom('heartbeats').where('event_id', '=', id).execute();
     await trx.deleteFrom('silent_devices').where('event_id', '=', id).execute();
     // personal identity data goes with the cases it describes: profiles of devices that have no case left anywhere are deleted
     const profiles = await dropOrphanedProfiles({ db: trx }, devs.map((d) => d.device_id!));
     await trx.updateTable('events').set({ status: 'purged', purged_at: now, updated_at: now }).where('id', '=', id).execute();
-    return { purged_profiles: profiles, purged_cases: cases.length, purged_voice_notes: voice.length, purged_at: now.toISOString() };
+    return { purged_profiles: profiles, purged_cases: cases.length, purged_voice_notes: voice.length, purged_images: imgs.length, purged_at: now.toISOString() };
   });
 }
 
@@ -176,7 +176,6 @@ export async function deleteEvent(ctx: Ctx, id: string) {
   await getRow(ctx, id);
   await ctx.db.transaction().execute(async (trx) => {
     const devs = await trx.selectFrom('sos').select('device_id').distinct().where('event_id', '=', id).where('device_id', 'is not', null).execute();
-    await trx.deleteFrom('offers').where('event_id', '=', id).execute();
     await trx.deleteFrom('heartbeats').where('event_id', '=', id).execute();
     await trx.deleteFrom('silent_devices').where('event_id', '=', id).execute();
     await trx.deleteFrom('sos').where('event_id', '=', id).execute();

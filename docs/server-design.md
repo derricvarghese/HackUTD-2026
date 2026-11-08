@@ -17,7 +17,7 @@ server/
     app.ts            express app, middleware order, static dashboard
     config.ts         env parsing (zod)
     http/             routers per tag: auth, devices, sos, checkins, assignments,
-                      responders, offers, mesh, events, heartbeats, map, system
+                      responders, images, mesh, events, heartbeats, map, system
     domain/           pure logic, no IO
       triage/rules.ts scoring rules
       dedupe.ts       similarity + merge decision
@@ -56,7 +56,7 @@ Tables (all with `created_at`, `updated_at`; ids are uuid):
 - `sos_events` (audit trail / status trail)
 - `checkins` (sos_id, channel, sent_at, deadline_at, responded_at, response, attempt, missed)
 - `assignments` (sos_id, responder_id, status, eta_at, outcome); **partial unique index** on `sos_id` where status in (assigned, en_route, on_scene) = one active claim per case
-- `offers`, `offer_matches`
+- `case_images` (id = client uuid, sos_id cascade, device_id cascade, uploaded_by_kind/responder_id, content_type, bytes, width, height, caption, data bytea); index on `sos_id`
 - `heartbeats` (device_id, event_id, sent_at, received_at, approx, battery, seq, hop info) + `silent_devices` (device_id, status, flagged_at, acknowledged, ...)
 - `deadzones` (center, radius, status, detected_at)
 - `mesh_outbox` (backend messages: kind, sos_id, body, signed envelope, expires_at)
@@ -72,23 +72,46 @@ Keep an in-memory ring of recent heartbeats if DB load matters; otherwise Postgr
 2. For each envelope: verify signature over the canonical signed part -> check `expires_at` -> `hop_count <= max_hops` and `max_hops`/ttl match the tier table in `hops.ts` -> decrypt `payload` -> validate `MeshPayload`.
 3. Idempotency: `INSERT ... ON CONFLICT (id) DO NOTHING`; on conflict only append a `sos_reports` row and merge shorter `hop_path`/lower delay info.
 4. Heartbeat envelopes branch to the heartbeat service (no `sos` row).
-5. In one transaction: insert `sos` + report + audit event; enqueue triage; create `mesh_outbox` `delivered` message. Respond with per-item results.
-6. After commit: run triage (inline for single POST with 3 s budget, otherwise async), then dedupe, then broadcast `sos.created`/`sos.updated`.
+5. In one transaction: insert `sos` (rules score, `triage_status = provisional`) + report + rules `triage_results` row + audit event; create `mesh_outbox` `delivered` message. Respond with per-item results. Nothing here waits for the LLM.
+6. After commit: broadcast `sos.created` (rules score), queue the AI triage job (6.2), then dedupe. The AI result arrives later as `sos.updated`.
 
-### 6.2 Triage (`domain/triage/rules.ts` + `llm/nemotron.ts`)
-- **Rules first** (deterministic, always run): trapped + water rising => score floor 90; injured => 80; medical keywords => +; people_count adds; category `safe` => low; silence boosts (section 6.4). Output score, reasons (`source: rule`), tier.
-- **Nemotron second**: send free text + structured fields, request strict JSON (`vulnerable[]`, `medical[]`, `hazards[]`, `urgency_delta` clamped to +/-15, short reasons, confidence). Timeout 4 s, one retry, circuit breaker. Rules always bound the result: the LLM can raise or lower within a clamp but never below a rule floor. Failure => `llm_used=false`, confidence downgraded, health shows `degraded`.
-- Prompt-injection hygiene: user text goes in a delimited data field, output is schema-validated, never executed or used as instructions.
-- Store reasoning so the dashboard can show "Critical: 2 people trapped... Confidence: high".
+### 6.2 Triage: rules now, AI later (`domain/triage/rules.ts`, `services/triage.ts`, `services/aiTriage.ts`, `llm/nemotron.ts`)
+Every case, whatever its kind or tier (direct POST, mesh batch, `safe`, simulate/seed, promoted silent device), goes through both steps. The user-facing rule: it shows up instantly with a provisional rules score and is updated later from the AI.
+
+**Step 1, rules (synchronous, deterministic).** trapped + water rising => floor 90; injured => 80; medical keywords => +; people_count adds; profile signals (section 6.9) add; category `safe` => low. Output score, `source: rule` reasons, tier. The case is inserted with `triage_status = provisional`, returned in the HTTP response and broadcast as `sos.created`. Nothing in the request path waits for the LLM (there is no inline LLM budget any more).
+
+**Step 2, AI job (asynchronous).** After commit `ctx.aiTriage.enqueue(id)` queues one job per case:
+- *Queue.* In-process, bounded concurrency (`AI_TRIAGE_CONCURRENCY`, default 4), one job per case at a time; re-triggers while a job runs coalesce into one follow-up run.
+- *Claim.* A job takes its case with one conditional `UPDATE` (`provisional` and due, or `pending` with a stale claim) so two server instances never process the same case; `triage_claimed_at` older than about two LLM timeouts counts as a crashed claim and is taken over. All timestamps come from the database clock.
+- *Call.* The LLM gets category, flags, people count, free text and the sanitised `profile_context` (age range, flags, conditions, medications, mobility needs): never name, phone, address or contacts. Strict JSON (`vulnerable[]`, `medical[]`, `hazards[]`, `urgency_delta` clamped to +/-15, reasons, confidence), schema-validated; user text is data, never instructions. Per-job timeout `NEMOTRON_TIMEOUT_MS`. `NemotronClient` keeps its circuit breaker, thinking-disabled `chat_template_kwargs` and `/v1` base-URL normalisation.
+- *Success.* `applyLlm` merges the extraction into the rules result: score moves by at most +/-15 and never below the rule floor. Persisted in one transaction (new `triage_results` row with `llm_used=true`, model, reasons, extracted; `sos.score` = AI score + silence/heartbeat/contact/urgent boosts, and not below the highest merged duplicate), `triage_status = complete`, `triage_updated_at`, then `sos.updated` is broadcast (public fields only).
+- *Failure* (null, timeout, invalid output): up to `AI_TRIAGE_MAX_ATTEMPTS` (3) attempts, back off `AI_TRIAGE_BACKOFF_MS` (2 s, 8 s, 30 s). While the breaker is open the job waits (`AI_TRIAGE_BREAKER_WAIT_MS`) and no attempt is burned. After the last attempt the case becomes `failed`: rules score stands, `llm_used=false`, confidence one notch down when free text went unanalysed, reason "AI unavailable; scored by rules only", `sos.updated` broadcast.
+- *Recovery.* A 30 s sweep (`AI_TRIAGE_SWEEP_S`) and the same pass on boot re-enqueue any `provisional` case that is due and any `pending` case with a stale claim, and give `failed` cases a fresh round every `AI_TRIAGE_FAILED_RETRY_S` (300 s) up to `AI_TRIAGE_FAILED_MAX_SWEEPS` (6) times, so a case scored while Brev was down eventually gets its AI pass. Cases whose pass was requested more than `AI_TRIAGE_MAX_AGE_H` (24 h) ago are left alone.
+- *Demo.* With the offline `StubLlm` (no `NEMOTRON_BASE_URL`) the job completes instantly; `AI_TRIAGE_DEMO_DELAY_MS` (default 1500 in `DEMO_MODE`, else 0) adds artificial latency so the provisional -> final transition is visible.
+
+**State machine (`sos.triage_status`).** `provisional` (rules score shown, job queued or backing off) -> `pending` (job running) -> `complete` | back to `provisional` (retry) | `failed`. Any change to the triage inputs sets it back to `provisional` and bumps `triage_gen`: responder edit of text/category/people, profile written/changed/erased for the device, `POST /sos/{id}/retriage` (rules re-run at once, response is the provisional case, the AI result follows via `sos.updated`), and a merge (AI re-run for the primary). A result computed for an older `triage_gen` is discarded and the case goes round again. Heartbeat/check-in/silence boosts only touch `score` and the boost columns, never `triage_status`, and are re-added on every persist.
+
+**Observability.** `GET /health` -> `triage.queue_depth` (cases `provisional`/`pending`) and `triage.oldest_pending_seconds`, next to the LLM `status`/`latency_ms`.
+
+Reasoning is stored so the dashboard can show "Critical: 2 people trapped... Confidence: high".
 
 ### 6.3 Dedupe
 Candidates: same event, within 150 m (geohash7 neighbours), within 30 min, status not resolved. Score = distance + token-set text similarity + same sender_hash (always merge) + category match. Above threshold => attach as a report to the primary (oldest/highest score), mark the other `merged`, bump `duplicate_count`, broadcast `sos.merged`. Below a lower threshold => leave separate. Manual merge/unmerge endpoints reuse the same code via `sos_reports`.
 
-### 6.4 Silence and heartbeats (`domain/silence.ts`, `jobs/silenceTick`)
-Runs every 30 s while an event is active.
-- **Check-in silence:** after an SOS, schedule check-ins (`checkin_interval_s`, doubling attempts capped). Missed deadline => `missed=true`, set `silent=true`, add a `silence` reason, raise score (+10 per missed attempt, capped at 100). Priority goes up, never down. Delivery: push token if known, plus a `checkin_request` `BackendMessage` in `mesh_outbox` for offline phones.
-- **Heartbeat silence:** per device `now - last_heartbeat_at`. States: active -> quiet (past threshold) -> distress (quiet and neighbours_active >= K in same+adjacent geohash cells, or an open SOS). Create/update `silent_devices`, emit `heartbeat.silent`; resume emits `heartbeat.resumed`. A heartbeat or a check-in reply clears silence. Guard against false alarms: ignore devices that sent a `safe` message or whose battery was <= 3% with charging false (lower, don't drop, priority).
-- Closing the event stops this tick.
+### 6.4 Liveness: automatic heartbeats + welfare check-ins (`domain/liveness.ts`, `domain/silence.ts`, `services/contact.ts`, `services/checkins.ts`, `services/heartbeats.ts`)
+Two layers. **Nobody ever has to press a button to prove the phone is alive.**
+
+**A. Automatic heartbeat (connectivity).** Every installed app heartbeats in the background every `heartbeat_interval_seconds` (default 300 s, exposed in `/server-info` with or without an event): `POST /heartbeats` online, a `heartbeat` mesh envelope offline. Receiving one IS the check-in: `devices.last_heartbeat_at` (+ `last_transport/network/battery/peers_nearby/gateway`) is updated, the device's open cases get `last_heard_at = greatest(.., hb)`, and silence ends. Heartbeats are accepted while an event is active OR the device has an open SOS (attached to the case's event). Optional payload fields: `transport`, `network`, `peers_nearby`, `gateway`, `open_sos_ids[<=20]`.
+- *Absence of heartbeats = no connectivity*, not proof of distress. `connectivity = connected` (heard within 2 intervals) | `quiet` (later, under threshold) | `lost_contact` (>= `silence_threshold_seconds`) | `unknown`.
+- Device list (`silenceTick`, event devices only): `quiet` (probably no connectivity) / `distress` (neighbours >= K still report, or open SOS; low-battery guard keeps `quiet` unless an SOS is open) rows in `silent_devices`, `heartbeat.silent` / `heartbeat.resumed` (payloads carry `connectivity`). This list never creates or escalates a case: a phone that is merely out of coverage with no SOS only shows as lost contact.
+- Case silence (`caseSilenceTick`, any open non-`safe` case of a device, no event or the active event): no contact (heartbeat, SOS, reply) for the threshold => `silent=true`, `silent_since`, reason "Lost contact: no heartbeat for N min (device probably has no connectivity)", audit `silent_flagged {source: silence}`, `sos.silent`. `contact_boost` = +10 at the threshold, +10 per further heartbeat interval, cap +30. Next heartbeat => `silent=false`, audit `contact_restored`, `sos.updated`; the score is never lowered.
+
+**B. Welfare check-ins (a person is asked; only open non-`safe` cases).** Interval since the last answer by tier: critical 10 min, high 15, normal 30 (`CHECKIN_INTERVAL_*_S`; DEMO 20/25/30 s). Each check-in: `choices` `still_here | no_longer_need_help | need_urgent_help`, `deadline_at = sent_at + CHECKIN_WINDOW_S` (5 min). Order: created -> delivery (mesh `checkin_request` BackendMessage with `title/message/choices/deadline_at`; push via `PushProvider` when the device has a `push_token`, failures only logged; REST via `pending_checkins` in the heartbeat 202 and `GET /checkins/pending`) -> `deadline_at` passes -> `checkinTick` marks it `missed` (= overdue); only now `silent=true`. The overdue check-in STAYS the single active one: no new check-in is created while one is unanswered (pending or overdue); the next one is created only after an answer, measured from that answer.
+- Reminders: while overdue the SAME check-in (same `checkin_id`) is re-delivered every `CHECKIN_REMINDER_S` (default 300 s, DEMO 20), and every `CHECKIN_REMINDER_SLOW_S` (900 s, DEMO 60) after the 12th reminder: `reminder_count`++, `last_reminded_at` (both in the DB, so restarts are safe; at most one reminder per tick), a new mesh `checkin_request` (new message id, `body.reminder = n`, overdue title; older requests for that id are deleted so the outbox keeps only the newest), push (same collapse key, failures logged), `checkin.sent` WS event, and the check-in appears (`overdue=true`, listed first) in `pending_checkins` and `GET /checkins/pending`. Reminders stop on answer, resolved/closed/merged, `safe`, or event closed. Late answers are accepted.
+- Missed + heartbeats still arriving => `unresponsive` (possible incapacitation): `silence_boost` +20 at the deadline; heartbeats also stopped => `lost_contact`: +10; then +5 per further 10 min overdue. Welfare boost cap +30, independent of the heartbeat-gap cap (+30), total clamped to 100, never lowered. `welfare_missed` is 0 or 1 (the active check-in is overdue); `Checkin.attempt` is the number of the check-in in the case's sequence; a heartbeat alone does not clear `unresponsive`, an answer does (`contact_restored`).
+- Replies (PATCH `/checkins/{id}` or `checkin_reply` envelope; legacy `ok`=still_here, `need_help`=need_urgent_help, `other`=still_here): `still_here` confirms, restarts the timer; `no_longer_need_help` => case `resolved`, assignment `outcome=self_resolved`, audit `self_resolved`, `assignment.updated` + `sos.updated`, `status_update` "Marked as resolved. Stay safe." (responders may reopen by PATCH status); `need_urgent_help` => +15 (cap +30), reason source `checkin`. Every reply counts as a heartbeat.
+- Closed/resolved/merged cases and closed events: pending check-ins are cancelled, none are created. Closing the event stops the device detector and check-ins.
+- Config: `HEARTBEAT_INTERVAL_S`, `SILENCE_THRESHOLD_S`, `CHECKIN_INTERVAL_CRITICAL_S/HIGH_S/_S`, `CHECKIN_WINDOW_S`, `CHECKIN_REMINDER_S`, `CHECKIN_REMINDER_SLOW_S` (`CHECKIN_MAX_ATTEMPTS` is unused), `FCM_PROJECT_ID` + `FCM_SERVICE_ACCOUNT_JSON` (FCM HTTP v1; without them a logging no-op provider is used and apps still get local notifications from REST/mesh delivery).
 
 ### 6.5 Dead zones (`jobs/deadzoneTick`, every 60 s)
 Grid of ~1 km cells over the event region. A cell is a dead zone when it has no report/check-in/heartbeat for N minutes while >= M adjacent cells have activity (or it historically had devices). Upsert `deadzones`, emit `deadzones.updated`.
@@ -96,16 +119,13 @@ Grid of ~1 km cells over the event region. A cell is a dead zone when it has no 
 ### 6.6 Assignments
 `POST /assignments` runs `INSERT` relying on the partial unique index; a unique violation => `409` with the current assignment. Status transitions validated by a state machine in the service (`assigned -> en_route -> on_scene -> resolved`, any -> `released|cancelled`). Each transition updates `sos.status`, writes a `sos_event`, queues a victim `status_update` (push + mesh), and broadcasts `assignment.updated`. Releasing returns the case to `reported`.
 
-### 6.7 Offers
-On create/move of offers or new SOS in range: match by kind-to-need mapping (boat <- trapped, water <- need_water_meds, medical <- injured), distance <= `radius_km`, capacity. Create `suggested` matches, notify offerer (push + outbox), broadcast `offer.matched`.
-
-### 6.8 Mesh outbox and receipts
+### 6.7 Mesh outbox and receipts
 `mesh_outbox` rows are signed with the backend key at creation (`crypto/receipts.ts`), have their own `max_hops/expires_at`, and are served by `/mesh/outbox` and piggybacked on batch responses. Mark delivered when the target device next polls `/sos/{id}/status` or acks via later traffic; expired rows are pruned.
 
-### 6.9 Events and purge
+### 6.8 Events and purge
 One active event at a time. `close` stops detectors and sets `purge_at = closed_at + retention_days`. `purgeTick` (hourly) and `/purge` null out lat/lng/text/voice, delete heartbeats and device links, keep aggregates (counts, hop stats) for the post-mortem. Demo events are `synthetic=true`.
 
-### 6.10 Profiles (victim identity)
+### 6.9 Profiles (victim identity)
 - **What:** at install the app syncs name and identifying characteristics (`PUT /devices/{id}/profile`, device signature, full replace, `If-Match` on `profile_version`, mandatory consent whose version must equal `PROFILE_CONSENT_VERSION`). No photo.
 - **Storage:** `full_name`, `name_norm`, `preferred_name`, `birth_year` and the derived non-age `vuln_flags` are plain columns on purpose (display, age bucket, exact-name dedupe, coarse flags without decrypting). Everything else is one JSON blob sealed with AES-256-GCM (`crypto/profileCrypto.ts`; key = HKDF-SHA256 of `PROFILE_ENC_KEY` or, when unset, `JWT_SECRET`; device id as AAD). A database dump therefore exposes names and birth years but not medical data, addresses, contacts, phones.
 - **Visibility (one choke point, `privacy.ts`):** `toProfileView(profile, viewer, activeAssignee)` returns `ProfileFull` only for the owning device, admins and the ACTIVE assignee of a non-closed case of that device (or of a case merged with one of its cases); everyone else gets `ProfilePublic` (name, preferred name, age bucket, coarse flags). `Sos.profile` is always public-only (built from clear columns, never from `enc`); `SosDetail.profile_full` is added only for admin/assignee. WS `profile.updated` frames are public-only.
@@ -114,6 +134,14 @@ One active event at a time. `close` stops detectors and sets `purge_at = closed_
 - **Dedupe:** +0.15 for identical normalised multi-word names across devices (same device is already always merged).
 - **Lifecycle:** device delete (cascade); `DELETE /sos/{id}`, event purge and event delete remove profiles whose device has no case left; `purgeTick` deletes profiles with no case, not updated and whose device was not seen for `PROFILE_RETENTION_DAYS` (default 90); purge also clears mesh summaries. Demo seed/simulate create synthetic profiles.
 - **Logging:** never. Pino redacts profile keys and no code path logs bodies; a test captures logs and asserts absence.
+
+### 6.10 Case images (`services/images.ts`, `domain/image.ts`)
+- **What:** photos of the scene attached by the case's device or by a responder on scene; JPEG/PNG only, 3 MB and 6 per case (`IMAGE_MAX_BYTES`, `IMAGE_MAX_PER_CASE`), rate limited per caller (`IMAGE_UPLOAD_RATE_PER_MIN`). Raw body parsed with `express.raw` on `/sos/:id/images/:imageId` only (the device signature covers the bytes via `rawBody`, as for voice notes).
+- **Idempotency:** the client picks the image id; the same id on the same case returns `200` with the stored metadata, on another case `409`. The per-case limit is enforced under a row lock on the case, so parallel uploads cannot exceed it.
+- **Validation and sanitising:** the declared type must match the magic bytes; the header is parsed for width/height and the whole segment/chunk structure is walked, so truncated or garbage files get `422`. Metadata is removed before storing (JPEG APP1/APP13/COM, PNG eXIf/tEXt/iTXt/zTXt, trailing bytes), so GPS never leaves the server. The EXIF orientation goes with it: clients bake rotation into the pixels.
+- **Visibility:** same rule as exact location and `profile_full`: admin or the ACTIVE assignee (of the case or the primary it was merged into); the owning device sees its own photos. `Sos.image_count` is public, `SosDetail.images` (metadata) only for the entitled. Merged duplicates keep their rows; a primary lists the group's photos for responders, the owning device only its own.
+- **Realtime and logs:** `sos.updated` (count only) on add/remove, version bumped so `updated_since` syncs pick it up. No bytes, ids or captions in WS frames or logs (a test captures both).
+- **Lifecycle:** cascade on case delete, device delete; event purge deletes them (`purged_images`); `sos.image_hint` is the offline hint from `MeshPayload.image_count`/`has_images`, informational only. Photos never ride the mesh.
 
 ## 7. Privacy enforcement (single choke point)
 `privacy.ts` exposes `toSosView(sos, viewer)`. It returns `approx_location` always, and `location` only if the viewer is admin or the active assignee. All routes, WebSocket frames and exports go through it. WebSocket broadcasts are built per connection (not one shared payload) so a frame never leaks exact GPS. Logs never contain text, coordinates or keys. Voice notes: assignee/admin only. Profiles: name + coarse flags for all dashboard users, details only for assignee/admin (6.10).
@@ -125,7 +153,7 @@ One active event at a time. `close` stops detectors and sets `purge_at = closed_
 `DEMO_MODE=true` enables `/mesh/simulate` and `/mesh/seed` (cases with fabricated hop paths and heartbeats, `synthetic=true`) and accelerates timers (e.g. check-in interval 30 s, silence threshold 60 s) so silence and dead zones can be shown live in a 3 minute demo. A seed script can also replay a canned timeline.
 
 ## 10. Config (env)
-`DATABASE_URL, JWT_SECRET, BACKEND_ENC_PRIVATE_KEY, BACKEND_SIGN_PRIVATE_KEY, NEMOTRON_BASE_URL, NEMOTRON_API_KEY, NEMOTRON_MODEL, DEMO_MODE, PORT, PUSH_ENABLED (FCM optional), RETENTION_DEFAULT_DAYS`. Keys generated by `npm run keys`; public halves exposed via `/server-info`.
+`DATABASE_URL, JWT_SECRET, BACKEND_ENC_PRIVATE_KEY, BACKEND_SIGN_PRIVATE_KEY, NEMOTRON_BASE_URL, NEMOTRON_API_KEY, NEMOTRON_MODEL, DEMO_MODE, PORT, FCM_PROJECT_ID + FCM_SERVICE_ACCOUNT_JSON (optional push), RETENTION_DEFAULT_DAYS`. Keys generated by `npm run keys`; public halves exposed via `/server-info`.
 
 ## 11. Testing
 - Domain unit tests (rules, hops, dedupe, silence state machine, privacy redaction) with table-driven cases.
@@ -136,15 +164,15 @@ One active event at a time. `close` stops detectors and sets `purge_at = closed_
 ## 12. Build order
 1. Skeleton: config, Postgres + migrations, OpenAPI validator, auth, `/health`, `/server-info`, seed responders. Static dashboard mount.
 2. `POST /sos` + `/sos/batch` with signature/decrypt/hops, `GET /sos`, WebSocket `sos.created` (dashboard map lights up). **Crypto interop spike runs in parallel.**
-3. Rules triage, then Nemotron; dedupe.
+3. Rules triage at ingest, asynchronous Nemotron job queue; dedupe.
 4. Assignments + status trail + victim `status_update` via outbox.
 5. Check-ins, heartbeats, silence tick, dead zones.
-6. Events + purge, offers, mesh stats, demo mode/seed.
+6. Events + purge, mesh stats, demo mode/seed.
 7. Hardening: rate limits, anomaly flags, logging, contract tests, backup demo script.
 
 ## 13. Risks and calls
 - **Crypto compatibility** (Tink HPKE on Android vs Node decrypt) is the top risk. Fallback: agree on ECIES with P-256 ECDH + HKDF + AES-256-GCM, implement both sides with raw primitives, and drop Tink for payloads if needed.
-- **Brev/Nemotron latency or downtime:** rules-only fallback is mandatory and tested; never block ingest on the LLM.
+- **Brev/Nemotron latency or downtime:** rules-only fallback is mandatory and tested; ingest and every response are rules-only and never wait for the LLM, the AI pass is an async job with retries and a recovery sweep.
 - **Clock skew on phones:** trust `received_at` for ordering/silence, `created_at` only for display and expiry sanity (allow +/- 5 min).
 - **Heartbeat volume:** devices x interval is small at demo scale; batch inserts and prune old heartbeats beyond the last N per device.
-- **False silence alarms** in the demo: use the accelerated timers and the acknowledge/dismiss flow.
+- **False silence flags** in the demo: use the accelerated timers and the acknowledge/dismiss flow.

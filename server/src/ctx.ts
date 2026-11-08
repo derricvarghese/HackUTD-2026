@@ -8,6 +8,7 @@ import type { BackendKeys } from './crypto/keys';
 import type { TriageLlm } from './llm/nemotron';
 import type { TokenBuckets } from './domain/rateLimit';
 import type { PushProvider } from './services/push';
+import type { AiTriage } from './services/aiTriage';
 import type { KeyObject } from 'node:crypto';
 
 export interface DeviceAuth { id: string; publicKey: KeyObject; senderHash: string; flagged: boolean }
@@ -23,13 +24,15 @@ export interface Ctx {
   llm: TriageLlm;
   /** notification delivery for welfare check-ins (noop unless FCM is configured) */
   push: PushProvider;
-  limiters: { login: TokenBuckets; register: TokenBuckets; sender: TokenBuckets; heartbeat: TokenBuckets; profile: TokenBuckets; ip: TokenBuckets };
+  limiters: { login: TokenBuckets; register: TokenBuckets; sender: TokenBuckets; heartbeat: TokenBuckets; profile: TokenBuckets; image: TokenBuckets; ip: TokenBuckets };
   /** small TTL cache (health ping, mesh stats) */
   cache: Map<string, { at: number; v: unknown }>;
   deviceCache: Map<string, DeviceAuth>;
   /** background work (LLM enrichment, dedupe); `idle()` lets tests wait for it */
   track<T>(p: Promise<T>): void;
   idle(): Promise<void>;
+  /** asynchronous LLM triage queue (provisional rules score first, AI result later) */
+  aiTriage: AiTriage;
   /** serialises dedupe across processes (Postgres advisory lock) so two simultaneous ingests cannot both miss each other */
   dedupeLock<T>(fn: () => Promise<T>): Promise<T>;
 }

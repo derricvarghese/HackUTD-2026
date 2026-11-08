@@ -16,6 +16,7 @@ import { broadcastSos } from './sosView';
 import { senderHash } from './devices';
 import { viewsFor, getRowOrThrow } from './sosView';
 import type { Viewer } from '../domain/privacy';
+import { seedDemoImages } from './images';
 import { fakeProfile, insertSyntheticProfile, summaryOf } from './profileSeed';
 
 export type MeshStats = components['schemas']['MeshStats'];
@@ -121,6 +122,7 @@ export async function simulate(ctx: Ctx, b: { lat: number; lng: number; category
     trapped: b.category === 'trapped', injured: b.category === 'injured', created_at: new Date(Date.now() - hops * 20_000), hop: { hop_count: hops, max_hops: max, hop_path: hopPath(hops) },
     gatewayDeviceId: null, synthetic: true, profileSummary: summaryOf(fakeProfile()),
   });
+  if (Math.random() < 0.4) await seedDemoImages(ctx, id, null, 1 + Math.floor(Math.random() * 2));
   await startPostIngest(ctx, id);
   return (await viewsFor(ctx, [await getRowOrThrow(ctx, id)], viewer))[0];
 }
@@ -181,10 +183,11 @@ export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number
       gatewayDeviceId: null, synthetic: true,
     });
     await seedHeartbeatHistory(ctx, dev.id, id, lat, lng, now);
+    if (Math.random() < 0.4) await seedDemoImages(ctx, id, dev.id, 1 + Math.floor(Math.random() * 3));
     ids.push(id);
   }
   await silenceTick(ctx, now); // flags the seeded lost-contact cases exactly like the scheduled job would
-  for (const id of ids) await broadcastSos(ctx, 'sos.created', id);
+  for (const id of ids) { await broadcastSos(ctx, 'sos.created', id); ctx.aiTriage.enqueue(id); } // rules score first, AI result a moment later
   return { created: count };
 }
 

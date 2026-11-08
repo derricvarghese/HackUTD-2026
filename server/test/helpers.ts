@@ -36,7 +36,7 @@ export async function startTestApp(overrides: { llm?: TriageLlm; push?: import('
   } as NodeJS.ProcessEnv);
   const app = await createApp(cfg, { llm: overrides.llm, push: overrides.push, logger: overrides.logger });
   await app.ctx.pool.query(
-    'truncate sos, sos_reports, triage_results, sos_events, checkins, assignments, heartbeats, silent_devices, deadzones, offers, offer_matches, mesh_outbox, voice_notes, rejections, devices, refresh_tokens, events restart identity cascade',
+    'truncate sos, sos_reports, triage_results, sos_events, checkins, assignments, heartbeats, silent_devices, deadzones, mesh_outbox, voice_notes, case_images, rejections, devices, refresh_tokens, events restart identity cascade',
   );
   await new Promise<void>((r) => app.server.listen(0, '127.0.0.1', r));
   const port = (app.server.address() as { port: number }).port;

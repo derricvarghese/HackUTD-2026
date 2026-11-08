@@ -8,15 +8,15 @@ import { tierFor } from '../domain/hops';
 import { canSeeExact, isActiveAssignment, toSosView, type Sos, type Viewer } from '../domain/privacy';
 import { AppError, conflict, forbidden, invalid, notFound } from '../errors';
 import { loadInputs, viewsFor, getRowOrThrow, addEvent, broadcastSos } from './sosView';
-import { awaitWithin, ingestSos, startPostIngest } from './ingest';
-import { fullTriage, persistTriage } from './triage';
+import { ingestSos, startPostIngest } from './ingest';
+import { persistTriage, rulesOutcome } from './triage';
 import { HOP_TABLE } from '../domain/hops';
 import { CHECKIN_CHOICES } from '../domain/liveness';
-import { matchesForSos } from './offers';
 import { queueStatusUpdate } from './outbox';
 import { canSeeFullProfile, toProfileView } from '../domain/privacy';
 import { decryptSensitive, getProfileRow, triageCtxFor } from './profileStore';
 import { dropOrphanedProfiles } from './profiles';
+import { listImagesEntitled } from './images';
 
 export type SosCreate = components['schemas']['SosCreate'];
 export type SosUpdate = components['schemas']['SosUpdate'];
@@ -25,7 +25,7 @@ export type SosEventDto = components['schemas']['SosEvent'];
 
 export type Creator = { kind: 'device'; id: string; senderHash: string } | { kind: 'responder'; id: string; senderHash: string };
 
-/** POST /sos (direct, online). Rules triage is immediate; the LLM gets `INLINE_TRIAGE_BUDGET_MS` before we respond. */
+/** POST /sos (direct, online). Answers at once with the rules score (`triage_status: provisional`); the AI pass runs in the background and lands via `sos.updated`. */
 export async function createSos(ctx: Ctx, b: SosCreate, creator: Creator, viewer: Viewer): Promise<{ sos: Sos; created: boolean }> {
   if (b.lat == null || b.lng == null) throw invalid('lat and lng are required', { lat: 'required', lng: 'required' });
   const tier = tierFor(b.category, b);
@@ -35,8 +35,8 @@ export async function createSos(ctx: Ctx, b: SosCreate, creator: Creator, viewer
     injured: b.injured, has_voice_note: b.has_voice_note, created_at: b.created_at ? new Date(b.created_at) : new Date(),
     hop: { hop_count: 0, max_hops: HOP_TABLE[tier].max_hops, hop_path: [] }, gatewayDeviceId: creator.kind === 'device' ? creator.id : null,
   });
-  if (r.created) await awaitWithin(startPostIngest(ctx, b.id), ctx.cfg.INLINE_TRIAGE_BUDGET_MS);
-  const row = await getRowOrThrow(ctx, b.id);
+  const row = await getRowOrThrow(ctx, b.id); // read first: the response is the provisional (rules) case, whatever the AI does next
+  if (r.created) void startPostIngest(ctx, b.id);
   return { sos: (await viewsFor(ctx, [row], viewer))[0], created: r.created };
 }
 
@@ -134,10 +134,13 @@ export async function getSosDetail(ctx: Ctx, id: string, viewer: Viewer): Promis
   return {
     ...base,
     ...(profile_full ? { profile_full } : {}),
+    // photo metadata only for the same viewers who may see the exact location (admin / active assignee); everyone else just gets `image_count`
+    ...(canSeeExact(viewer, input.assignment && isActiveAssignment(input.assignment.status) ? input.assignment.responder_id : null) ? { images: await listImagesEntitled(ctx, id) } : {}),
     triage: triage ? {
       score: triage.score, confidence: triage.confidence as 'low' | 'medium' | 'high', summary: triage.summary ?? undefined,
       reasons: triage.reasons as components['schemas']['TriageReason'][], extracted: triage.extracted as components['schemas']['Triage']['extracted'],
       tier: (triage.tier ?? undefined) as components['schemas']['Tier'] | undefined, llm_used: triage.llm_used, model: triage.model, scored_at: triage.scored_at.toISOString(),
+      triage_status: input.row.triage_status, triage_updated_at: input.row.triage_updated_at ? input.row.triage_updated_at.toISOString() : null, triage_attempts: input.row.triage_attempts,
     } : undefined,
     checkins: checkins.map(checkinDto),
     events,
@@ -146,7 +149,6 @@ export async function getSosDetail(ctx: Ctx, id: string, viewer: Viewer): Promis
       hop: { hop_count: m.hop_count, max_hops: m.max_hops, hop_path: m.hop_path, gateway_device_id: m.gateway_device_id, original_created_at: m.original_created_at.toISOString() },
       created_at: m.created_at.toISOString(),
     })),
-    matched_offers: await matchesForSos(ctx, id),
     notes: events.filter((e) => e.type === 'note').map((e) => ({ responder_id: e.actor?.id ?? '', text: String((e.data as { text?: string })?.text ?? ''), created_at: e.at })),
   };
 }
@@ -156,8 +158,9 @@ export function checkinDto(c: import('../db/types').CheckinRow): components['sch
   return {
     id: c.id, sos_id: c.sos_id, channel: c.channel as 'mesh' | 'app', sent_at: c.sent_at.toISOString(),
     responded_at: c.responded_at ? c.responded_at.toISOString() : null, response: (c.response as components['schemas']['Checkin']['response']) ?? null,
-    text: c.response_text, attempt: c.attempt, missed: c.missed, deadline_at: c.deadline_at.toISOString(),
-    alarm_at: (c.alarm_at ?? c.deadline_at).toISOString(), kind: 'welfare', choices: [...CHECKIN_CHOICES], message: c.message,
+    text: c.response_text, attempt: c.attempt, missed: c.missed, overdue: c.missed && !c.responded_at && !c.cancelled,
+    reminder_count: c.reminder_count, last_reminded_at: c.last_reminded_at ? c.last_reminded_at.toISOString() : null, deadline_at: c.deadline_at.toISOString(),
+    kind: 'welfare', choices: [...CHECKIN_CHOICES], message: c.message,
   };
 }
 
@@ -203,10 +206,9 @@ export async function updateSos(ctx: Ctx, id: string, b: SosUpdate & { score_ove
     }
     if (noteText) await addEvent(trx, id, 'note', { kind: 'responder', id: actor.id }, { text: noteText });
   });
-  // changed text/category/people => rules triage must follow (cheap, deterministic); LLM refresh is in /retriage
+  // changed text/category/people => rules re-run now (provisional again), the AI pass follows in the background
   if (changed.text !== undefined || changed.category !== undefined || changed.people_count !== undefined) {
     const fresh = await getRowOrThrow(ctx, id);
-    const { rulesOutcome } = await import('./triage');
     await persistTriage(ctx, id, rulesOutcome(fresh, await triageCtxFor(ctx, fresh)), { kind: 'responder', id: actor.id });
   }
   await broadcastSos(ctx, 'sos.updated', id);
@@ -232,8 +234,8 @@ export async function deleteSos(ctx: Ctx, id: string, actor: Responder) {
 export async function retriage(ctx: Ctx, id: string, actor: Responder, viewer: Viewer): Promise<Sos> {
   if (actor.role === 'volunteer') throw forbidden('Volunteers cannot retriage');
   const row = await getRowOrThrow(ctx, id);
-  const o = await fullTriage(ctx, row);
-  await persistTriage(ctx, id, o, { kind: 'responder', id: actor.id });
+  // rules now (provisional, returned right away); the AI result follows through `sos.updated`
+  await persistTriage(ctx, id, rulesOutcome(row, await triageCtxFor(ctx, row)), { kind: 'responder', id: actor.id });
   await broadcastSos(ctx, 'sos.updated', id);
   return (await viewsFor(ctx, [await getRowOrThrow(ctx, id)], viewer))[0];
 }

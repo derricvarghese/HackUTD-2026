@@ -55,7 +55,6 @@ Responder dashboard.
 Map heat layer plus a ranked queue.
 Responders claim a case so two teams don’t go to the same house.
 A status trail for each case: reported → assigned → en route → resolved.
-Neighbor assist. Nearby users marked Safe can offer help: “I have a boat” or “I have water.” The system matches them to requests close by.
 4. Data model (minimum)
 sos: id, sender_hash, channel (mesh|photon|app), lat, lng, category, text, people_count, score, confidence, reasons[], status, last_heard_at, hop_count, created_at
 checkins: sos_id, sent_at, responded_at

@@ -34,6 +34,8 @@ export interface SosViewInput {
   /** public-only identity source (synced profile columns or a mesh summary); never carries sensitive data */
   profile?: ProfilePublicSource | null;
   /** liveness context; defaults (no heartbeat known, 300 s / 1200 s timers, now) when absent */
+  /** photos attached to the case (and its merged duplicates): a number only, never ids */
+  imageCount?: number;
   liveness?: { lastHeartbeatAt: Date | null; now: Date; heartbeatS: number; silenceS: number };
 }
 
@@ -123,9 +125,14 @@ export function toSosView(input: SosViewInput, viewer: Viewer): Sos {
     people_count: row.people_count,
     score: row.score_override ?? row.score,
     confidence: row.confidence,
+    triage_status: row.triage_status,
+    triage_updated_at: iso(row.triage_updated_at),
+    triage_attempts: row.triage_attempts,
     reasons,
     event_id: row.event_id,
     has_voice_note: row.has_voice_note,
+    image_count: input.imageCount ?? 0,
+    ...(row.image_hint ? { image_hint: row.image_hint } : {}),
     silent: row.silent,
     silent_since: iso(row.silent_since),
     last_heard_at: new Date(live.contactAt).toISOString(),

@@ -16,7 +16,7 @@ describe('no active event', () => {
   it('server-info exposes the heartbeat interval without an event; heartbeats need an open SOS then', async () => {
     const si = (await t.request.get('/v1/server-info')).body;
     expect(si.event).toBeNull();
-    expect(si).toMatchObject({ heartbeat_interval_seconds: 300, silence_threshold_seconds: 1200, checkin_window_seconds: 300, checkin_alarm_lead_seconds: 60, checkin_intervals_seconds: { critical: 600, high: 900, normal: 1800 } });
+    expect(si).toMatchObject({ heartbeat_interval_seconds: 300, silence_threshold_seconds: 1200, checkin_window_seconds: 300, checkin_intervals_seconds: { critical: 600, high: 900, normal: 1800 } });
     const dev = await t.registerDevice();
     expect((await hb(t, dev)).status).toBe(404); // no event, no open SOS
     const env = t.envelope(dev, { lat: LOC.lat, lng: LOC.lng, category: 'other', text: 'alone and cut off' }, { tier: 'normal' });
