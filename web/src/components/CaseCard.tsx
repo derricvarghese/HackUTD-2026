@@ -9,7 +9,9 @@ import { useCanAct } from '../state/auth';
 import { useUi } from '../state/ui';
 import { nameLine } from '../lib/profile';
 import { PersonLine } from './Person';
-import { StatusTrail } from './ui';
+import { StatusTrail, useScoreMarker } from './ui';
+import { CameraChip, ContactChip } from './chips';
+import { lastHeardText } from '../lib/contact';
 
 /** Sum of score added by silence/heartbeat detectors, shown as the "+20" under a silent badge. */
 export function silenceBoost(c: Sos): number {
@@ -46,7 +48,7 @@ export function ClaimButton({ c }: { c: Sos }) {
         e.stopPropagation();
         useUi.getState().setOpenCaseId(c.id);
       }}
-      aria-label={`Claim ${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)}`}
+      aria-label={`Assign. Claim ${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)}`}
     >
       Assign
     </button>
@@ -61,17 +63,19 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
   const people = c.people_count ? `${c.people_count} ${c.people_count === 1 ? 'person' : 'people'}` : null;
   const loc = resolveLocation(c);
   const address = useReverseGeocode(loc.lat, loc.lng);
+  const marker = useScoreMarker(c);
   return (
     <div
       tabIndex={0}
       aria-current={selected ? 'true' : undefined}
-      aria-label={`${nameLine(c.profile)}, ${shortId(c.id)}, ${CATEGORY_LABEL[c.category]}, score ${c.score}${c.silent ? ', went silent' : ''}`}
+      aria-label={`${nameLine(c.profile)}, ${shortId(c.id)}, ${CATEGORY_LABEL[c.category]}, score ${c.score}${marker.note ? `, ${marker.info.label}` : ''}${c.silent ? ', went silent' : ''}${c.contact_state && c.contact_state !== 'connected' ? `, ${c.contact_state === 'unresponsive' ? 'unresponsive' : 'lost contact'}` : ''}`}
       className={`case ${CARD_CLASS[kind]}${selected ? ' sel' : ''}`}
       onClick={onSelect}
       onKeyDown={keyActivate(onSelect)}
       data-testid="case-card"
+      data-flip-key={c.id}
     >
-      <div className="badge" style={{ background: TIER_VAR[kind], color: TIER_TEXT[kind] }}>
+      <div className={`badge${marker.cls}`} style={{ background: TIER_VAR[kind], color: TIER_TEXT[kind] }} title={marker.note || undefined} data-ai={marker.info.state}>
         <div>
           {c.score}
           <small>{c.silent && boost > 0 ? `▲ +${boost}` : 'SCORE'}</small>
@@ -100,7 +104,9 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
         <div className="cfoot">
           <span className="chan">{channelLabel(c.channel, c.hop)}</span>
           {c.has_voice_note && <span className="chan">Voice note</span>}
-          <span className="ago">{c.silent ? `last heard ${formatAge(c.last_heard_at, now)}` : formatAge(c.received_at ?? c.created_at, now)}</span>
+          <CameraChip count={c.image_count} />
+          <ContactChip c={c} now={now} />
+          <span className="ago">{lastHeardText(c, now)}</span>
           {selected && onOpen && (
             <button className="claim ghost" onClick={(e) => { e.stopPropagation(); onOpen(); }}>
               Details
@@ -117,7 +123,7 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
 export function DeviceCard({ d, now, onPromote, busy, canAct }: { d: SilentDevice; now: number; onPromote: () => void; busy: boolean; canAct: boolean }) {
   const mins = Math.round((d.silent_for_seconds ?? 0) / 60);
   return (
-    <div className="case n" data-testid="device-card">
+    <div className="case n" data-testid="device-card" data-flip-key={d.device_id}>
       <div className="badge" style={{ background: 'var(--purple)' }}>
         <div>
           {d.priority_score ?? '?'}
@@ -126,7 +132,7 @@ export function DeviceCard({ d, now, onPromote, busy, canAct }: { d: SilentDevic
       </div>
       <div className="cbody">
         <div className="ctop">
-          <b>Device {deviceShortId(d.device_id).slice(4)} · Heartbeat stopped</b>
+          <b>Device {deviceShortId(d.device_id).slice(4)} · Lost contact</b>
           <span className="tagx" style={{ background: 'var(--purple)' }}>
             {d.status === 'distress' ? 'POSSIBLE DISTRESS' : 'QUIET'}
           </span>
@@ -135,12 +141,13 @@ export function DeviceCard({ d, now, onPromote, busy, canAct }: { d: SilentDevic
           <span>
             ~{Math.round(d.last_approx.radius_m / 100) / 10} km area · {d.last_approx.lat.toFixed(2)}, {d.last_approx.lng.toFixed(2)}
           </span>
-          {typeof d.last_battery_pct === 'number' && <span>{d.last_battery_pct}% at last beat</span>}
+          {typeof d.last_battery_pct === 'number' && <span>{d.last_battery_pct}% at last heartbeat</span>}
         </div>
-        <div className="why">{d.reason ?? `Went quiet ${mins} min ago${d.neighbors_active ? ` while ${d.neighbors_active} neighbours kept reporting` : ''}. Silence is the signal.`}</div>
+        <div className="why">{d.reason ?? `No heartbeat for ${mins} min (probably no connectivity)${d.neighbors_active ? `; ${d.neighbors_active} neighbours kept reporting` : ''}.`}</div>
         <div className="cfoot">
           <span className="chan">Mesh heartbeat</span>
-          <span className="ago">{formatAge(d.last_heartbeat_at, now)}</span>
+          <span className="cchip amber" title="Lost contact: probably no connectivity"><i aria-hidden="true" /><span aria-hidden="true">Lost contact</span><span className="sr-only">Lost contact: probably no connectivity</span></span>
+          <span className="ago">Last heartbeat {formatAge(d.last_heartbeat_at, now)}</span>
           {canAct && (
             <button className="claim" disabled={busy} onClick={onPromote} aria-label={`Promote device ${deviceShortId(d.device_id)} to a case`}>
               {busy ? 'Promoting…' : 'Make case'}

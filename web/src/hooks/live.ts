@@ -4,6 +4,7 @@ import * as api from '../api/endpoints';
 import type { Assignment, Checkin, Deadzone, MeshStats, Sos, SilentDevice, WsFrame } from '../api/models';
 import { describeFrame, mergeUpdated, removeCases, removeSilent, upsertCase, upsertSilent } from '../lib/live';
 import { LiveSocket } from '../lib/socket';
+import { isStaleFrame, scoreChange } from '../lib/triage';
 import { useAuth } from '../state/auth';
 import { useUi } from '../state/ui';
 import { buildSosQuery } from '../lib/query';
@@ -26,7 +27,12 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
     case 'sos.updated':
     case 'sos.silent': {
       const c = f.data as Sos;
+      const prev = qc.getQueryData<Sos[]>(qk.open)?.find((x) => x.id === c.id) ?? qc.getQueryData<Sos>(qk.detail(c.id));
+      if (isStaleFrame(prev, c)) break; // an older version arrived late: ignore it
+      const change = scoreChange(prev, c);
+      if (change) useUi.getState().noteTriageChange(c.id, change);
       qc.setQueryData<Sos[]>(qk.open, (l) => (l ? upsertCase(l, c) : l));
+      qc.setQueryData<Sos>(qk.detail(c.id), (d) => (d ? { ...d, ...c } : d));
       void qc.invalidateQueries({ queryKey: ['cases', 'list'] });
       invalidateHeat(qc);
       void qc.invalidateQueries({ queryKey: qk.detail(c.id) });
@@ -65,17 +71,13 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
       void qc.invalidateQueries({ queryKey: ['sos-events', a.sos_id] });
       break;
     }
-    case 'offer.created':
-    case 'offer.matched':
-      void qc.invalidateQueries({ queryKey: qk.offers });
-      void qc.invalidateQueries({ queryKey: ['matches'] });
-      if (f.event === 'offer.matched') void qc.invalidateQueries({ queryKey: ['sos'] });
-      break;
     case 'heartbeat.silent':
-      qc.setQueryData<SilentDevice[]>(qk.silent, (l) => (l ? upsertSilent(l, f.data as SilentDevice) : l));
+      qc.setQueryData<SilentDevice[]>(qk.silent, (l) => (l ? upsertSilent(l, { connectivity: 'lost_contact', ...(f.data as SilentDevice) }) : l));
+      void qc.invalidateQueries({ queryKey: qk.mesh });
       break;
     case 'heartbeat.resumed':
       qc.setQueryData<SilentDevice[]>(qk.silent, (l) => (l ? removeSilent(l, (f.data as SilentDevice).device_id) : l));
+      void qc.invalidateQueries({ queryKey: qk.mesh });
       break;
     case 'deadzones.updated': {
       const d = (f.data as { data?: Deadzone[] } | undefined)?.data;
@@ -97,7 +99,7 @@ async function catchUp(qc: QueryClient, since: number) {
     api.listSos({ ...buildSosQuery({ tab: 'all', includeResolved: true }), status: undefined, updated_since: iso, cursor }),
   );
   qc.setQueryData<Sos[]>(qk.open, (l) => (l ? mergeUpdated(l, updated) : l));
-  for (const k of [qk.silent, qk.deadzones, qk.assignments, qk.responders, qk.offers, ['cases', 'list'], ['checkins'], ['sos']] as const) {
+  for (const k of [qk.silent, qk.deadzones, qk.assignments, qk.responders, ['cases', 'list'], ['checkins'], ['sos']] as const) {
     void qc.invalidateQueries({ queryKey: k as unknown as readonly unknown[] });
   }
 }

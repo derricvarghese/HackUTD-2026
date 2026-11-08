@@ -51,7 +51,7 @@ describe('CaseCard', () => {
 });
 
 describe('DeviceCard', () => {
-  it('offers to promote a silent device', async () => {
+  it('shows a promote action for a silent device', async () => {
     const onPromote = vi.fn();
     render(wrap(<DeviceCard d={makeSilent()} now={NOW} onPromote={onPromote} busy={false} canAct />));
     expect(screen.getByText('POSSIBLE DISTRESS')).toBeInTheDocument();

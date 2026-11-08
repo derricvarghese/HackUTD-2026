@@ -5,7 +5,6 @@ import { ApiError } from './api/client';
 import { Shell } from './components/Shell';
 import { Toasts } from './components/ui';
 import { useAuth } from './state/auth';
-import { Assist } from './views/Assist';
 import { Checkins } from './views/Checkins';
 import { Login } from './views/Login';
 import { Mesh } from './views/Mesh';
@@ -48,7 +47,6 @@ function Gate() {
         <Route path="checkins" element={<Checkins />} />
         <Route path="mesh" element={<Mesh />} />
         <Route path="responders" element={<Responders />} />
-        <Route path="assist" element={<Assist />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

@@ -1,13 +1,13 @@
 // Cards shared between the overview and the dedicated views.
 import { Link } from 'react-router-dom';
-import type { Offer, OfferKind, Sos, MeshStats, ServerInfo } from '../api/models';
-import { useHealth, useOfferMatches } from '../hooks/data';
+import type { Sos, MeshStats, ServerInfo } from '../api/models';
+import { useHealth } from '../hooks/data';
 import { sortLimits } from '../lib/hops';
 import { deriveFeed, type FeedItem } from '../lib/live';
-import { shortId } from '../lib/tier';
-import { formatClock, formatTtl } from '../lib/time';
+import { aiBacklog } from '../lib/triage';
+import { formatClock, formatDuration, formatTtl } from '../lib/time';
 import { useUi } from '../state/ui';
-import { IcBoat, IcDrop, IcFeed, IcHeartFill, IcNodes, IcPlus } from './icons';
+import { IcFeed, IcNodes } from './icons';
 import { Empty, Pill } from './ui';
 
 export function FeedCard({ cases, loading }: { cases: Sos[]; loading: boolean }) {
@@ -60,6 +60,7 @@ export function MeshHealthCard({ stats, loading, limits }: { stats?: MeshStats; 
   const health = useHealth();
   const conn = useUi((s) => s.connection);
   const triage = health.data?.triage?.status;
+  const backlog = aiBacklog(health.data?.triage);
   let label = '● Operational';
   let bg = 'var(--green-soft)';
   let color = 'var(--green)';
@@ -75,7 +76,7 @@ export function MeshHealthCard({ stats, loading, limits }: { stats?: MeshStats; 
   const hb = stats?.heartbeats;
   const devices = hb ? (hb.active ?? 0) + (hb.quiet ?? 0) + (hb.distress ?? 0) : undefined;
   const cells: [string, string | number | undefined][] = [
-    [String(devices ?? '-'), 'Phones heartbeating'],
+    [String(hb?.connectivity?.connected ?? devices ?? '-'), hb?.connectivity ? 'Phones connected' : 'Phones heartbeating'],
     [String(stats?.active_gateways ?? '-'), 'Active gateways'],
     [String(stats?.waiting_offline ?? '-'), 'Waiting offline'],
     [stats ? stats.avg_hops.toFixed(1) : '-', 'Avg hops'],
@@ -89,6 +90,12 @@ export function MeshHealthCard({ stats, loading, limits }: { stats?: MeshStats; 
         <h2>Mesh Health</h2>
         <Pill bg={bg} color={color} style={{ marginLeft: 'auto' }}>{label}</Pill>
       </div>
+      {backlog && (
+        <p className="ai-backlog" role="status" data-testid="ai-backlog" title="Cases showing a provisional score from rules while the AI catches up">
+          <span className="aidot" aria-hidden="true" />
+          AI backlog: {backlog.depth} {backlog.depth === 1 ? 'case' : 'cases'} waiting, oldest {formatDuration(backlog.oldestSeconds)}. Scores shown are provisional until the AI finishes.
+        </p>
+      )}
       <div className="mesh" aria-busy={loading}>
         {cells.map(([v, l]) => (
           <div className="m" key={l}>
@@ -101,54 +108,3 @@ export function MeshHealthCard({ stats, loading, limits }: { stats?: MeshStats; 
     </div>
   );
 }
-
-const KIND_ICON: Record<OfferKind, { bg: string; icon: React.ReactElement }> = {
-  boat: { bg: 'var(--blue-soft)', icon: <IcBoat /> },
-  transport: { bg: 'var(--blue-soft)', icon: <IcBoat /> },
-  water: { bg: 'var(--green-soft)', icon: <IcDrop /> },
-  food: { bg: 'var(--green-soft)', icon: <IcDrop /> },
-  medical: { bg: 'var(--red-soft)', icon: <IcPlus /> },
-  shelter: { bg: 'var(--amber-soft)', icon: <IcHeartFill /> },
-  other: { bg: '#EEF2F7', icon: <IcHeartFill /> },
-};
-export const KIND_LABEL: Record<OfferKind, string> = { boat: 'Boat', water: 'Water', food: 'Food', medical: 'Medical help', shelter: 'Shelter', transport: 'Transport', other: 'Other help' };
-
-export function OfferRow({ o }: { o: Offer }) {
-  const matches = useOfferMatches(o.id);
-  const live = (matches.data ?? []).filter((m) => m.status !== 'declined');
-  const first = live[0];
-  const k = KIND_ICON[o.kind];
-  return (
-    <div className="offer">
-      <div className="oi" style={{ background: k.bg }}>{k.icon}</div>
-      <div style={{ minWidth: 0 }}>
-        <b>{o.description ? `"${o.description}"` : KIND_LABEL[o.kind]}</b>
-        <p>
-          {KIND_LABEL[o.kind]}{o.capacity ? ` · ${o.capacity}` : ''} · within {o.radius_km ?? o.approx_location.radius_m / 1000} km · {o.status}
-        </p>
-      </div>
-      {first ? (
-        <span className="match" title={first.status}>→ {shortId(first.sos_id)}{live.length > 1 ? ` +${live.length - 1}` : ''}</span>
-      ) : (
-        <span className="match" style={{ background: '#EEF2F7', color: '#475569' }}>{matches.isLoading ? '…' : 'No match yet'}</span>
-      )}
-    </div>
-  );
-}
-
-export function OffersCard({ offers, loading }: { offers?: Offer[]; loading: boolean }) {
-  const list = (offers ?? []).filter((o) => o.status === 'open' || o.status === 'matched').slice(0, 4);
-  return (
-    <div className="card">
-      <div className="card-h">
-        <IcHeartFill />
-        <h2>Neighbor Assist</h2>
-        <Link className="more" to="/assist">All offers →</Link>
-      </div>
-      {loading && <div className="skel" style={{ height: 120, margin: '0 18px 16px' }} />}
-      {!loading && list.length === 0 && <Empty>No open offers. People marked safe can offer boats, water or skills from the app.</Empty>}
-      {list.map((o) => <OfferRow key={o.id} o={o} />)}
-    </div>
-  );
-}
-

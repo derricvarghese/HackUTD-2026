@@ -1,7 +1,7 @@
 // One function per endpoint the dashboard uses. Paths and shapes follow ../../openapi.yaml.
 import { ApiError, http, requestRaw, type Body, type Query, type Res, type Schemas } from './client';
 import type {
-  AppEvent, Assignment, ProfileFull, ProfilePublic, Checkin, Deadzone, HeatCell, MeshStats, Offer, OfferMatch, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
+  AppEvent, Assignment, CaseImage, ProfileFull, ProfilePublic, Checkin, Deadzone, HeatCell, MeshStats, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
 } from './models';
 
 export interface Page<T> {
@@ -55,6 +55,19 @@ export async function fetchVoiceNote(id: string): Promise<string> {
 export const getDeviceProfile = (deviceId: string) => http.get<ProfileFull | ProfilePublic>(`/devices/${deviceId}/profile`);
 export const isProfileFull = (p: ProfileFull | ProfilePublic): p is ProfileFull => p.view === 'full';
 
+// ---- images (tag Images). Bytes need the Authorization header: fetched into blobs, never a bare <img src>.
+export const listImages = (sosId: string) => http.get<{ data: CaseImage[] }>(`/sos/${sosId}/images`);
+export async function fetchImageBlob(sosId: string, imageId: string): Promise<Blob> {
+  const res = await requestRaw('GET', `/sos/${sosId}/images/${imageId}`, {});
+  return res.blob();
+}
+/** Idempotent on imageId: 201 the first time, 200 on a replay. */
+export async function uploadImage(sosId: string, imageId: string, blob: Blob, caption?: string): Promise<{ image: CaseImage; created: boolean }> {
+  const res = await requestRaw('PUT', `/sos/${sosId}/images/${imageId}${caption ? `?caption=${encodeURIComponent(caption)}` : ''}`, { rawBody: blob, contentType: blob.type }); // the server rejects '+' for spaces, so percent-encode ourselves
+  return { image: (await res.json()) as CaseImage, created: res.status === 201 };
+}
+export const deleteImage = (sosId: string, imageId: string) => http.del(`/sos/${sosId}/images/${imageId}`);
+
 // ---- check-ins
 export const listCheckins = (sosId: string) => http.get<{ data: Checkin[] }>(`/sos/${sosId}/checkins`);
 export const sendCheckin = (sosId: string, message?: string) =>
@@ -72,16 +85,6 @@ export const listResponders = (q: Query = {}) => http.get<Page<Responder>>('/res
 export const createResponder = (b: Body<'/responders', 'post'>) => http.post<Responder>('/responders', b);
 export const updateResponder = (id: string, b: Body<'/responders/{responderId}', 'patch'>) => http.patch<Responder>(`/responders/${id}`, b);
 export const deleteResponder = (id: string) => http.del(`/responders/${id}`);
-
-// ---- offers
-export const listOffers = (q: Query = {}) => http.get<Page<Offer>>('/offers', { limit: 200, ...q });
-export const updateOffer = (id: string, b: Body<'/offers/{offerId}', 'patch'>) => http.patch<Offer>(`/offers/${id}`, b);
-export const deleteOffer = (id: string) => http.del(`/offers/${id}`);
-export const listMatches = (offerId: string) => http.get<{ data: OfferMatch[] }>(`/offers/${offerId}/matches`);
-export const createMatch = (offerId: string, sos_id: string) => http.post<OfferMatch>(`/offers/${offerId}/matches`, { sos_id });
-export const updateMatch = (offerId: string, matchId: string, status: 'accepted' | 'declined' | 'completed') =>
-  http.patch<OfferMatch>(`/offers/${offerId}/matches/${matchId}`, { status });
-export const deleteMatch = (offerId: string, matchId: string) => http.del(`/offers/${offerId}/matches/${matchId}`);
 
 // ---- heartbeats (silent devices)
 export const listSilent = (q: Query = {}) => http.get<Page<SilentDevice>>('/heartbeats/silent', { limit: 200, ...q });

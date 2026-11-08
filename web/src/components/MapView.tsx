@@ -1,7 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
+import { contactChip } from '../lib/contact';
+import { triageInfo } from '../lib/triage';
 import 'leaflet/dist/leaflet.css';
-import type { Deadzone, HeatCell, Offer, Responder, Sos } from '../api/models';
+import type { Deadzone, HeatCell, Responder, Sos } from '../api/models';
 import { FLAG_META, displayName, sortFlags } from '../lib/profile';
 import { hopChips, hopSummary } from '../lib/hops';
 import { formatRadius, resolveLocation } from '../lib/privacy';
@@ -46,6 +48,15 @@ export function buildCasePopup(c: Sos, onOpen: () => void): HTMLElement {
   sc.title = TIER_LABEL[kind];
   hd.append(sc);
   root.append(hd);
+  const ai = triageInfo(c.triage_status);
+  if (ai.state === 'pending' || ai.state === 'failed') {
+    root.append(el('div', `pop-ai ${ai.state}`, `${ai.label}: ${ai.tooltip}`, { marginTop: '4px', fontSize: '11.5px', fontWeight: '600', color: ai.state === 'failed' ? '#475569' : '#1D4ED8' }));
+  }
+  const cc = contactChip(c);
+  if (cc && cc.state !== 'connected') {
+    root.append(el('div', `pop-contact ${cc.tone}`, cc.tooltip, { marginTop: '3px', fontSize: '11.5px', fontWeight: '600', color: cc.tone === 'red' ? '#B42318' : '#92400E' }));
+  }
+  if (c.image_count) root.append(el('div', 'pop-photos', `${c.image_count} ${c.image_count === 1 ? 'photo' : 'photos'} attached`, { marginTop: '3px', fontSize: '11.5px', color: '#475569' }));
   const meta: string[] = [];
   if (who.known) meta.push(`${shortId(c.id)} · ${CATEGORY_LABEL[c.category]}`);
   else meta.push(who.primary, who.hint ?? '');
@@ -100,7 +111,14 @@ function pinIcon(c: Sos, selected: boolean): L.DivIcon {
   const w = big ? 44 : 36;
   const h = big ? 52 : 44;
   const fill = TIER_HEX[kind];
-  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 44 52"><path d="M22 50C8 34 0 25 0 14a22 22 0 0144 0c0 11-8 20-22 36z" fill="${fill}" stroke="#fff" stroke-width="3"/><text x="22" y="22" text-anchor="middle" font-family="Inter,sans-serif" font-weight="700" font-size="${big ? 16 : 17}" fill="${TIER_TEXT[kind]}">${c.score}</text></svg>`;
+  const ai = triageInfo(c.triage_status).state;
+  const mark =
+    ai === 'pending'
+      ? '<circle cx="22" cy="14" r="17.5" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="4 3" opacity=".9"/><circle class="ai-dot" cx="38" cy="6" r="5.5" fill="#fff" stroke="#1D4ED8" stroke-width="2.5"/>'
+      : ai === 'failed'
+        ? '<circle cx="38" cy="6" r="5.5" fill="#fff" stroke="#475569" stroke-width="2.5" stroke-dasharray="3 2"/>'
+        : '';
+  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 44 52"><path d="M22 50C8 34 0 25 0 14a22 22 0 0144 0c0 11-8 20-22 36z" fill="${fill}" stroke="#fff" stroke-width="3"/>${mark}<text x="22" y="22" text-anchor="middle" font-family="Inter,sans-serif" font-weight="700" font-size="${big ? 16 : 17}" fill="${TIER_TEXT[kind]}">${c.score}</text></svg>`;
   return L.divIcon({
     className: `pin${selected ? ' sel' : ''}`,
     html: `${c.silent ? '<span class="sring"></span>' : ''}${svg}`,
@@ -127,7 +145,6 @@ const LAYER_LABELS: [LayerKey, string][] = [
   ['approx', 'Approx. areas'],
   ['heat', 'Heat'],
   ['responders', 'Responders'],
-  ['offers', 'Neighbor offers'],
   ['deadzones', 'Dead Zones'],
   ['geofence', 'Event geofence'],
 ];
@@ -135,7 +152,6 @@ const LAYER_LABELS: [LayerKey, string][] = [
 export interface MapViewProps {
   cases: Sos[];
   responders?: Responder[];
-  offers?: Offer[];
   deadzones?: Deadzone[];
   /** Heat input; undefined hides nothing by itself (the layer toggle does). `cells: null` falls back to the open cases' approximate locations. */
   heat?: { cells: HeatCell[] | null; cellKm: number };
@@ -187,7 +203,6 @@ export function MapView(p: MapViewProps) {
       geofence: L.layerGroup().addTo(map),
       deadzones: L.layerGroup().addTo(map),
       approx: L.layerGroup().addTo(map),
-      offers: L.layerGroup().addTo(map),
       responders: L.layerGroup().addTo(map),
       sos: L.layerGroup().addTo(map),
     };
@@ -278,7 +293,7 @@ export function MapView(p: MapViewProps) {
       if (loc.precision === 'approx') {
         L.circle([loc.lat, loc.lng], { radius: loc.radius_m, color: TIER_HEX[kind], weight: selected ? 2.5 : 1.5, dashArray: '4 4', fillColor: TIER_HEX[kind], fillOpacity: selected ? 0.18 : 0.07, interactive: false }).addTo(g.approx);
       }
-      const m = L.marker([loc.lat, loc.lng], { icon: pinIcon(c, selected), keyboard: true, title: `${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)} score ${c.score}`, zIndexOffset: Math.round(c.score) + (selected ? 1000 : 0) });
+      const m = L.marker([loc.lat, loc.lng], { icon: pinIcon(c, selected), keyboard: true, title: `${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)} score ${c.score}${triageInfo(c.triage_status).state === 'pending' ? ' (provisional, AI still analysing)' : triageInfo(c.triage_status).state === 'failed' ? ' (AI unavailable, rules only)' : ''}`, zIndexOffset: Math.round(c.score) + (selected ? 1000 : 0) });
       m.bindPopup(() => buildCasePopup(c, () => cb.current.onOpenCase?.(c.id)), { closeButton: false, maxWidth: 270, minWidth: 250, autoPanPadding: [30, 80] });
       m.on('click', () => cb.current.onSelect(c.id));
       m.addTo(g.sos);
@@ -347,7 +362,7 @@ export function MapView(p: MapViewProps) {
     }
   }, [p.deadzones]);
 
-  // responders and offers
+  // responders
   useEffect(() => {
     const g = groups.current;
     if (!g) return;
@@ -358,17 +373,6 @@ export function MapView(p: MapViewProps) {
       L.marker([r.location.lat, r.location.lng], { icon: dotIcon('#2563EB', initials), title: `${r.name}${r.available ? ' (available)' : ''}` }).bindTooltip(`${r.name}${r.organization ? ` · ${r.organization}` : ''}`).addTo(g.responders);
     }
   }, [p.responders]);
-  useEffect(() => {
-    const g = groups.current;
-    if (!g) return;
-    g.offers.clearLayers();
-    for (const o of p.offers ?? []) {
-      if (o.status !== 'open' && o.status !== 'matched') continue;
-      const a = o.approx_location;
-      L.circle([a.lat, a.lng], { radius: a.radius_m, color: '#16A34A', weight: 1, dashArray: '2 4', fillOpacity: 0.05, interactive: false }).addTo(g.offers);
-      L.marker([a.lat, a.lng], { icon: dotIcon('#16A34A'), title: `Offer: ${o.kind}` }).bindTooltip(`${o.kind}${o.description ? `: ${o.description}` : ''} (approximate)`).addTo(g.offers);
-    }
-  }, [p.offers]);
 
   const fit = () => {
     fittedFor.current = null;
@@ -448,7 +452,6 @@ export function MapView(p: MapViewProps) {
           <div key={l}><span className="sw" style={{ background: c }} />{l}</div>
         ))}
         <div><span className="sw" style={{ background: '#2563EB', borderRadius: '50%', width: 12 }} />Responder</div>
-        <div><span className="sw" style={{ background: '#16A34A', borderRadius: '50%', width: 12, opacity: 0.7 }} />Neighbor offer</div>
         <div><span className="sw" style={{ border: '1.5px dashed #334155', background: 'rgba(51,65,85,.15)' }} />Dead zone (no check-ins)</div>
         <div><span className="sw" style={{ border: '1.5px dashed #D32F2F', borderRadius: '50%', width: 12 }} />Approximate area</div>
         <div><span className="sw" style={{ border: '2px solid #0E7490', background: 'rgba(14,116,144,.12)' }} />Event geofence</div>

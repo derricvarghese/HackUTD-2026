@@ -58,7 +58,7 @@ function ResponderForm({ initial, onClose }: { initial?: Responder; onClose: () 
             </select>
           </div>
           <div className="field"><label htmlFor="r-org">Organization</label><input id="r-org" value={org} onChange={(e) => setOrg(e.target.value)} /></div>
-          <div className="field full"><label htmlFor="r-skills">Skills</label><input id="r-skills" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="boat, medical, first aid" /><span className="hint">Comma separated. Used for offer matching and filters.</span></div>
+          <div className="field full"><label htmlFor="r-skills">Skills</label><input id="r-skills" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="boat, medical, first aid" /><span className="hint">Comma separated. Used for filters.</span></div>
           <div className="field full"><label htmlFor="r-pw">{edit ? 'New password (leave empty to keep)' : 'Password'}</label><input id="r-pw" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} required={!edit} minLength={edit && !password ? 0 : 8} /></div>
           {edit && <label className="full" style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 600, fontSize: 13 }}><input type="checkbox" checked={available} onChange={(e) => setAvailable(e.target.checked)} /> Available for assignments</label>}
         </div>

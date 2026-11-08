@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 import type { Confidence, HopInfo, Sos, SosStatus } from '../api/models';
 import { hopChips } from '../lib/hops';
 import { CONFIDENCE_CLASS, STATUS_LABEL, caseKind, TIER_TEXT, TIER_VAR } from '../lib/tier';
+import { triageInfo } from '../lib/triage';
 import { useUi } from '../state/ui';
 
 export function Pill({ bg, color, children, style }: { bg: string; color: string; children: ReactNode; style?: React.CSSProperties }) {
@@ -55,10 +56,21 @@ export function StatCard({ icon, iconBg, value, label, delta, deltaBg, deltaColo
   );
 }
 
-export function ScoreSq({ c, big, label }: { c: Pick<Sos, 'score' | 'silent'>; big?: boolean; label?: string }) {
+/** Class and tooltip for the AI marker on a score badge (hatched ring + pulsing dot while pending, dotted grey ring when AI failed, a flash right after the AI changed the score). */
+export function useScoreMarker(c: { id?: string; triage_status?: Sos['triage_status'] }) {
+  const info = triageInfo(c.triage_status);
+  const changed = useUi((s) => (c.id ? s.triageChanges[c.id] : undefined));
+  const cls = `${info.state === 'pending' ? ' ai-pending' : info.state === 'failed' ? ' ai-failed' : ''}${changed ? ' ai-flash' : ''}`;
+  return { cls, info, note: info.state === 'pending' || info.state === 'failed' ? info.tooltip : '' };
+}
+
+export function ScoreSq({ c, big, label }: { c: Pick<Sos, 'score' | 'silent'> & { id?: string; triage_status?: Sos['triage_status'] }; big?: boolean; label?: string }) {
+  const m = useScoreMarker(c);
+  const base = label ?? `Priority score ${c.score}`;
   return (
-    <span className={`sq${big ? ' big' : ''}`} style={{ background: TIER_VAR[caseKind(c)], color: TIER_TEXT[caseKind(c)] }} title={label ?? `Priority score ${c.score}`}>
+    <span className={`sq${big ? ' big' : ''}${m.cls}`} style={{ background: TIER_VAR[caseKind(c)], color: TIER_TEXT[caseKind(c)] }} title={m.note ? `${base}. ${m.note}` : base} data-ai={m.info.state}>
       {c.score}
+      {m.note && <span className="sr-only">{`, ${m.info.label}`}</span>}
     </span>
   );
 }

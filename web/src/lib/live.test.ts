@@ -60,7 +60,7 @@ describe('feed sentences', () => {
   });
   it('describes silence and heartbeats', () => {
     expect(describeFrame(frame('sos.silent', C))?.tone).toBe('alert');
-    expect(describeFrame(frame('heartbeat.silent', makeSilent()))?.text).toBe('DEV-7F2C stopped heartbeating (distress)');
+    expect(describeFrame(frame('heartbeat.silent', makeSilent()))?.text).toBe('DEV-7F2C lost contact (possible distress)');
     expect(describeFrame(frame('heartbeat.resumed', makeSilent()))?.tone).toBe('ok');
   });
   it('ignores frames without a story', () => {

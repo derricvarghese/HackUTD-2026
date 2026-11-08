@@ -15,9 +15,6 @@ export type AssignmentSummary = Schemas['AssignmentSummary'];
 export type AssignmentStatus = Schemas['AssignmentStatus'];
 export type Responder = Schemas['Responder'];
 export type Role = Schemas['Role'];
-export type Offer = Schemas['Offer'];
-export type OfferKind = Schemas['OfferKind'];
-export type OfferMatch = Schemas['OfferMatch'];
 export type SilentDevice = Schemas['SilentDevice'];
 export type Deadzone = Schemas['Deadzone'];
 export type MeshStats = Schemas['MeshStats'];
@@ -41,3 +38,9 @@ export interface HeatCell {
 
 export const OPEN_STATUSES: SosStatus[] = ['reported', 'assigned', 'en_route', 'on_scene'];
 export const ACTIVE_ASSIGNMENT: AssignmentStatus[] = ['assigned', 'en_route', 'on_scene'];
+
+export type CaseImage = Schemas['CaseImage'];
+export type TriageStatus = Schemas['TriageStatus'];
+export type Connectivity = Schemas['Connectivity'];
+export type ContactState = Schemas['ContactState'];
+export type Health = import('./client').Res<'/health', 'get'>;

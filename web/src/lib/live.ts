@@ -1,18 +1,24 @@
 // Pure reducers for live (WebSocket) updates. Components never mutate; query caches are replaced with these results.
-import type { Assignment, Checkin, Deadzone, Offer, OfferMatch, SilentDevice, Sos, WsFrame } from '../api/models';
+import type { Assignment, Checkin, Deadzone, SilentDevice, Sos, WsFrame } from '../api/models';
+import { choiceLabel } from './contact';
+import { isStaleFrame } from './triage';
 import { deviceShortId, isOpenStatus, shortId } from './tier';
 
 /** API order for `sort=priority`: score desc, silent first, then oldest first. */
 export function comparePriority(a: Sos, b: Sos): number {
   if (b.score !== a.score) return b.score - a.score;
   if (!!b.silent !== !!a.silent) return a.silent ? -1 : 1;
-  return Date.parse(a.created_at) - Date.parse(b.created_at);
+  const byAge = Date.parse(a.created_at) - Date.parse(b.created_at);
+  // final id tiebreak keeps the order deterministic, so a re-sort never shuffles equal rows
+  return byAge || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 export const sortByPriority = (list: Sos[]): Sos[] => [...list].sort(comparePriority);
 
 /** Insert/replace a case in the open set; non-open cases (resolved, merged, closed) are dropped from it. */
 export function upsertCase(list: Sos[], c: Sos): Sos[] {
+  // an older frame (out of order delivery, or a refetch already newer than the frame) must not overwrite newer data
+  if (isStaleFrame(list.find((x) => x.id === c.id), c)) return list;
   const rest = list.filter((x) => x.id !== c.id);
   if (!isOpenStatus(c.status)) return rest.length === list.length ? list : sortByPriority(rest);
   return sortByPriority([...rest, c]);
@@ -83,27 +89,19 @@ export function describeFrame(f: WsFrame): FeedItem | null {
     }
     case 'checkin.sent': {
       const c = f.data as Checkin;
-      return { id, ts, tone: 'info', text: `Check-in ${c.attempt ? `#${c.attempt} ` : ''}sent for ${shortId(c.sos_id)}` };
+      return { id, ts, tone: 'info', text: `Welfare check-in ${c.attempt ? `#${c.attempt} ` : ''}sent for ${shortId(c.sos_id)}` };
     }
     case 'checkin.responded': {
       const c = f.data as Checkin;
-      return { id, ts, tone: c.response === 'need_help' ? 'alert' : 'ok', text: `${shortId(c.sos_id)} replied to check-in${c.response ? `: ${c.response.replace(/_/g, ' ')}` : ''}` };
+      return { id, ts, tone: c.response === 'need_help' || c.response === 'need_urgent_help' ? 'alert' : 'ok', text: `${shortId(c.sos_id)} answered a welfare check-in${c.response ? `: ${choiceLabel(c.response)}` : ''}` };
     }
     case 'heartbeat.silent': {
       const d = f.data as SilentDevice;
-      return { id, ts, tone: d.status === 'distress' ? 'alert' : 'info', text: `${deviceShortId(d.device_id)} stopped heartbeating (${d.status})` };
+      return { id, ts, tone: d.status === 'distress' ? 'alert' : 'info', text: `${deviceShortId(d.device_id)} lost contact (${d.status === 'distress' ? 'possible distress' : 'probably no connectivity'})` };
     }
     case 'heartbeat.resumed': {
       const d = f.data as SilentDevice;
-      return { id, ts, tone: 'ok', text: `${deviceShortId(d.device_id)} is heartbeating again` };
-    }
-    case 'offer.created': {
-      const o = f.data as Offer;
-      return { id, ts, tone: 'info', text: `New offer from a neighbour: ${o.kind}${o.description ? `, ${o.description}` : ''}` };
-    }
-    case 'offer.matched': {
-      const m = f.data as OfferMatch;
-      return { id, ts, tone: 'ok', text: `Offer matched to ${shortId(m.sos_id)} (${m.distance_km.toFixed(1)} km)` };
+      return { id, ts, tone: 'ok', text: `${deviceShortId(d.device_id)} is connected again` };
     }
     case 'deadzones.updated': {
       const n = (f.data as { data?: Deadzone[] } | undefined)?.data?.length;

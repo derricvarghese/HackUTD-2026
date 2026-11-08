@@ -5,17 +5,16 @@ import { useOpenCases, useServerInfo } from '../hooks/data';
 import { latestEscalation } from '../lib/escalation';
 import { useAuth } from '../state/auth';
 import { useUi } from '../state/ui';
-import { IcCheck, IcCog, IcHeart, IcHome, IcList, IcMenu, IcMesh, IcPeople, LogoMark } from './icons';
+import { IcCheck, IcCog, IcHome, IcList, IcMenu, IcMesh, IcPeople, LogoMark } from './icons';
 import { Toasts } from './ui';
 import { CasePopover } from './CasePopover';
 
 const NAV = [
   { to: '/', key: 'overview', label: 'Overview', icon: IcHome, title: 'Emergency Command Center', sub: 'Beacon Disaster Response · Phones pass SOS hand to hand until one reaches the internet' },
   { to: '/queue', key: 'queue', label: 'Triage Queue', icon: IcList, title: 'Triage Queue', sub: 'Ranked by urgency. Rules set the floor, the AI reads the message, silence pushes a case up' },
-  { to: '/checkins', key: 'checkins', label: 'Check-ins', icon: IcCheck, title: 'Check-ins', sub: 'Who has answered, who has not, and which phones went quiet' },
+  { to: '/checkins', key: 'checkins', label: 'Check-ins & Connectivity', icon: IcCheck, title: 'Check-ins & Connectivity', sub: 'Welfare check-in answers and which phones lost contact' },
   { to: '/mesh', key: 'mesh', label: 'Mesh Network', icon: IcMesh, title: 'Mesh Network', sub: 'How SOS messages are moving phone to phone until one reaches signal' },
   { to: '/responders', key: 'responders', label: 'Responders', icon: IcPeople, title: 'Responders', sub: 'Teams in the field, what they can do and where they are headed' },
-  { to: '/assist', key: 'assist', label: 'Neighbor Assist', icon: IcHeart, title: 'Neighbor Assist', sub: 'People marked safe offering help, matched to requests nearby' },
   { to: '/settings', key: 'settings', label: 'Events & Settings', icon: IcCog, title: 'Events & Settings', sub: 'Disaster events, data retention and demo tools' },
 ] as const;
 
@@ -159,6 +158,7 @@ export function Shell() {
             <b>beacon</b>
           </div>
         </div>
+        <h1 className="sr-only">{cur.title}</h1>
         <Outlet />
       </main>
       <Toasts />

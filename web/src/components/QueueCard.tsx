@@ -1,4 +1,6 @@
+import { useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { useFlip } from '../hooks/useFlip';
 import * as api from '../api/endpoints';
 import type { Sos, SilentDevice } from '../api/models';
 import { CaseCard, DeviceCard } from './CaseCard';
@@ -39,10 +41,12 @@ export function QueueList({ items, selectedId, onSelect, onOpen, now, loading, e
     },
   });
   void toast;
+  const listRef = useRef<HTMLDivElement>(null);
+  useFlip(listRef, items.map((it) => (it.kind === 'case' ? it.c.id : it.d.device_id)).join(','));
   if (loading) return <Skeletons n={4} />;
   if (!items.length) return <Empty>{emptyText ?? 'Nothing in the queue. New SOS cases appear here the moment a phone reaches a gateway.'}</Empty>;
   return (
-    <div className="q" role="list" aria-label="Triage queue">
+    <div className="q" role="list" aria-label="Triage queue" ref={listRef}>
       {items.map((it) =>
         it.kind === 'case' ? (
           <div role="listitem" key={it.c.id} style={{ display: 'contents' }}>

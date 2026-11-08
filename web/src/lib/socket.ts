@@ -55,7 +55,7 @@ export class LiveSocket {
       const re = this.opened;
       this.opened = true;
       this.attempt = 0;
-      ws.send(JSON.stringify({ action: 'subscribe', channels: ['sos', 'assignments', 'mesh', 'deadzones', 'offers'] }));
+      ws.send(JSON.stringify({ action: 'subscribe', channels: ['sos', 'assignments', 'mesh', 'deadzones'] }));
       this.ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ action: 'ping' })), 25_000);
       this.h.onOpen(re);
     };

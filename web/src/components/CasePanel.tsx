@@ -17,10 +17,15 @@ import { describeLocation, hasExactLocation, resolveLocation } from '../lib/priv
 import { useReverseGeocode } from '../hooks/useReverseGeocode';
 import { CATEGORY_LABEL, STATUS_LABEL, caseTitle, shortId } from '../lib/tier';
 import { formatAge, formatClock, formatDateTime } from '../lib/time';
-import { useCanAct, useIsAdmin } from '../state/auth';
+import { useAuth, useCanAct, useIsAdmin } from '../state/auth';
 import { useUi } from '../state/ui';
 import { matchesSearch } from '../lib/query';
 import { PersonSection } from './Person';
+import { AiChip, CameraChip, ContactChip } from './chips';
+import { PhotosSection } from './Photos';
+import { AiStatus, ReasonGroups } from './TriagePanel';
+import { WelfareList } from './Welfare';
+import { askedUrgentHelp, eventLabel, isSelfResolved, lastHeardText } from '../lib/contact';
 import { ConfirmDialog, ErrorBox, HopChips, Modal, ScoreSq } from './ui';
 
 const OUTCOMES = [
@@ -31,21 +36,6 @@ const OUTCOMES = [
   { v: 'referred', label: 'Referred elsewhere' },
 ] as const;
 type Outcome = (typeof OUTCOMES)[number]['v'];
-
-const SOURCE_LABEL: Record<string, string> = {
-  rule: 'Rule',
-  llm: 'AI read of the message',
-  silence: 'Missed check-ins / silence',
-  heartbeat: 'Heartbeat stopped',
-  manual: 'Manual',
-};
-const SOURCE_COLOR: Record<string, string> = {
-  rule: 'var(--red)',
-  llm: 'var(--orange)',
-  silence: 'var(--purple)',
-  heartbeat: 'var(--purple)',
-  manual: 'var(--blue)',
-};
 
 export function VoiceNote({ id }: { id: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -175,6 +165,7 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
   const responders = useResponders();
   const activeAssignments = useActiveAssignments();
   const toast = useUi((s) => s.toast);
+  const me = useAuth((st) => st.responder);
 
   const [dlg, setDlg] = useState<null | 'resolve' | 'merge' | 'release' | 'delete'>(null);
   const [note, setNote] = useState('');
@@ -188,15 +179,19 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
 
   const refresh = (qc2: QueryClient) => { invalidateCase(qc2, id); void qc2.invalidateQueries({ queryKey: qk.open }); };
   const retriage = useAction(() => api.retriage(id), { success: 'Re-triaged', invalidate: refresh });
-  const checkin = useAction(() => api.sendCheckin(id), { success: 'Check-in sent to the phone', invalidate: (q) => { void q.invalidateQueries({ queryKey: qk.checkins(id) }); refresh(q); } });
+  const checkin = useAction(() => api.sendCheckin(id), { success: 'Welfare check-in sent to the phone', invalidate: (q) => { void q.invalidateQueries({ queryKey: qk.checkins(id) }); refresh(q); } });
   const addNote = useAction((text: string) => api.patchSos(id, { note: text, version: c?.version }), { success: 'Note added', invalidate: refresh });
   const setScore = useAction((n: number) => api.patchSos(id, { score_override: n, version: c?.version }), { success: 'Score overridden', invalidate: refresh });
   const del = useAction(() => api.deleteSos(id), { success: 'Case deleted', invalidate: refresh });
+  const reopen = useAction(() => api.patchSos(id, { status: 'reported', version: c?.version }), { success: 'Case reopened', invalidate: refresh });
   const unmerge = useAction((rid: string) => api.unmergeSos(id, rid), { success: 'Report split out', invalidate: refresh });
 
   const a = c?.assignment;
   const active = !!a && ['assigned', 'en_route', 'on_scene'].includes(a.status);
   const asg = useMemo(() => (a ? { id: a.id, sos_id: id } : null), [a, id]);
+  const mine = !!a && !!me && a.responder_id === me.id;
+  /** Admin, or the responder holding the ACTIVE assignment: the same rule the server uses for photos, the full profile and exact GPS */
+  const entitled = isAdmin || (active && mine);
   const loc = c ? resolveLocation(c) : null;
   const address = useReverseGeocode(loc?.lat, loc?.lng);
 
@@ -227,7 +222,6 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
   }
 
   const triage = c.triage;
-  const reasons = triage?.reasons ?? c.reasons ?? [];
   const ex = triage?.extracted;
   const tags = [...(ex?.vulnerable ?? []), ...(ex?.medical ?? []), ...(ex?.hazards ?? [])];
   if (c.people_count) tags.push(`${c.people_count} ${c.people_count === 1 ? 'person' : 'people'}`);
@@ -285,12 +279,18 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
               {address ? <span className="sd-addr" style={{ fontWeight: 600, color: 'var(--ink)' }}>{address} · </span> : null}
               {describeLocation(c)}
             </p>
+            <div className="chip-row" data-testid="panel-chips">
+              <AiChip status={c.triage?.triage_status ?? c.triage_status} />
+              <ContactChip c={c} />
+              <CameraChip count={c.image_count} />
+              {askedUrgentHelp(c) && <span className="cchip red strong" data-testid="urgent-chip"><i aria-hidden="true" />Asked for urgent help</span>}
+            </div>
           </div>
         </div>
         <div className="sd-head-right">
           <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--muted)' }}>
             <div>{c.channel === 'mesh' ? hopSummary(c.hop) : 'Online App'}</div>
-            <div>Heard {formatAge(c.last_heard_at)}</div>
+            <div>{lastHeardText(c)}</div>
           </div>
           {onClose && <span className="esc-hint">Esc</span>}
           {onClose && <button className="x" onClick={onClose} aria-label="Close details">×</button>}
@@ -298,10 +298,21 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
       </div>
 
       {/* Main Body */}
-      <div className="case-popover-body">
+      <div className="case-popover-body" tabIndex={0}>
         <div className="case-popover-grid">
           {/* Left Column: Victim Intel & Context */}
           <div className="case-col-left">
+            {isSelfResolved(c) && (
+              <div className="banner green" role="status" data-testid="self-resolved">
+                <span>Marked resolved by the person: "I no longer need help"</span>
+                {(isAdmin || mine) && (
+                  <button className="btn sm" disabled={reopen.isPending} onClick={() => reopen.mutate(undefined)}>{reopen.isPending ? 'Reopening…' : 'Reopen'}</button>
+                )}
+              </div>
+            )}
+            {askedUrgentHelp(c) && c.status !== 'resolved' && (
+              <div className="banner red" role="status"><b>Asked for urgent help</b><span>The person answered a welfare check-in with "I need help urgently" (score raised).</span></div>
+            )}
             <blockquote className="said" style={{ margin: '0 0 16px 0' }}>
               {c.text ? `"${c.text}"` : <span className="muted">No message text (tap-to-send SOS or purged).</span>}
               <small>
@@ -323,6 +334,25 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
               </Section>
             )}
 
+            {((c.image_count ?? 0) > 0 || detail.data?.images !== undefined) && (
+              <Section title="Photos">
+                <PhotosSection
+                  sosId={c.id}
+                  count={c.image_count ?? 0}
+                  images={detail.data?.images}
+                  loading={!detail.data && detail.isLoading}
+                  canUpload={entitled}
+                  isAdmin={isAdmin}
+                  myName={me?.name}
+                  canClaim={canAct}
+                />
+              </Section>
+            )}
+
+            <Section title="AI triage">
+              <AiStatus c={c} />
+            </Section>
+
             <Section title="What the AI picked out">
               {tags.length ? <div className="tags">{tags.map((t, i) => <span key={i}>{t}</span>)}</div> : <p className="note">No entities extracted.</p>}
               <p className="note">
@@ -331,21 +361,8 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
             </Section>
 
             <Section title="How the score was built">
-              {reasons.length === 0 && <p className="note">No reasons recorded.</p>}
-              {reasons.map((r, i) => (
-                <div key={i}>
-                  <div className="sb">
-                    <span>{SOURCE_LABEL[r.source] ?? r.source}: {r.text}</span>
-                    {r.weight !== undefined && <b>{r.weight > 0 && r.source !== 'rule' ? `+${r.weight}` : r.weight}</b>}
-                  </div>
-                  {r.weight !== undefined && (
-                    <div className="sbar">
-                      <i style={{ width: `${Math.min(100, Math.max(2, Math.abs(r.weight)))}%`, background: SOURCE_COLOR[r.source] }} />
-                    </div>
-                  )}
-                </div>
-              ))}
-              <p className="note">Score {c.score}. Rules set the floor; AI adjusts within bounds; silence only increases score.{triage && triage.llm_used === false ? ' AI unavailable, rules only.' : ''}</p>
+              <ReasonGroups c={c} />
+              <p className="note">Score {c.score}. Rules set the floor; AI adjusts within bounds (+/-15); contact signals only increase the score.{triage && triage.llm_used === false && c.triage_status === 'failed' ? ' AI unavailable, rules only.' : ''}</p>
             </Section>
 
             <Section title="Mesh Relay Path">
@@ -355,17 +372,6 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
                 {c.hop?.max_hops !== undefined ? `Max hops: ${c.hop.max_hops}. ` : ''}Received {formatAge(c.received_at ?? c.created_at)}; last contact {formatAge(c.last_heard_at)}.
               </p>
             </Section>
-
-            {(c.matched_offers?.length ?? 0) > 0 && (
-              <Section title="Nearby Neighbor Offers">
-                {c.matched_offers?.map((m) => (
-                  <div key={m.id} className="matchli">
-                    <span style={{ flex: 1 }}>Offer {shortId(m.offer_id, 'OFR')} · {m.distance_km.toFixed(1)} km away</span>
-                    <span className="st new">{m.status}</span>
-                  </div>
-                ))}
-              </Section>
-            )}
 
             {(c.merged_reports?.length ?? 0) > 0 && (
               <Section title={`Merged Duplicate Reports (${c.merged_reports?.length})`}>
@@ -558,36 +564,11 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
             </div>
 
             {/* Check-ins Section */}
-            <Section title="Welfare Check-ins">
-              {c.checkins?.length ? (
-                <div className="tl">
-                  {c.checkins.map((k) => (
-                    <div key={k.id}>
-                      <time>{formatClock(k.sent_at)}</time>
-                      <span>
-                        Attempt {k.attempt ?? 1}:{' '}
-                        {k.responded_at ? (
-                          `replied ${k.response ? k.response.replace('_', ' ') : ''} at ${formatClock(k.responded_at)}`
-                        ) : k.missed ? (
-                          <b className="redt">missed</b>
-                        ) : (
-                          `waiting${k.deadline_at ? ` until ${formatClock(k.deadline_at)}` : ''}`
-                        )}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="note">No check-in requests sent yet.</p>
-              )}
-              {canAct && (
-                <button
-                  className="btn sm"
-                  style={{ marginTop: 8 }}
-                  disabled={checkin.isPending}
-                  onClick={() => checkin.mutate(undefined)}
-                >
-                  {checkin.isPending ? 'Sending…' : 'Send Check-In Ping Now'}
+            <Section title="Welfare check-ins">
+              {c.checkins?.length ? <WelfareList checkins={c.checkins} /> : <p className="note">No welfare check-ins yet. The server sends them automatically while the person has an open request.</p>}
+              {entitled && c.status !== 'resolved' && !c.checkins?.some((k) => !k.responded_at && (k.missed || k.overdue)) && (
+                <button className="btn sm" style={{ marginTop: 8 }} disabled={checkin.isPending} onClick={() => checkin.mutate(undefined)}>
+                  {checkin.isPending ? 'Sending…' : 'Send welfare check-in'}
                 </button>
               )}
             </Section>
@@ -675,12 +656,15 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
             <Section title="Incident Timeline">
               {c.events?.length ? (
                 <div className="tl">
-                  {[...c.events].reverse().slice(0, 10).map((ev) => (
-                    <div key={ev.id}>
-                      <time>{formatClock(ev.at)}</time>
-                      <span>{ev.type.replace(/_/g, ' ')}</span>
-                    </div>
-                  ))}
+                  {[...c.events].reverse().slice(0, 14).map((ev) => {
+                    const l = eventLabel(ev);
+                    return (
+                      <div key={ev.id} className={l.tone === 'default' ? undefined : `tl-${l.tone}`}>
+                        <time>{formatClock(ev.at)}</time>
+                        <span>{l.text}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="note">No history logged yet.</p>

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { FeedItem } from '../lib/live';
 import { pushFeed } from '../lib/live';
 import type { HeatRadius } from '../lib/heat';
+import type { ScoreChange } from '../lib/triage';
 
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
@@ -34,14 +35,18 @@ interface UiState {
   setHeatOpacity: (v: number) => void;
   heatRadius: HeatRadius;
   setHeatRadius: (v: HeatRadius) => void;
+  /** Recent provisional -> complete score changes by case id; each lives ~10 s (badge flash + panel note) */
+  triageChanges: Record<string, ScoreChange>;
+  noteTriageChange: (id: string, ch: ScoreChange) => void;
   mapZoom: number | null;
   navOpen: boolean;
   mapBounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null;
 }
 
-export type LayerKey = 'sos' | 'approx' | 'responders' | 'offers' | 'deadzones' | 'heat' | 'geofence';
+export type LayerKey = 'sos' | 'approx' | 'responders' | 'deadzones' | 'heat' | 'geofence';
 
 let toastSeq = 1;
+export const TRIAGE_NOTE_MS = 10_000;
 
 export const useUi = create<UiState>((set) => ({
   selectedId: null,
@@ -63,12 +68,24 @@ export const useUi = create<UiState>((set) => ({
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   demo: null,
   setDemo: (demo) => set({ demo }),
-  layers: { sos: true, approx: true, responders: true, offers: true, deadzones: true, heat: true, geofence: true },
+  layers: { sos: true, approx: true, responders: true, deadzones: true, heat: true, geofence: true },
   toggleLayer: (k) => set((s) => ({ layers: { ...s.layers, [k]: !s.layers[k] } })),
   heatOpacity: 0.85,
   setHeatOpacity: (heatOpacity) => set({ heatOpacity: Math.min(1, Math.max(0.1, heatOpacity)) }),
   heatRadius: 'medium',
   setHeatRadius: (heatRadius) => set({ heatRadius }),
+  triageChanges: {},
+  noteTriageChange: (id, ch) => {
+    set((s) => ({ triageChanges: { ...s.triageChanges, [id]: ch } }));
+    setTimeout(() => {
+      set((s) => {
+        if (s.triageChanges[id]?.at !== ch.at) return s;
+        const { [id]: _gone, ...rest } = s.triageChanges;
+        void _gone;
+        return { triageChanges: rest };
+      });
+    }, TRIAGE_NOTE_MS);
+  },
   mapZoom: null,
   navOpen: false,
   mapBounds: null,

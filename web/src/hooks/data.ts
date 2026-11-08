@@ -20,8 +20,6 @@ export const qk = {
   mesh: ['mesh-stats'] as const,
   serverInfo: ['server-info'] as const,
   responders: ['responders'] as const,
-  offers: ['offers'] as const,
-  matches: (id: string) => ['matches', id] as const,
   assignments: ['assignments'] as const,
   events: ['events'] as const,
   health: ['health'] as const,
@@ -73,14 +71,10 @@ function padBox(b: { min_lat: number; min_lng: number; max_lat: number; max_lng:
 export const useMeshStats = () => useQuery({ queryKey: qk.mesh, queryFn: () => api.getMeshStats(60) });
 export const useServerInfo = () => useQuery({ queryKey: qk.serverInfo, queryFn: api.getServerInfo, staleTime: 60_000 });
 export const useResponders = () => useQuery({ queryKey: qk.responders, queryFn: async () => (await api.listResponders()).data });
-export const useOffers = () => useQuery({ queryKey: qk.offers, queryFn: async () => (await api.listOffers()).data });
 export const useActiveAssignments = () =>
   useQuery({ queryKey: [...qk.assignments, 'active'], queryFn: () => api.fetchAll((cursor) => api.listAssignments({ status: ['assigned', 'en_route', 'on_scene'], cursor, limit: 200 })) });
 export const useEvents = () => useQuery({ queryKey: qk.events, queryFn: async () => (await api.listEvents()).data });
 export const useHealth = () => useQuery({ queryKey: qk.health, queryFn: api.getHealth, refetchInterval: 60_000, staleTime: 30_000 });
-
-/** Matches for every offer (small N), keyed per offer so ws events can invalidate them. */
-export const useOfferMatches = (offerId: string) => useQuery({ queryKey: qk.matches(offerId), queryFn: async () => (await api.listMatches(offerId)).data });
 
 export function invalidateCase(qc: QueryClient, id?: string) {
   void qc.invalidateQueries({ queryKey: ['cases'] });

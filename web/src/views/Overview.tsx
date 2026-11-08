@@ -2,12 +2,12 @@ import type { Sos } from '../api/models';
 import { EMPTY } from '../lib/empty';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FeedCard, MeshHealthCard, OffersCard } from '../components/cards';
+import { FeedCard, MeshHealthCard } from '../components/cards';
 import { IcHelmet, IcLayers, IcOpenSos, IcSilent, IcWarn } from '../components/icons';
 import { MapView } from '../components/MapView';
 import { QueueList, mergeQueue, queueDevices } from '../components/QueueCard';
 import { ErrorBox, StatCard, Tabs } from '../components/ui';
-import { useDeadzones, useHeat, useMeshStats, useOffers, useOpenCases, useResponders, useServerInfo, useSilent } from '../hooks/data';
+import { useDeadzones, useHeat, useMeshStats, useOpenCases, useResponders, useServerInfo, useSilent } from '../hooks/data';
 import { useNow } from '../hooks/useNow';
 import type { QueueTab } from '../lib/query';
 import { matchesTab } from '../lib/query';
@@ -21,7 +21,6 @@ export function Overview() {
   const cases = useOpenCases();
   const responders = useResponders();
   const silentDevs = useSilent();
-  const offers = useOffers();
   const mesh = useMeshStats();
   const info = useServerInfo();
   const dz = useDeadzones();
@@ -54,7 +53,6 @@ export function Overview() {
         <MapView
           cases={list}
           responders={responders.data}
-          offers={offers.data}
           deadzones={dz.data}
           heat={layers.heat ? { cells: heat.isError ? null : heat.data?.cells ?? null, cellKm: heat.data?.cellKm ?? 1 } : undefined}
           region={info.data?.event?.region}
@@ -87,7 +85,6 @@ export function Overview() {
       <section className="bottom">
         <FeedCard cases={list} loading={cases.isLoading} />
         <MeshHealthCard stats={mesh.data} loading={mesh.isLoading} limits={info.data?.hop_limits} />
-        <OffersCard offers={offers.data} loading={offers.isLoading} />
       </section>
     </div>
   );

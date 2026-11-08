@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useFlip } from '../hooks/useFlip';
+import { CameraChip, ContactChip } from '../components/chips';
 import * as api from '../api/endpoints';
 import type { Sos, SilentDevice } from '../api/models';
 import { ClaimButton } from '../components/CaseCard';
@@ -48,6 +50,9 @@ export function Queue() {
     return [...cs, ...ds].sort((a, b) => score(b) - score(a));
   }, [list.data, open.data, devices, tab, q, resolved]);
 
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  useFlip(bodyRef, rows.map((r) => (r.kind === 'case' ? r.c.id : r.d.device_id)).join(','));
+
   const all = (open.data ?? []).filter((c) => matchesTab(c, 'all'));
   const n = (t: QueueTab) => all.filter((c) => matchesTab(c, t)).length + (t === 'all' || t === 'silent' ? devices.length : 0);
 
@@ -87,14 +92,15 @@ export function Queue() {
           <div className="tbl-wrap">
             <table className="tbl" id="qtable" aria-label="Triage queue" aria-busy={list.isFetching}>
               <thead>
-                <tr><th>Score</th><th>Case</th><th>Location</th><th className="c-hide">People</th><th>Came in by</th><th>Last heard</th><th className="c-hide2">Confidence</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr>
+                <tr><th>Score</th><th>Case</th><th>Location</th><th className="c-hide">People</th><th>Came in by</th><th>Last heard / contact</th><th className="c-hide2">Confidence</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr>
               </thead>
-              <tbody>
+              <tbody ref={bodyRef}>
                 {list.isLoading && Array.from({ length: 5 }, (_, i) => <tr key={i}><td colSpan={9}><div className="skel" style={{ height: 34 }} /></td></tr>)}
                 {rows.map((r) =>
                   r.kind === 'case' ? (
                     <tr
                       key={r.c.id}
+                      data-flip-key={r.c.id}
                       tabIndex={0}
                       aria-selected={r.c.id === selectedId}
                       className={`row-click${r.c.id === selectedId ? ' sel' : ''}${r.c.silent ? ' silent' : ''}`}
@@ -102,19 +108,19 @@ export function Queue() {
                       onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openCase(r.c.id); } }}
                     >
                       <td><ScoreSq c={r.c} /></td>
-                      <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)}</p></td>
+                      <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)} <CameraChip count={r.c.image_count} /></p></td>
                       <td>{shortLocation(r.c)}</td>
                       <td className="c-hide">{r.c.people_count ?? "?"}</td>
                       <td>{channelLabel(r.c.channel, r.c.hop)}</td>
-                      <td className={r.c.silent ? 'redt' : ''}>{formatAge(r.c.last_heard_at, now)}</td>
+                      <td className={r.c.silent ? 'redt' : ''}>{formatAge(r.c.last_heard_at, now)} <ContactChip c={r.c} now={now} /></td>
                       <td className="c-hide2"><Confidence_ value={r.c.confidence} /></td>
                       <td><StatusChip status={r.c.status} silent={r.c.silent} /></td>
                       <td>{r.c.assignment && ['assigned', 'en_route', 'on_scene'].includes(r.c.assignment.status) ? <span className="team" style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); openCase(r.c.id); }}>{r.c.assignment.responder_name}</span> : <ClaimButton c={r.c} />}</td>
                     </tr>
                   ) : (
-                    <tr key={r.d.device_id} className="silent">
+                    <tr key={r.d.device_id} data-flip-key={r.d.device_id} className="silent">
                       <td><span className="sq" style={{ background: 'var(--purple)' }}>{r.d.priority_score ?? '?'}</span></td>
-                      <td><b>{deviceShortId(r.d.device_id)}</b><p>Heartbeat stopped</p></td>
+                      <td><b>{deviceShortId(r.d.device_id)}</b><p>Lost contact: heartbeats stopped</p></td>
                       <td>~{Math.round(r.d.last_approx.radius_m / 100) / 10} km area · {r.d.last_approx.lat.toFixed(2)}, {r.d.last_approx.lng.toFixed(2)}</td>
                       <td className="c-hide">?</td>
                       <td>Heartbeat</td>

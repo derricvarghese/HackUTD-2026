@@ -2,7 +2,7 @@
 
 React 19 + TypeScript (strict) + Vite single-page app for responders and admins. It is built into `../server/public` and served by the Express server at `/` (same origin, relative `/v1` URLs, `wss://<host>/v1/ws`), so no CORS setup is needed in production.
 
-Design reference: `../server/lifeline-dashboard-mock.html` (a static mock, not shipped). The app reproduces its look (navy sidebar, orange accent, stat tiles, ranked queue cards, map card with layers/legend/popup, mesh health, neighbour offers) and wires every panel to the real API in `../openapi.yaml`. Every number on screen comes from the API; where the API has no data for a mock element (flood-risk layer, "phones relaying", AI assistant chip) the element is dropped or replaced by something real (for example "Latest escalation" is the most recent silent case or unclaimed critical case).
+Design reference: `../server/lifeline-dashboard-mock.html` (a static mock, not shipped). The app reproduces its look (navy sidebar, orange accent, stat tiles, ranked queue cards, map card with layers/legend/popup, mesh health) and wires every panel to the real API in `../openapi.yaml`. Every number on screen comes from the API; where the API has no data for a mock element (flood-risk layer, "phones relaying", AI assistant chip) the element is dropped or replaced by something real (for example "Latest escalation" is the most recent silent case or unclaimed critical case).
 
 ## Run
 
@@ -33,7 +33,7 @@ src/lib        pure helpers with unit tests: tier colours, hop formatting, ages,
 src/state      zustand: auth (in-memory access token, refresh token in sessionStorage), ui (selection, connection, feed, toasts, layers)
 src/hooks      react-query hooks (data.ts), websocket wiring + cache patching (live.ts)
 src/components Shell (sidebar/header), CaseCard, CasePanel (detail), MapView (Leaflet), cards, ui primitives (modal, confirm, toasts, tabs)
-src/views      Login, Overview, MapPage, Queue, Checkins, Mesh, Responders, Assist, Settings
+src/views      Login, Overview, MapPage, Queue, Checkins, Mesh, Responders, Settings
 src/styles     mock.css (the mock's CSS, verbatim) + extras.css (a11y, states, responsive)
 ```
 
@@ -43,13 +43,12 @@ Libraries: TanStack Query (cache, retries, invalidation), zustand (tiny state), 
 
 | View | Shows | Endpoints |
 |---|---|---|
-| Overview | stat tiles, map, ranked queue with tabs, live feed, mesh health, neighbour offers | `GET /sos` (sort=priority, all pages), `/responders`, `/heartbeats/silent`, `/mesh/stats`, `/server-info`, `/map/deadzones`, `/map/heat`, `/offers`, `/offers/{id}/matches`, `/health`, `POST /assignments`, `POST /heartbeats/silent/{id}/promote` |
+| Overview | stat tiles, map, ranked queue with tabs, live feed, mesh health | `GET /sos` (sort=priority, all pages), `/responders`, `/heartbeats/silent`, `/mesh/stats`, `/server-info`, `/map/deadzones`, `/map/heat`, `/health`, `POST /assignments`, `POST /heartbeats/silent/{id}/promote` |
 | Incident Map | map in view, cases in view, dead zones with "being checked"/dismiss | same plus `PATCH /map/deadzones/{id}` |
-| Triage Queue | filterable table (tabs, server-side search `q`, include resolved) and case panel: score reasons, extracted entities, relay path, check-ins, history, notes, matched offers, merged reports, voice note | `GET /sos`, `GET /sos/{id}`, `/sos/{id}/events`, `PATCH /sos/{id}` (notes, score override), `POST /sos/{id}/retriage`, `/merge`, `/unmerge`, `/checkins`, `GET /sos/{id}/voice-note`, `POST/PATCH/DELETE /assignments`, `DELETE /sos/{id}` (admin) |
+| Triage Queue | filterable table (tabs, server-side search `q`, include resolved) and case panel: score reasons, extracted entities, relay path, check-ins, history, notes, merged reports, voice note | `GET /sos`, `GET /sos/{id}`, `/sos/{id}/events`, `PATCH /sos/{id}` (notes, score override), `POST /sos/{id}/retriage`, `/merge`, `/unmerge`, `/checkins`, `GET /sos/{id}/voice-note`, `POST/PATCH/DELETE /assignments`, `DELETE /sos/{id}` (admin) |
 | Check-ins | sent/answered/missed per open case, who is overdue ("Check in now"), silent phones (acknowledge, make case), timing rules from `/server-info` | `GET /sos/{id}/checkins`, `POST /sos/{id}/checkins`, `/heartbeats/silent` (+ PATCH, promote) |
 | Mesh Network | stats, longest relay chain diagram, hop limits, hop histogram, rejections, busiest gateways | `/mesh/stats`, `/server-info`, `/sos` |
 | Responders | table, active case timeline and quick actions, admin add/edit/delete | `/responders` (CRUD, admin), `/assignments` |
-| Neighbor Assist | offers, suggested matches, send/decline/deliver, manual match, withdraw, needs by category | `/offers`, `/offers/{id}/matches` (+ PATCH/DELETE) |
 | Events & Settings | events (create with a drawn geofence, edit area, close, purge, delete with confirmations, admin), area thumbnails, demo tools, server info | `/events` (POST, PATCH), `/events/{id}/close`, `/purge`, `/mesh/seed`, `/mesh/simulate` |
 
 Role awareness: admin-only controls (responder CRUD, events, delete case) are hidden for other roles; volunteers get a read-only queue (no claim/advance). The server remains the authority and answers 403/409 which are shown as toasts.
@@ -69,7 +68,7 @@ Why our own editor instead of `@geoman-io/leaflet-geoman-free`: Geoman is good, 
 ## Behaviour worth knowing
 
 - **Auth**: access token lives in memory only. The refresh token is kept in `sessionStorage` so a reload keeps the session; any 401 triggers one shared `POST /auth/refresh` and a retry, and a failed refresh returns to the login screen.
-- **Live updates**: `WS /v1/ws?token=` with exponential backoff (1 s up to 30 s, jittered), a fresh token per attempt, 25 s ping and an indicator in the header. Events patch the query caches (`sos.*`, `heartbeat.*`, `deadzones.updated`, `mesh.stats`) or invalidate them (`checkin.*`, `assignment.*`, `offer.*`). After a reconnect the app refetches `GET /sos?updated_since=` and invalidates the rest, because events are not replayed.
+- **Live updates**: `WS /v1/ws?token=` with exponential backoff (1 s up to 30 s, jittered), a fresh token per attempt, 25 s ping and an indicator in the header. Events patch the query caches (`sos.*`, `heartbeat.*`, `deadzones.updated`, `mesh.stats`) or invalidate them (`checkin.*`, `assignment.*`). After a reconnect the app refetches `GET /sos?updated_since=` and invalidates the rest, because events are not replayed.
 - **Privacy**: exact coordinates are shown only when the API returns `location` (assignee or admin). Otherwise the case is drawn as its approximate circle (`radius_m`) and described as "Within 1 km of 32.78, -96.80"; popups and the panel say which precision is on screen.
 - **Conflicts**: claiming an already claimed case (409) shows who has it and refreshes the queue; invalid status transitions and resolve-without-outcome are explained, not swallowed.
 - **Demo tools** (seed / simulate relay / clear) live under Events & Settings. The endpoints answer 404 outside `DEMO_MODE`; the page probes with a zero-case seed when an event is active (no side effects) and otherwise learns from the first 404 and then hides the tools.
