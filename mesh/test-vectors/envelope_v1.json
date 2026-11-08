@@ -1,0 +1,15 @@
+{
+  "description" : "Critical SOS signed by a throwaway P-256 key, after 2 hops (origin + one relay). Every platform must verify it.",
+  "envelope" : {
+    "hop" : 2,
+    "path" : [
+      "E45B",
+      "B7C2"
+    ],
+    "sig" : "MEQCIHUCSMTZcSD9+msg9/7b/LLhevnAH14IYP7YAPk1O8p+AiAv+p9YGSkzqE8YrW+kffa7k+/aatvsunzyEJ/QE576Lg==",
+    "signed" : "eyJib2R5Ijp7ImFjYyI6OC41LCJjYXRlZ29yeSI6InRyYXBwZWQiLCJsYXQiOjMyLjk4NTcwMDAwMDAwMDAwMSwibG5nIjotOTYuNzUwMjAwMDAwMDAwMDA3LCJwZW9wbGUiOjIsInRleHQiOiJUcmFwcGVkLCAyIHBlb3BsZSwgd2F0ZXIgcmlzaW5nIn0sImNyZWF0ZWRBdCI6MTc2MjUwMDAwMDAwMCwiZXhwaXJlc0F0IjoxNzYyNTg2NDAwMDAwLCJpZCI6IjZmMWMyYTllLTNiNGQtNGM1ZS04ZjYwLTcxODI5YTBiMWMyZCIsImtpbmQiOiJzb3MiLCJtYXhIb3BzIjoxMCwicHJpIjoiY3JpdGljYWwiLCJwdWIiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVWK1ZMZFZFNnhxVGxFUTFKSWJZdUdtVW1hbHl5SGk2SXJyZXBCVEE0RUZoV2w0V3F1OWoyTnUrQm81dTVYcGp0ZXVLdWhDR0lNQnBtT2swalRhYWJKdz09IiwidiI6MX0=",
+    "v" : 1
+  },
+  "expectedId" : "6f1c2a9e-3b4d-4c5e-8f60-71829a0b1c2d",
+  "expectedOriginRelayId" : "E45B"
+}

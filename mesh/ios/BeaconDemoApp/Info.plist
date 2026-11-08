@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE = YES). -->
+<plist version="1.0">
+<dict>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Beacon passes SOS messages phone-to-phone over Bluetooth when cell service is down.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Your location is attached to SOS messages so responders can find you.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+        <string>bluetooth-peripheral</string>
+    </array>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!-- Lets a hackathon backend on plain http (e.g. a laptop IP) work. Remove for production. -->
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>

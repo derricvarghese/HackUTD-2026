@@ -1,0 +1,13 @@
+._*
+.DS_Store
+.build/
+.swiftpm/
+*.xcuserstate
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+xcuserdata/
+DerivedData/
+.kotlin/
