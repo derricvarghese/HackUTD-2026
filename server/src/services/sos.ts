@@ -213,6 +213,7 @@ export async function updateSos(ctx: Ctx, id: string, b: SosUpdate & { score_ove
   }
   await broadcastSos(ctx, 'sos.updated', id);
   if (changed.status !== undefined) await queueStatusUpdate(ctx, id);
+  void ctx.agent.trigger(id, 'case_edit');
   return (await viewsFor(ctx, [await getRowOrThrow(ctx, id)], viewer))[0];
 }
 

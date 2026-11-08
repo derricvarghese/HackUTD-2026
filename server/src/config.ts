@@ -52,6 +52,8 @@ const schema = z.object({
   /** At most one automatic re-run per case in this window (manual re-runs are exempt). */
   AGENT_RERUN_MIN_S: z.coerce.number().int().min(0).default(120),
   AGENT_SWEEP_S: z.coerce.number().int().min(1).default(60),
+  /** Proposal lifetime in seconds before status transitions to 'expired'. Defaults to 30 minutes. */
+  AGENT_PROPOSAL_TTL_S: z.coerce.number().int().min(1).default(1800),
   /** DEMO_MODE only: `flash_flood` injects a recorded NWS flash flood warning and a rising gauge into the weather/river tools (labelled synthetic). */
   AGENT_DEMO_WEATHER: z.enum(['', 'flash_flood']).optional().default(''),
   OVERPASS_URLS: z.string().default('https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter').transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean)),

@@ -11,7 +11,7 @@ export interface Step { index: number; turn: number; type: StepType; tool: strin
 export interface LoopOutcome { assessment: Assessment | null; steps: Step[]; error: string | null; model: string | null; tokens: { prompt: number; completion: number; turns: number }; signals: { weather?: string } }
 
 export const SUBMIT = 'submit_assessment';
-export const MAX_PARALLEL = 6;
+export const MAX_PARALLEL = 12;
 
 export const SYSTEM_PROMPT = `You are the dispatch planner of a disaster-response coordination system. You assess ONE emergency case and propose how to dispatch help. A human dispatcher approves or rejects your proposal; you cannot act on the world yourself.
 

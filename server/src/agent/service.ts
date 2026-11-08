@@ -39,9 +39,17 @@ export async function manualRun(ctx: Ctx, sosId: string, actor: Actor) {
   return runDto(ctx, run);
 }
 
+import { broadcastSos } from '../services/sosView';
+
 async function loadProposal(ctx: Ctx, sosId: string, proposalId: string): Promise<AgentProposalRow> {
   const p = await ctx.db.selectFrom('agent_proposals').selectAll().where('id', '=', proposalId).where('sos_id', '=', sosId).executeTakeFirst();
   if (!p) throw notFound('Proposal not found');
+  if (p.status === 'proposed' && Date.now() - p.created_at.getTime() >= ctx.cfg.AGENT_PROPOSAL_TTL_S * 1000) {
+    await ctx.db.updateTable('agent_proposals').set({ status: 'expired', updated_at: new Date() }).where('id', '=', p.id).where('status', '=', 'proposed').execute();
+    p.status = 'expired';
+    await publishUpdated(ctx, p.run_id);
+    await broadcastSos(ctx, 'sos.updated', sosId);
+  }
   return p;
 }
 

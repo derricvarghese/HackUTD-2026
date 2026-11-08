@@ -83,13 +83,13 @@ describe('agent loop', () => {
     expect(msgs.some((m) => m.includes('not valid JSON'))).toBe(true);
   });
 
-  it('caps parallel tool calls per turn at 6', async () => {
-    const llm = new ScriptedLlm((_r, n) => (n === 1 ? msg('p', Array.from({ length: 8 }, () => call('get_dead_zones'))) : msg(null, [call('submit_assessment', goodAssessment(null))])));
+  it('caps parallel tool calls per turn at MAX_PARALLEL', async () => {
+    const llm = new ScriptedLlm((_r, n) => (n === 1 ? msg('p', Array.from({ length: 14 }, () => call('get_dead_zones'))) : msg(null, [call('submit_assessment', goodAssessment(null))])));
     const { row } = await setup(llm);
     const out = await runAgentLoop(t!.ctx, await row(), { trigger: 'manual' });
-    expect(out.steps.filter((s) => s.type === 'tool_result' && s.ok)).toHaveLength(6);
+    expect(out.steps.filter((s) => s.type === 'tool_result' && s.ok)).toHaveLength(12);
     expect(out.steps.filter((s) => s.summary.includes('too many parallel'))).toHaveLength(2);
-    expect(toolMsgs(llm.requests[1])).toHaveLength(8); // every call id is answered
+    expect(toolMsgs(llm.requests[1])).toHaveLength(14); // every call id is answered
   });
 
   it('hard step cap: the last turn can only submit, and a model that never does fails the run', async () => {

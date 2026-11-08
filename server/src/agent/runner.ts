@@ -245,6 +245,16 @@ export function createAgentRunner(ctx: Ctx): AgentRunner {
       const latest = await ctx.db.selectFrom('agent_runs').select('status').where('sos_id', '=', f.sos_id).orderBy('created_at', 'desc').limit(1).executeTakeFirst();
       if (latest?.status === 'failed') { await trigger(f.sos_id, 'sweep'); n++; }
     }
+    // 5. open proposals that passed their TTL expire
+    const expired = (await sql<{ id: string; sos_id: string; run_id: string }>`
+      update agent_proposals set status = 'expired', updated_at = now()
+      where status = 'proposed' and created_at < now() - make_interval(secs => ${cfg.AGENT_PROPOSAL_TTL_S})
+      returning id, sos_id, run_id`.execute(ctx.db)).rows;
+    for (const p of expired) {
+      await publishUpdated(ctx, p.run_id);
+      await broadcastSos(ctx, 'sos.updated', p.sos_id);
+      n++;
+    }
     return n;
   }
 

@@ -21,7 +21,12 @@ export async function proposalDto(ctx: Ctx, p: AgentProposalRow): Promise<AgentP
 }
 
 export async function currentProposal(ctx: Ctx, sosId: string): Promise<AgentProposalRow | undefined> {
-  return ctx.db.selectFrom('agent_proposals').selectAll().where('sos_id', '=', sosId).where('status', '!=', 'superseded').orderBy('created_at', 'desc').limit(1).executeTakeFirst();
+  const p = await ctx.db.selectFrom('agent_proposals').selectAll().where('sos_id', '=', sosId).where('status', '!=', 'superseded').orderBy('created_at', 'desc').limit(1).executeTakeFirst();
+  if (p && p.status === 'proposed' && Date.now() - p.created_at.getTime() >= ctx.cfg.AGENT_PROPOSAL_TTL_S * 1000) {
+    await ctx.db.updateTable('agent_proposals').set({ status: 'expired', updated_at: new Date() }).where('id', '=', p.id).where('status', '=', 'proposed').execute();
+    p.status = 'expired';
+  }
+  return p;
 }
 
 export async function runDto(ctx: Ctx, r: AgentRunRow, proposal?: AgentProposalRow | null): Promise<AgentRunDto> {

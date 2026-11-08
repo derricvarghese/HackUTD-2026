@@ -95,6 +95,7 @@ export async function onProfileChanged(ctx: Ctx, deviceId: string, row: ProfileR
     const pctx = await triageCtxFor(ctx, c);
     await persistTriage(ctx, c.id, rulesOutcome(c, pctx), { kind: 'system' });
     await broadcastSos(ctx, 'sos.updated', c.id); // provisional again; persistTriage queued the AI pass
+    void ctx.agent.trigger(c.id, 'case_edit');
   }
   if (row) {
     const frame = { ...toProfilePublic(publicSourceFromRow(row)), device_id: deviceId, sos_ids: cases.map((c) => c.id) };

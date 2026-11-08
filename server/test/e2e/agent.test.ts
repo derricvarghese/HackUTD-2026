@@ -357,6 +357,40 @@ describe('human-in-the-loop API', () => {
     expect((await post(`/sos/${c.id}/agent/proposals/${older}/approve`, admin)).status).toBe(409);
   });
 
+  it('proposals expire after TTL; sweep marks them expired; deciding an expired proposal returns 409', async () => {
+    const { admin, c, proposal } = await withProposal();
+    // Simulate proposal age passing AGENT_PROPOSAL_TTL_S
+    await t!.ctx.pool.query("update agent_proposals set created_at = now() - interval '2 hours' where id = $1", [proposal.id]);
+    await t!.ctx.agent.sweep();
+    const propRow = (await t!.ctx.pool.query('select status from agent_proposals where id = $1', [proposal.id])).rows[0];
+    expect(propRow.status).toBe('expired');
+    const agentRes = await get(`/sos/${c.id}/agent`, admin);
+    expect(agentRes.body.proposal.status).toBe('expired');
+    expect((await post(`/sos/${c.id}/agent/proposals/${proposal.id}/approve`, admin)).status).toBe(409);
+    expect((await post(`/sos/${c.id}/agent/proposals/${proposal.id}/reject`, admin)).status).toBe(409);
+  });
+
+  it('case edit and profile change explicitly trigger agent re-runs', async () => {
+    const { alice, dev } = await boot(submitOnly());
+    const c = await mkCase(t!, dev);
+    await waitRun(t!, c.id);
+    const count = async () => (await runRows(t!, c.id)).length;
+    expect(await count()).toBe(1);
+
+    // Case edit triggers case_edit
+    await t!.request.patch(`/v1/sos/${c.id}`).set(auth(alice)).send({ note: 'Water is rising faster now' });
+    await until(async () => (await count()) === 2 && (await runRow(t!, c.id)).status === 'complete');
+    expect((await runRow(t!, c.id)).trigger).toBe('case_edit');
+
+    // Profile change triggers case_edit
+    await t!.signed(dev, 'PUT', `/v1/devices/${dev.id}/profile`, {
+      full_name: 'Elena Updated', preferred_name: 'Elena', birth_year: 1950,
+      consent: { accepted: true, version: '2026-11-v1', accepted_at: new Date().toISOString() },
+    });
+    await until(async () => (await count()) === 3 && (await runRow(t!, c.id)).status === 'complete');
+    expect((await runRow(t!, c.id)).trigger).toBe('case_edit');
+  });
+
   it('purge and delete cascade the agent data; counts are reported', async () => {
     const { admin, dev, alice } = await boot(submitOnly());
     const ev = (await post('/events', admin, { name: 'Agent purge', retention_days: 1 })).body;
