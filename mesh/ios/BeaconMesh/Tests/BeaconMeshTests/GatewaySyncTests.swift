@@ -259,35 +259,147 @@ private struct World {
         #expect(try w.backend.decrypt(env)["heartbeat"]?["seq"]?.intValue == 2)
     }
 
-    @Test func noHeartbeatWithoutActiveEventOrLocation() async {
+    @Test func heartbeatGoesOutWithoutActiveEventButNeverWithoutLocation() async {
         let w = World(builtInKeys: true)
+        w.config.deviceId = deviceId
+        w.serve()
         w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
-        #expect(await w.sync.heartbeatIfDue() == false, "no event known")
-        w.config.setEventActive(true)
+        #expect(w.config.eventActive == false)
+        #expect(await w.sync.heartbeatIfDue(), "no event known: still heartbeats (automatic liveness)")
+        w.box.ms += 400_000
         w.sync.sample = { nil }
         #expect(await w.sync.heartbeatIfDue() == false, "no location")
     }
 
-    @Test func checkinReplyOnlineUsesPatchOfflineUsesEnvelope() async throws {
+    @Test func heartbeatCarriesTransportNetworkPeersGatewayAndOpenSos() async throws {
         let w = World(builtInKeys: true)
         w.config.deviceId = deviceId
-        let prompt = CheckinPrompt(checkinId: "0192a7f0-0000-7000-8000-0000000000c1", sosId: Uuid7.generate(), message: "ok?", deadlineAtMs: nil)
-        w.http.handler = { req in
-            req.method == "PATCH" ? json(200, .object(["id": .string(prompt.checkinId)])) : json(404, .object([:]))
-        }
-        try await w.sync.reply(to: prompt, response: "need_help", text: "water rising", lat: 1, lng: 2)
-        let patch = try #require(w.http.requests.first)
-        #expect(patch.method == "PATCH" && patch.url.path == "/v1/checkins/\(prompt.checkinId)")
-        let b = JSONValue.parse(patch.body)!
-        #expect(b["response"]?.stringValue == "need_help" && b["text"]?.stringValue == "water rising")
-        #expect(w.router.messages.isEmpty)
-
+        w.config.update(ServerInfo.fromJSON(w.serverInfo(event: false)), nowMs: t0)
+        let sos = try w.router.originate(category: .trapped, lat: 1, lng: 2)
+        w.router.markUploaded(sos.id)
+        w.sync.interface = .cellular
+        w.router.peerConnected("peer-a"); w.router.peerConnected("peer-b"); w.router.peerConnected("peer-a")
+        w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
+        w.serve()
+        #expect(await w.sync.heartbeatIfDue())
+        let body = JSONValue.parse(try #require(w.http.requests.first { $0.url.path == "/v1/heartbeats" }).body)!
+        #expect(body["transport"]?.stringValue == "direct" && body["network"]?.stringValue == "cellular")
+        #expect(body["peers_nearby"]?.intValue == 2 && body["gateway"]?.boolValue == true)
+        #expect(body["open_sos_ids"]?.arrayValue?.compactMap(\.stringValue) == [sos.id])
+        // offline: the mesh envelope says transport mesh / network none / gateway false
+        w.box.ms += 400_000
         w.sync.reachable = false
-        try await w.sync.reply(to: prompt, response: "ok", text: nil, lat: 1, lng: 2)
-        let env = try #require(w.router.messages.first).envelope
-        #expect(env.kind == "checkin_reply" && env.tier == "normal" && env.maxHops == 5)
+        #expect(await w.sync.heartbeatIfDue())
+        let env = try #require(w.router.messages.first { $0.envelope.kind == "heartbeat" }).envelope
+        let hb = try #require(try w.backend.decrypt(env)["heartbeat"])
+        #expect(hb["transport"]?.stringValue == "mesh" && hb["network"]?.stringValue == "none" && hb["gateway"]?.boolValue == false)
+    }
+
+    @Test func forcedHeartbeatIgnoresTheIntervalAndNotFoundBacksOff() async {
+        let w = World(builtInKeys: true)
+        w.config.deviceId = deviceId
+        w.config.update(ServerInfo.fromJSON(w.serverInfo(event: false)), nowMs: t0)
+        w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
+        w.serve()
+        #expect(await w.sync.heartbeatIfDue())
+        #expect(await w.sync.heartbeatIfDue() == false)
+        #expect(await w.sync.heartbeatIfDue(force: true), "connectivity returned / SOS created")
+        // server: no event and no open SOS -> 404; no mesh fallback, retried a full interval later
+        w.http.handler = { _ in json(404, .object(["code": .string("not_found")])) }
+        w.box.ms += 400_000
+        #expect(await w.sync.heartbeatIfDue() == false)
+        #expect(w.router.messages.allSatisfy { $0.envelope.kind != "heartbeat" })
+        #expect(await w.sync.heartbeatIfDue() == false)
+        #expect(w.http.requests.filter { $0.url.path == "/v1/heartbeats" }.count == 3, "second call after 404 is not due")
+    }
+
+    @Test func heartbeatReplyAndPollFeedWelfareWithoutDuplicates() async throws {
+        let w = World(builtInKeys: true)
+        w.config.deviceId = deviceId
+        let welfare = WelfareManager(store: InMemoryWelfareStore(), now: { w.box.ms })
+        w.sync.welfare = welfare
+        w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
+        let c = JSONValue.object(["id": .string("c1"), "sos_id": .string("s1"), "kind": .string("welfare"), "channel": .string("app"),
+                                  "sent_at": .string(Iso.format(t0)), "deadline_at": .string(Iso.format(t0 + 300_000)),
+                                  "choices": .array(WelfareResponse.all.map(JSONValue.string)), "attempt": .int(1)])
+        w.serve()
+        let base = w.http.handler
+        w.http.handler = { req in
+            switch req.url.path {
+            case "/v1/heartbeats": return json(202, .object(["event_active": .bool(false), "pending_checkins": .array([c])]))
+            case "/v1/checkins/pending": return json(200, .object(["data": .array([c])]))
+            default: return base(req)
+            }
+        }
+        await w.sync.runCycle()
+        #expect(welfare.pending().map(\.checkinId) == ["c1"])
+        #expect(welfare.all().count == 1)
+    }
+
+    @Test func answerOnlineUsesPatchAndMarksAnsweredAtOnce() async throws {
+        let w = World(builtInKeys: true)
+        w.config.deviceId = deviceId
+        let welfare = WelfareManager(store: InMemoryWelfareStore(), now: { w.box.ms })
+        w.sync.welfare = welfare
+        w.router.welfare = welfare
+        welfare.ingest([WelfareCheckin(checkinId: "0192a7f0-0000-7000-8000-0000000000c1", sosId: "s1", sentAtMs: t0, deadlineAtMs: t0 + 300_000, receivedAtMs: t0)])
+        let id = "0192a7f0-0000-7000-8000-0000000000c1"
+        w.http.handler = { req in req.method == "PATCH" ? json(200, .object(["id": .string(id)])) : json(404, .object([:])) }
+        let out = await w.sync.answerCheckin(id, response: WelfareResponse.needUrgentHelp)
+        #expect(out == .delivered)
+        let patch = try #require(w.http.requests.first)
+        #expect(patch.method == "PATCH" && patch.url.path == "/v1/checkins/\(id)")
+        let b = JSONValue.parse(patch.body)!
+        #expect(b["response"]?.stringValue == "need_urgent_help" && b["responded_at"]?.stringValue != nil)
+        #expect(welfare.find(id)?.answer == "need_urgent_help" && welfare.find(id)?.delivered == true)
+        #expect(welfare.pending().isEmpty && w.router.messages.isEmpty)
+        #expect(await w.sync.answerCheckin(id, response: "still_here") == .ignored, "already answered")
+    }
+
+    @Test func answerOfflineSendsMeshEnvelopeAndNoLongerNeedHelpResolvesLocally() async throws {
+        let w = World(builtInKeys: true)
+        let welfare = WelfareManager(store: InMemoryWelfareStore(), now: { w.box.ms })
+        w.sync.welfare = welfare
+        w.router.welfare = welfare
+        w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
+        let own = try w.router.originate(category: .trapped, lat: 1, lng: 2)
+        let id = "0192a7f0-0000-7000-8000-0000000000c2"
+        welfare.ingest([WelfareCheckin(checkinId: id, sosId: own.id, sentAtMs: t0, deadlineAtMs: t0 + 300_000, receivedAtMs: t0)])
+        w.sync.reachable = false
+        #expect(await w.sync.answerCheckin(id, response: WelfareResponse.noLongerNeedHelp) == .meshSent)
+        let env = try #require(w.router.messages.first { $0.envelope.kind == "checkin_reply" }).envelope
+        #expect(env.tier == "normal")
         let plain = try w.backend.decrypt(env)
-        #expect(plain["checkin_id"]?.stringValue == prompt.checkinId && plain["response"]?.stringValue == "ok")
+        #expect(plain["checkin_id"]?.stringValue == id && plain["response"]?.stringValue == "no_longer_need_help")
+        let st = try #require(w.router.messages.first { $0.id == own.id }?.serverStatus)
+        #expect(st.status == "resolved" && st.message == "Marked as resolved. Stay safe.")
+        #expect(welfare.find(id)?.meshReplied == true)
+        // coming online later: the PATCH is retried and 409 clears it
+        w.sync.reachable = true
+        w.config.deviceId = deviceId
+        w.http.handler = { _ in json(409, .object(["code": .string("conflict")])) }
+        await w.sync.flushCheckinReplies()
+        #expect(welfare.find(id)?.delivered == true)
+    }
+
+    @Test func replyRetriesWithBackoffAfterServerErrorAndLateAnswerStillSends() async throws {
+        let w = World(builtInKeys: true)
+        w.config.deviceId = deviceId
+        let welfare = WelfareManager(store: InMemoryWelfareStore(), now: { w.box.ms })
+        w.sync.welfare = welfare
+        w.sync.sample = { HeartbeatSample(lat: 1, lng: 2) }
+        let id = "0192a7f0-0000-7000-8000-0000000000c3"
+        welfare.ingest([WelfareCheckin(checkinId: id, sosId: "s1", sentAtMs: t0, deadlineAtMs: t0 + 300_000, receivedAtMs: t0)])
+        w.box.ms = t0 + 400_000        // overdue
+        w.http.handler = { _ in json(503, .object(["code": .string("unavailable")])) }
+        #expect(await w.sync.answerCheckin(id, response: "still_here") == .retryLater, "overdue answers are accepted")
+        let p = try #require(welfare.find(id))
+        #expect(p.replyAttempts == 1 && p.nextReplyAtMs == t0 + 400_000 + 10_000 && p.meshReplied)
+        #expect(welfare.dueReplies().isEmpty)
+        w.box.ms += 11_000
+        w.http.handler = { _ in json(200, .object([:])) }
+        await w.sync.flushCheckinReplies()
+        #expect(welfare.find(id)?.delivered == true)
     }
 
     @Test func offlineForcedMeansNoNetworkCalls() async {

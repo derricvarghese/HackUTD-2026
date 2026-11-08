@@ -30,6 +30,21 @@ public struct P256Signer: MeshSigner {
     }
 }
 
+/// A signer whose key can be swapped at runtime ("Reset device identity"). Everything that signs holds this one
+/// object, so a swap takes effect everywhere at once. Thread-safe.
+public final class RotatingSigner: MeshSigner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var inner: MeshSigner
+
+    public init(_ inner: MeshSigner) { self.inner = inner }
+
+    public var current: MeshSigner { lock.lock(); defer { lock.unlock() }; return inner }
+    public func replace(with signer: MeshSigner) { lock.lock(); inner = signer; lock.unlock() }
+
+    public var publicKeyDER: Data { current.publicKeyDER }
+    public func sign(_ data: Data) throws -> Data { try current.sign(data) }
+}
+
 public extension MeshSigner {
     var publicKeyBase64: String { publicKeyDER.base64EncodedString() }
 
@@ -58,6 +73,11 @@ public enum MeshCrypto {
     }
 
     /// First 2 bytes of SHA-256(SPKI DER) as 4 uppercase hex chars.
+    /// First 8 hex characters of SHA-256(SPKI DER): a short, non-secret label for "which identity is this".
+    public static func shortKeyId(publicKeyDER: Data) -> String {
+        String(SHA256.hash(data: publicKeyDER).map { String(format: "%02x", $0) }.joined().prefix(8))
+    }
+
     public static func relayId(publicKeyDER: Data) -> String {
         SHA256.hash(data: publicKeyDER).prefix(2).map { String(format: "%02X", $0) }.joined()
     }

@@ -16,14 +16,17 @@ public struct ResponderAccount: Equatable, Codable {
     public var username: String
     public var name: String
     public var role: String
+    /// "Available for assignments" as last known; nil when the server did not say (older stored logins).
+    public var available: Bool?
 
-    public init(id: String, username: String, name: String, role: String) {
-        self.id = id; self.username = username; self.name = name; self.role = role
+    public init(id: String, username: String, name: String, role: String, available: Bool? = nil) {
+        self.id = id; self.username = username; self.name = name; self.role = role; self.available = available
     }
 
     static func from(_ j: JSONValue?) -> ResponderAccount? {
         guard let j, let id = j.optString("id"), let username = j.optString("username") else { return nil }
-        return ResponderAccount(id: id, username: username, name: j.optString("name") ?? username, role: j.optString("role") ?? "responder")
+        return ResponderAccount(id: id, username: username, name: j.optString("name") ?? username, role: j.optString("role") ?? "responder",
+                                available: j["available"]?.boolValue)
     }
 }
 
@@ -163,13 +166,21 @@ public enum ResponderError: Error, Equatable {
     }
 }
 
-public final class ResponderClient {
+public final class ResponderClient: ResponderLocationSending {
     public let baseURL: String
     private let http: HTTPTransport
     private let store: ResponderTokenStoring
     private let now: () -> Int64
 
-    public private(set) var tokens: ResponderTokens?
+    // Several things use one client at once (case polling, location sharing), so the tokens are lock-guarded and
+    // a refresh is shared: refresh tokens rotate, and two parallel refreshes would sign the responder out.
+    private let lock = NSLock()
+    private var _tokens: ResponderTokens?
+    private var refreshing: Task<ResponderTokens, Error>?
+    public private(set) var tokens: ResponderTokens? {
+        get { lock.lock(); defer { lock.unlock() }; return _tokens }
+        set { lock.lock(); _tokens = newValue; lock.unlock() }
+    }
     public var account: ResponderAccount? { tokens?.account }
 
     public init(baseURL: String, http: HTTPTransport = URLSessionTransport(), store: ResponderTokenStoring,
@@ -226,6 +237,30 @@ public final class ResponderClient {
         _ = try await authed("PATCH", "/v1/assignments/\(id)", body: .object(body))
     }
 
+    // MARK: Own profile
+
+    /// `PATCH /v1/responders/{id}` with `{location:{lat,lng}}`, or `{location:null}` to stop sharing and clear the
+    /// stored position. Also refreshes the server's `last_seen_at`.
+    public func sendLocation(_ position: SharedPosition?) async throws {
+        let loc: JSONValue = position.map { .object(["lat": .double($0.lat), "lng": .double($0.lng)]) } ?? .null
+        try await patchSelf(["location": loc])
+    }
+
+    /// `PATCH /v1/responders/{id}` `{available}`: whether dispatch may assign cases to this responder.
+    public func setAvailable(_ available: Bool) async throws {
+        try await patchSelf(["available": .bool(available)])
+        if var t = tokens {
+            t.account.available = available
+            tokens = t
+            store.save(t)
+        }
+    }
+
+    private func patchSelf(_ fields: [String: JSONValue]) async throws {
+        guard let id = tokens?.account.id else { throw ResponderError.signedOut }
+        _ = try await authed("PATCH", "/v1/responders/\(id)", body: .object(fields))
+    }
+
     // MARK: Plumbing
 
     private func authed(_ method: String, _ path: String, query: String? = nil, body: JSONValue? = nil) async throws -> JSONValue {
@@ -241,6 +276,17 @@ public final class ResponderClient {
     }
 
     private func refresh(_ t: ResponderTokens) async throws -> ResponderTokens {
+        lock.lock()
+        if let current = _tokens, current.accessToken != t.accessToken { lock.unlock(); return current } // already refreshed
+        if let running = refreshing { lock.unlock(); return try await running.value }
+        let task = Task { try await self.performRefresh(t) }
+        refreshing = task
+        lock.unlock()
+        defer { lock.lock(); refreshing = nil; lock.unlock() }
+        return try await task.value
+    }
+
+    private func performRefresh(_ t: ResponderTokens) async throws -> ResponderTokens {
         let (status, json) = try await send("POST", "/v1/auth/refresh", body: .object(["refresh_token": .string(t.refreshToken)]), bearer: nil)
         guard (200..<300).contains(status) else {
             if status == 401 || status == 422 { tokens = nil; store.save(nil); throw ResponderError.signedOut }

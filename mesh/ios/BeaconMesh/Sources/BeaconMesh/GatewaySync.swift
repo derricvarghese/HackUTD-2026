@@ -51,12 +51,15 @@ public final class GatewaySync {
     public var now: () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     public var log: (String) -> Void = { _ in }
     public var sample: () -> HeartbeatSample? = { nil }
+    /// Welfare check-ins: fed from the heartbeat reply, `GET /checkins/pending` and (via the router) mesh requests.
+    public var welfare: WelfareManager?
+    /// Interface type of the current network path (set by the connectivity monitor); feeds `HeartbeatCreate.network`.
+    public var interface: NetworkInterfaceKind = .unknown
     /// Profile sync runs inside the same online cycle (after registration and uploads); it has its own backoff and never fails the cycle.
     public var profileSync: ProfileSyncEngine?
 
     /// Callbacks (called on `hop`'s queue).
     public var onUploadResult: ((UploadResult) -> Void)?
-    public var onCheckins: (([CheckinPrompt]) -> Void)?
     public var onStateChange: (() -> Void)?
 
     public private(set) var lastError: String?
@@ -65,6 +68,8 @@ public final class GatewaySync {
     public private(set) var nextAttemptAtMs: Int64 = 0
 
     private var running = false
+    private var forceHeartbeat = false
+    private var heartbeatInFlight = false
     private let infoRefreshMs: Int64 = 10 * 60_000
 
     public init(client: BackendClient, router: MeshRouter, config: BackendConfig) {
@@ -102,9 +107,11 @@ public final class GatewaySync {
                 try await pollStatuses()
                 try await pollCheckins()
             } catch { stepError = error }
+            // Automatic liveness: never skipped because a step above failed. Also carries pending check-ins back.
+            _ = await heartbeatIfDue()
+            await flushCheckinReplies()
             await profileSync?.runCycle()
             if let stepError { throw stepError }
-            _ = await heartbeatIfDue()
             await main { [self] in
                 backoff.succeed()
                 lastError = nil
@@ -250,26 +257,61 @@ public final class GatewaySync {
     }
 
     func pollCheckins() async throws {
-        let prompts = try await client.pendingCheckins()
-        await main { [self] in onCheckins?(prompts) }
+        let items = try await client.pendingCheckins()
+        await main { [self] in
+            welfare?.ingest(items)
+            welfare?.reconcile(serverPendingIds: Set(items.map(\.checkinId)))
+        }
     }
 
     // MARK: Heartbeats
 
-    /// Called by the node's timer. Online: POST /v1/heartbeats. Offline: a `kind=heartbeat` mesh envelope.
-    /// Does nothing when no event is active (per the last cached /server-info), when not due, or without a location.
+    /// Ask for a heartbeat right now (an SOS was just created). Safe to call from any place on the hop queue.
+    public func requestHeartbeat() {
+        forceHeartbeat = true
+        Task { await heartbeatIfDue() }
+    }
+
+    private struct HeartbeatPlan {
+        var sample: HeartbeatSample
+        var seq: Int
+        var intervalSeconds: Int
+        var extras: HeartbeatExtras
+    }
+
+    /// The automatic liveness beacon. Online: POST /v1/heartbeats (transport `direct`); offline or on a network failure: a
+    /// `kind=heartbeat` mesh envelope (transport `mesh`). Sent whenever due, with or without an active event and while an SOS
+    /// is open. `force` (also set by `requestHeartbeat`) skips the interval, e.g. when connectivity returns. Without any
+    /// location fix there is nothing to send.
     @discardableResult
-    public func heartbeatIfDue() async -> Bool {
-        let due: (HeartbeatSample, Int)? = await main { [self] in
-            guard config.eventActive else { return nil }
-            let interval = Int64(config.heartbeatIntervalSeconds) * 1000
-            guard now() - config.lastHeartbeatAtMs >= interval, let s = sample() else { return nil }
-            return (s, config.heartbeatSeq + 1)
+    public func heartbeatIfDue(force: Bool = false) async -> Bool {
+        let plan: HeartbeatPlan? = await main { [self] in
+            guard !heartbeatInFlight else { return nil }
+            let s = sample()
+            let interval = config.heartbeatIntervalSeconds
+            guard let s, Heartbeat.shouldSend(nowMs: now(), lastSentMs: config.lastHeartbeatAtMs, intervalSeconds: interval,
+                                              force: force || forceHeartbeat, hasLocation: true) else { return nil }
+            heartbeatInFlight = true
+            forceHeartbeat = false
+            let extras = HeartbeatExtras(
+                transport: nil, network: Heartbeat.networkKind(reachable: isOnline, interface: interface),
+                peersNearby: router.connectedPeers.count, gateway: isOnline,
+                openSosIds: Heartbeat.openSosIds(router.messages, nowMs: now(), ownPublicKey: router.senderPublicKey))
+            return HeartbeatPlan(sample: s, seq: config.heartbeatSeq + 1, intervalSeconds: interval, extras: extras)
         }
-        guard let (s, seq) = due else { return false }
+        guard let plan else { return false }
+        let sent = await sendHeartbeat(plan)
+        await main { [self] in heartbeatInFlight = false }
+        return sent
+    }
+
+    private func sendHeartbeat(_ plan: HeartbeatPlan) async -> Bool {
+        let s = plan.sample, seq = plan.seq
         if isOnline, await main({ [self] in config.deviceId != nil }) {
+            var extras = plan.extras
+            extras.transport = "direct"
             let body = MeshPayload.heartbeatBody(sentAtMs: now(), lat: s.lat, lng: s.lng, batteryPct: s.batteryPct,
-                                                  charging: s.charging, moving: s.moving, seq: seq)
+                                                  charging: s.charging, moving: s.moving, seq: seq, extras: extras)
             do {
                 let reply = try await client.sendHeartbeat(body)
                 await main { [self] in
@@ -277,18 +319,30 @@ public final class GatewaySync {
                     config.lastHeartbeatAtMs = now()
                     if let active = reply.eventActive { config.setEventActive(active) }
                     log("Heartbeat #\(seq) sent")
+                    welfare?.ingest(reply.pendingCheckins)
                     onStateChange?()
                 }
                 return true
             } catch {
-                if let be = error as? BackendError, case .http(404, _, _) = be { await main { [self] in config.setEventActive(false) }; return false }
+                if let be = error as? BackendError, case .http(404, _, _) = be {
+                    // Neither an active event nor an open SOS for this device: nothing to keep alive. Try again later.
+                    await main { [self] in
+                        config.setEventActive(false)
+                        let delay = Heartbeat.retryDelayAfterNotFound(intervalSeconds: plan.intervalSeconds, hasOpenSos: !plan.extras.openSosIds.isEmpty)
+                        config.lastHeartbeatAtMs = now() - Int64(plan.intervalSeconds - delay) * 1000
+                        onStateChange?()
+                    }
+                    return false
+                }
                 await main { [self] in log("Heartbeat failed (\(describe(error))); sending over the mesh") }
             }
         }
         return await main { [self] in
             do {
+                var extras = plan.extras
+                extras.transport = "mesh"
                 _ = try router.originateHeartbeat(lat: s.lat, lng: s.lng, batteryPct: s.batteryPct, charging: s.charging,
-                                                  moving: s.moving, seq: seq)
+                                                  moving: s.moving, seq: seq, extras: extras)
                 config.heartbeatSeq = seq
                 config.lastHeartbeatAtMs = now()
                 onStateChange?()
@@ -303,32 +357,111 @@ public final class GatewaySync {
     /// Heartbeat sent just before the event is considered over is irrelevant; this is only for tests/UI.
     public func resetHeartbeatTimer() { config.lastHeartbeatAtMs = 0 }
 
-    // MARK: Check-in replies
+    // MARK: Welfare check-in replies
 
-    /// Reply to a check-in: PATCH /checkins/{id} when online, otherwise a signed `checkin_reply` envelope.
-    public func reply(to prompt: CheckinPrompt, response: String, text: String?, lat: Double?, lng: Double?) async throws {
-        if isOnline, await main({ [self] in config.deviceId != nil }) {
-            do {
-                try await client.respondCheckin(id: prompt.checkinId, response: response, text: text)
-                await main { [self] in router.markCheckinAnswered(checkinId: prompt.checkinId); log("Check-in answered online") }
-                return
-            } catch let e as BackendError where !e.isRetryable {
-                // 404/409 etc: nothing more to do online; fall through would create a pointless duplicate
-                if case .http(409, _, _) = e { await main { [self] in router.markCheckinAnswered(checkinId: prompt.checkinId) }; return }
-                throw e
-            } catch { /* network trouble: use the mesh path below */ }
-        }
-        try await mainThrowing { [self] in
-            _ = try router.originateCheckinReply(checkinId: prompt.checkinId, response: response, text: text, lat: lat, lng: lng)
-            router.markCheckinAnswered(checkinId: prompt.checkinId)
-        }
+    public enum ReplyOutcome: Equatable {
+        /// The server has the answer (200).
+        case delivered
+        /// 409 (already answered / expired) or 404: nothing more to send.
+        case cleared
+        /// Offline: a `checkin_reply` mesh envelope was created for a gateway to carry.
+        case meshSent
+        /// Network / 5xx / 429 (or no location for the envelope): retried with backoff until the deadline.
+        case retryLater
+        /// Rejected for good (other 4xx).
+        case rejected
+        /// Unknown check-in, an invalid response, or already answered.
+        case ignored
     }
-}
 
-extension GatewaySync {
-    fileprivate func mainThrowing(_ work: @escaping () throws -> Void) async throws {
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            hop { do { try work(); c.resume() } catch { c.resume(throwing: error) } }
+    /// The person answered. Marks it answered locally at once (notification removed), shows the case as resolved for
+    /// `no_longer_need_help`, then delivers: PATCH /v1/checkins/{id} when online, a `checkin_reply` envelope otherwise.
+    @discardableResult
+    public func answerCheckin(_ checkinId: String, response: String) async -> ReplyOutcome {
+        let accepted: Bool = await main { [self] in
+            guard let done = welfare?.answer(checkinId, response: response) else { return false }
+            if response == WelfareResponse.noLongerNeedHelp { router.markResolvedLocally(sosId: done.sosId) }
+            return true
+        }
+        guard accepted else { return .ignored }
+        return await deliverReply(checkinId)
+    }
+
+    /// Sends (or re-sends) the stored answer of a check-in.
+    @discardableResult
+    public func deliverReply(_ checkinId: String) async -> ReplyOutcome {
+        typealias Job = (WelfareCheckin, String, Bool)
+        let job: Job? = await main { [self] in
+            guard let p = welfare?.find(checkinId), let response = p.answer, !p.delivered else { return nil }
+            return (p, response, isOnline && config.deviceId != nil)
+        }
+        guard let (p, response, online) = job else { return .ignored }
+        if online {
+            do {
+                try await client.respondCheckin(id: checkinId, response: response, text: nil)
+                await main { [self] in markReplyDone(checkinId); router.markCheckinAnswered(checkinId: checkinId); log("Check-in answered online") }
+                return .delivered
+            } catch let e as BackendError {
+                if case .http(let status, _, let retryAfter) = e {
+                    if status == 409 || status == 404 {
+                        await main { [self] in markReplyDone(checkinId); router.markCheckinAnswered(checkinId: checkinId) }
+                        return .cleared
+                    }
+                    if status >= 400 && status < 500 && status != 429 && status != 401 {
+                        await main { [self] in markReplyDone(checkinId); log("Check-in reply rejected (HTTP \(status))") }
+                        return .rejected
+                    }
+                    await main { [self] in scheduleReplyRetry(checkinId, retryAfter: retryAfter) }
+                } else {
+                    await main { [self] in scheduleReplyRetry(checkinId, retryAfter: nil) }
+                }
+            } catch {
+                await main { [self] in scheduleReplyRetry(checkinId, retryAfter: nil) }
+            }
+            // The server may be unreachable although the network looks fine: let a gateway carry it too.
+            if !p.meshReplied, await sendReplyOverMesh(checkinId, response) { return .retryLater }
+            return .retryLater
+        }
+        return await sendReplyOverMesh(checkinId, response) ? .meshSent : .retryLater
+    }
+
+    /// Re-tries answers that did not reach the server yet (due ones only, never after the deadline). Called on each cycle/tick.
+    public func flushCheckinReplies() async {
+        let due: [(String, Bool)] = await main { [self] in (welfare?.dueReplies() ?? []).map { ($0.checkinId, $0.meshReplied) } }
+        let online = await main { [self] in isOnline && config.deviceId != nil }
+        for (id, meshReplied) in due where online || !meshReplied { _ = await deliverReply(id) }
+    }
+
+    private func markReplyDone(_ id: String) {
+        guard var p = welfare?.find(id) else { return }
+        p.delivered = true
+        welfare?.update(p)
+    }
+
+    private func scheduleReplyRetry(_ id: String, retryAfter: Int?) {
+        guard var p = welfare?.find(id) else { return }
+        p.replyAttempts += 1
+        p.nextReplyAtMs = now() + ReplyBackoff.delayMs(attempt: p.replyAttempts, retryAfterSeconds: retryAfter)
+        welfare?.update(p)
+    }
+
+    /// Creates the `checkin_reply` envelope (tier normal) once. false when it could not be made (no location / key yet).
+    private func sendReplyOverMesh(_ id: String, _ response: String) async -> Bool {
+        await main { [self] in
+            guard var p = welfare?.find(id) else { return false }
+            if p.meshReplied { return true }
+            let fix = sample()
+            do {
+                _ = try router.originateCheckinReply(checkinId: id, response: response, text: nil, lat: fix?.lat, lng: fix?.lng)
+                p.meshReplied = true
+                welfare?.update(p)
+                log("Check-in reply sent over the mesh")
+                return true
+            } catch {
+                if p.nextReplyAtMs <= now() { p.nextReplyAtMs = now() + 30_000; welfare?.update(p) }
+                log("Check-in reply not sent over the mesh yet: \(error)")
+                return false
+            }
         }
     }
 }

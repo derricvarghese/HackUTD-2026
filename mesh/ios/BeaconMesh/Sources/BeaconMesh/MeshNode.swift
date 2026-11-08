@@ -26,7 +26,10 @@ public final class MeshNode: NSObject, ObservableObject {
     @Published public private(set) var isGateway = false
     @Published public private(set) var hasInternet = false
     @Published public private(set) var logLines: [String] = []
-    @Published public private(set) var checkins: [CheckinPrompt] = []
+    /// Open welfare check-ins (overdue ones included). One entry per check-in id.
+    @Published public private(set) var checkins: [WelfareCheckin] = []
+    /// Set when the person taps a check-in notification (or its card): the UI shows the confirmation sheet for it.
+    @Published public var checkinToShow: WelfareCheckin?
     @Published public private(set) var encryptionKeyStatus: KeyStatus = .none
     @Published public private(set) var signingKeyStatus: KeyStatus = .none
     @Published public private(set) var deviceId: String?
@@ -50,6 +53,11 @@ public final class MeshNode: NSObject, ObservableObject {
     /// "Complete your profile" banner dismissed in this launch only (not persisted: it returns next launch).
     @Published public private(set) var profileBannerDismissed = false
     @Published public private(set) var profileNudgeProminent = false
+    /// Short ids (first 8 characters) before and after the last "Reset device identity" in this launch; nil before one.
+    @Published public private(set) var lastIdentityReset: IdentityResetResult?
+    /// Short id of the current signing key, for the debug area.
+    public var keyShortId: String { MeshCrypto.shortKeyId(publicKeyDER: rotatingSigner.publicKeyDER) }
+    public var instanceShortId: String { String(transport.instanceId.prefix(8)) }
 
     /// Demo setting: cap max_hops for non-critical messages (nil = use the hop table).
     @Published public var demoHopCap: Int? = nil {
@@ -74,12 +82,15 @@ public final class MeshNode: NSObject, ObservableObject {
     private let defaults = UserDefaults.standard
     private let transport = BLETransport()
     private let config: BackendConfig
+    private let rotatingSigner: RotatingSigner
+    private var identityResetter: IdentityResetter!
     private let sync: GatewaySync
     public let profile: ProfileSyncEngine
     private let uploader: GatewayUploader
     private let location = CLLocationManager()
     private var lastLocation: CLLocation?
-    private var restCheckins: [CheckinPrompt] = []
+    public let welfare: WelfareManager
+    private var lastWakeMs: Int64 = 0
     private var pruneTimer: Timer?
     private var started = false
 
@@ -87,16 +98,33 @@ public final class MeshNode: NSObject, ObservableObject {
                 store: MessageStore = FileMessageStore.defaultStore(),
                 keyValueStore: KeyValueStore = UserDefaultsKeyValueStore(),
                 profileStore: ProfileStoring = ProfileKeychainStore()) {
-        config = BackendConfig(store: keyValueStore,
-                               builtInEncryptionKey: BackendBuildConfig.encryptionPublicKey,
-                               builtInSigningKey: BackendBuildConfig.signingPublicKey)
-        router = MeshRouter(signer: signer, store: store, config: config)
-        let client = BackendClient(baseURL: BackendBuildConfig.backendURL, http: URLSessionTransport(), signer: signer, config: config)
+        let cfg = BackendConfig(store: keyValueStore,
+                                builtInEncryptionKey: BackendBuildConfig.encryptionPublicKey,
+                                builtInSigningKey: BackendBuildConfig.signingPublicKey)
+        config = cfg
+        welfare = WelfareManager(store: FileWelfareStore.defaultStore(), notifier: WelfareNotificationCenter.shared,
+                                 reminderSeconds: { cfg.checkinReminderSeconds })
+        let rotating = RotatingSigner(signer)
+        rotatingSigner = rotating
+        router = MeshRouter(signer: rotating, store: store, config: config)
+        let client = BackendClient(baseURL: BackendBuildConfig.backendURL, http: URLSessionTransport(), signer: rotating, config: config)
         sync = GatewaySync(client: client, router: router, config: config)
         uploader = GatewayUploader(sync: sync)
         profile = ProfileSyncEngine(client: client, config: config, store: profileStore)
         super.init()
+        identityResetter = IdentityResetter(
+            signer: rotating, keys: KeychainDeviceKeyRotator(), instance: UserDefaultsInstanceId(), config: config, profile: profile,
+            restartTransport: { [weak self] id in self?.transport.restart(withInstanceId: id) },
+            cancelCheckins: { [weak self] in self?.dropCheckinsOfOldIdentity() })
         sync.profileSync = profile
+        sync.welfare = welfare
+        router.welfare = welfare
+        welfare.onChange = { [weak self] in self?.refresh() }
+        welfare.log = { [weak self] in self?.append($0) }   // short ids only, never check-in text
+        let notifications = WelfareNotificationCenter.shared
+        notifications.onOpen = { [weak self] id in self?.openCheckin(id) }
+        notifications.onAnswer = { [weak self] id, response in _ = await self?.answerCheckin(id: id, response: response) }
+        notifications.install()
         profile.requestGatewayCycle = { [weak self] in self?.sync.requestCycle(force: true) }
         profile.onChange = { [weak self] in self?.refresh() }
         profile.log = { [weak self] in self?.append($0) }   // engine log lines carry status codes only, never profile content
@@ -114,7 +142,6 @@ public final class MeshNode: NSObject, ObservableObject {
         sync.log = { [weak self] in self?.append($0) }
         sync.sample = { [weak self] in self?.heartbeatSample() }
         sync.onUploadResult = { [weak self] in self?.lastUpload = $0; self?.refresh() }
-        sync.onCheckins = { [weak self] in self?.restCheckins = $0; self?.refresh() }
         sync.onStateChange = { [weak self] in self?.refresh() }
         uploader.onChange = { [weak self] in self?.refresh() }
         uploader.onOnline = { [weak self] in self?.router.internetBecameAvailable() }
@@ -143,6 +170,7 @@ public final class MeshNode: NSObject, ObservableObject {
         location.startUpdatingLocation()
         transport.start()
         uploader.start()
+        welfare.wake()
         router.pruneExpired()
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.router.pruneExpired()
@@ -162,7 +190,13 @@ public final class MeshNode: NSObject, ObservableObject {
     }
 
     /// Cheap periodic hook (also called from BLE callbacks so a backgrounded app still syncs and heartbeats).
-    public func tick() { uploader.tick() }
+    public func tick() {
+        uploader.tick()
+        // Re-plan the single local reminder request of each open check-in now and then; wake() never alerts by itself.
+        let t = Int64(Date().timeIntervalSince1970 * 1000)
+        if t - lastWakeMs > 20_000 { lastWakeMs = t; welfare.wake() }
+        welfare.remindDueOverdue()   // foreground: honours the exact reminder interval (the repeating request is >= 60 s)
+    }
 
     // MARK: Sending
 
@@ -180,6 +214,10 @@ public final class MeshNode: NSObject, ObservableObject {
                 accuracy: lastLocation.flatMap { $0.horizontalAccuracy >= 0 ? $0.horizontalAccuracy : nil },
                 people: people,
                 nonCriticalHopCap: demoHopCap)
+            // The first SOS is the right moment to ask for notifications (check-ins arrive as notifications), and the
+            // server should hear from this phone right away.
+            WelfareNotificationCenter.shared.requestAuthorizationIfNeeded()
+            sync.requestHeartbeat()
             return .sent(msg)
         } catch MeshError.noBackendKey {
             append("SOS not created: no backend encryption key (go online once, or build with BEACON_ENC_PUBLIC_KEY)")
@@ -193,19 +231,19 @@ public final class MeshNode: NSObject, ObservableObject {
         }
     }
 
-    /// Answer a check-in. `response`: ok | need_help | other.
-    public func reply(to prompt: CheckinPrompt, response: String, text: String? = nil) async -> SendFailure? {
-        let fix = currentCoordinate()
-        do {
-            try await sync.reply(to: prompt, response: response, text: text?.nilIfEmpty, lat: fix?.0, lng: fix?.1)
-            await MainActor.run {
-                restCheckins.removeAll { $0.checkinId == prompt.checkinId }
-                refresh()
-            }
-            return nil
-        } catch MeshError.noBackendKey { return .noBackendKey }
-        catch MeshError.noLocation { return .noLocation }
-        catch { return .other("\(error)") }
+    /// Answer a welfare check-in (also after its deadline). Marked answered at once, the notification and reminders are
+    /// removed, then the reply goes out: PATCH when online, a mesh `checkin_reply` otherwise.
+    @discardableResult
+    public func answerCheckin(id: String, response: String) async -> GatewaySync.ReplyOutcome {
+        let outcome = await sync.answerCheckin(id, response: response)
+        await MainActor.run { checkinToShow = nil; refresh() }
+        return outcome
+    }
+
+    public func openCheckin(_ id: String) {
+        DispatchQueue.main.async { [self] in
+            if let p = welfare.find(id), p.isOpen { checkinToShow = p }
+        }
     }
 
     public func syncNow() { uploader.syncNow() }
@@ -220,7 +258,10 @@ public final class MeshNode: NSObject, ObservableObject {
     public func renewProfileConsent() { profile.renewConsent(version: profile.consentVersion) }
     public func skipProfile() { profile.skip() }
     public func dismissProfileBanner() { profileBannerDismissed = true }
-    public func deleteProfile() { profile.deleteProfile() }
+    public func deleteProfile() {
+        welfare.cancelAll()          // no consent, no check-ins
+        profile.deleteProfile()
+    }
     public func retryProfileSync() { profile.retry() }
 
     // MARK: State
@@ -267,9 +308,33 @@ public final class MeshNode: NSObject, ObservableObject {
         lastProfileSyncAt = profile.record.lastSyncedAtMs > 0 ? Date(timeIntervalSince1970: Double(profile.record.lastSyncedAtMs) / 1000) : nil
         heldBackendCount = router.backendItems.count
         hasLocation = currentCoordinate() != nil
-        var merged = router.pendingCheckins.compactMap(CheckinPrompt.from)
-        for p in restCheckins where !merged.contains(where: { $0.checkinId == p.checkinId }) { merged.append(p) }
-        checkins = merged
+        checkins = welfare.pending()
+        if let shown = checkinToShow, !checkins.contains(where: { $0.checkinId == shown.checkinId }) { checkinToShow = nil }
+    }
+
+    /// Debug/demo: become a new sender. New signing key, new BLE peer id, device registration forgotten (the next
+    /// online moment registers the new key), heartbeat sequence restarted, profile re-sent to the new device. Local
+    /// message history and seen-ids are kept. Returns false (nothing changed) if the Keychain refused the new key.
+    @discardableResult
+    public func resetIdentity() -> Bool {
+        do {
+            lastIdentityReset = try identityResetter.reset()
+            append("Device identity reset")          // ids are shown in Settings, never keys
+            refresh()
+            sync.requestCycle(force: true)
+            return true
+        } catch {
+            append("Device identity reset failed")
+            return false
+        }
+    }
+
+    private func dropCheckinsOfOldIdentity() {
+        welfare.cancelAll()          // old identity's check-ins, their notifications and local reminders
+        checkinToShow = nil
+        for item in router.pendingCheckins {
+            if case .message(let m) = item.payload, let id = m.checkinId { router.markCheckinAnswered(checkinId: id) }
+        }
     }
 
     private func append(_ line: String) {

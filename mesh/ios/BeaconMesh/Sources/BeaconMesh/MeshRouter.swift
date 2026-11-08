@@ -22,7 +22,8 @@ public enum MeshError: Error, Equatable {
 /// Platform-independent relay logic for the contract wire format (MeshEnvelope, BackendMessage, DeliveredReceipt).
 /// Not thread-safe: drive it from one queue (the app uses the main queue).
 public final class MeshRouter {
-    public let relayId: String
+    /// Short id derived from the current signing key (changes when the identity is reset).
+    public var relayId: String { MeshCrypto.relayId(publicKeyDER: signer.publicKeyDER) }
     public weak var transport: MeshTransport?
     /// True when this phone can reach the backend (gateway mode).
     public var isOnline: () -> Bool
@@ -34,6 +35,9 @@ public final class MeshRouter {
     public var onCheckinRequest: ((StoredBackend) -> Void)?
     /// A status update / delivered notice for one of our SOS was applied.
     public var onStatusApplied: ((StoredMessage) -> Void)?
+    /// Welfare check-ins: verified `checkin_request`s for our SOS are handed to it, and a resolved / closed / merged status
+    /// cancels the open ones of that SOS.
+    public weak var welfare: WelfareManager?
     /// Identity hint for new sos/safe envelopes (`MeshPayload.profile_summary`); nil = none. Never logged.
     public var profileSummary: () -> JSONValue? = { nil }
 
@@ -56,7 +60,6 @@ public final class MeshRouter {
         self.now = now
         self.isOnline = isOnline
         self.upload = upload
-        self.relayId = MeshCrypto.relayId(publicKeyDER: signer.publicKeyDER)
     }
 
     public var messages: [StoredMessage] { store.all() }
@@ -97,7 +100,8 @@ public final class MeshRouter {
         return msg
     }
 
-    /// Reply to a check-in request over the mesh (`kind=checkin_reply`, normal tier). `response`: ok | need_help | other.
+    /// Reply to a check-in request over the mesh (`kind=checkin_reply`, normal tier). `response`: still_here |
+    /// no_longer_need_help | need_urgent_help.
     @discardableResult
     public func originateCheckinReply(checkinId: String, response: String, text: String? = nil, lat: Double?, lng: Double?,
                                       nonCriticalHopCap: Int? = nil) throws -> StoredMessage {
@@ -113,10 +117,10 @@ public final class MeshRouter {
     /// A liveness ping as a `kind=heartbeat` envelope (tier heartbeat, 2 hops, 30 min), for phones without internet.
     @discardableResult
     public func originateHeartbeat(lat: Double?, lng: Double?, batteryPct: Int?, charging: Bool?, moving: Bool?,
-                                   seq: Int) throws -> StoredMessage {
+                                   seq: Int, extras: HeartbeatExtras = HeartbeatExtras()) throws -> StoredMessage {
         guard let lat, let lng else { throw MeshError.noLocation }
         let payload = MeshPayload.heartbeat(sentAtMs: now(), lat: lat, lng: lng, batteryPct: batteryPct, charging: charging,
-                                            moving: moving, seq: seq)
+                                            moving: moving, seq: seq, extras: extras)
         let msg = try build(kind: .heartbeat, tier: .heartbeat, payload: payload,
                             routing: Routing.build(lat: lat, lng: lng, category: nil), hopCap: nil,
                             own: OwnInfo(category: "heartbeat"))
@@ -256,7 +260,7 @@ public final class MeshRouter {
             forwarded = connectedPeers.filter { $0 != peer && sendBackend(item, to: $0) }.count
         }
         onChange?()
-        if item.addressedToMe, case .message(let m) = item.payload, m.kind == "checkin_request" { onCheckinRequest?(item) }
+        if item.addressedToMe { surfaceCheckin(item) }
         return .accepted(forwardedTo: forwarded, uploaded: false)
     }
 
@@ -282,6 +286,19 @@ public final class MeshRouter {
         return true
     }
 
+    private func surfaceCheckin(_ item: StoredBackend) {
+        guard case .message(let m) = item.payload, m.kind == "checkin_request" else { return }
+        onCheckinRequest?(item)
+        if let c = CheckinParser.fromBackend(m, nowMs: now()) { welfare?.ingest([c]) }
+    }
+
+    /// The person answered `no_longer_need_help`: show the case as resolved at once ("Marked as resolved. Stay safe."),
+    /// without waiting for the server's `status_update`. A newer server status still wins afterwards.
+    public func markResolvedLocally(sosId: String) {
+        applyStatus(SosStatus(status: "resolved", reachedResponders: true, etaMinutes: nil,
+                              message: "Marked as resolved. Stay safe.", updatedAtMs: now()), to: sosId, keepNewer: false)
+    }
+
     /// Records a victim-facing status for an own SOS (from the mesh or from GET /sos/{id}/status).
     /// `keepNewer`: ignore a status older than what we already have.
     public func applyStatus(_ st: SosStatus, to sosId: String, keepNewer: Bool = true, markDelivered: Bool = false) {
@@ -293,6 +310,7 @@ public final class MeshRouter {
             applied = true
         }
         if applied {
+            if ["resolved", "closed", "merged"].contains(st.status) { welfare?.cancelForSos(sosId) }
             if let m = store.all().first(where: { $0.id == sosId }) { onStatusApplied?(m) }
             onChange?()
         }
@@ -337,7 +355,7 @@ public final class MeshRouter {
             v.addressedToMe = applyToOwn(v)
             store.updateBackend(item.id) { $0.verified = true; $0.addressedToMe = v.addressedToMe }
             changed = true
-            if v.addressedToMe, case .message(let m) = v.payload, m.kind == "checkin_request" { onCheckinRequest?(v) }
+            if v.addressedToMe { surfaceCheckin(v) }
         }
         if changed { onChange?() }
     }

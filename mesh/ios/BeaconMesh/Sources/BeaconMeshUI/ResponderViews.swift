@@ -1,6 +1,7 @@
 #if canImport(UIKit) && canImport(SwiftUI) && canImport(MapKit) && canImport(CoreBluetooth) && canImport(CoreLocation) && canImport(Combine) && canImport(Network)
 import BeaconMesh
 import MapKit
+import Network
 import SwiftUI
 import UIKit
 
@@ -15,11 +16,41 @@ final class ResponderSession: ObservableObject {
     @Published private(set) var loading = false
     @Published var error: String?
 
+    // Location sharing (all state is in-memory; the persisted switch only matters at the next sign-in).
+    @Published private(set) var sharing = false
+    /// The "Share my location" switch.
+    @Published private(set) var shareRequested = false
+    @Published var askShareRationale = false
+    @Published private(set) var shareNotice: String?
+    @Published private(set) var shareNeedsSettings = false
+    @Published private(set) var available = true
+    @Published private(set) var availabilityBusy = false
+
     let client: ResponderClient
+    private let sharer: ResponderLocationSharer
+    private lazy var provider: ResponderLocationProvider = {
+        let p = ResponderLocationProvider()
+        p.onFix = { [weak self] pos in
+            guard let self, self.sharing else { return }
+            self.sharer.update(pos)
+            Task { await self.sharer.pump() }
+        }
+        p.onAuthorizationChange = { [weak self] in self?.authorizationChanged() }
+        return p
+    }()
+    private var signedInThisSession = false
+    private var awaitingAuthorization = false
+    private var foreground = true
+    private var pumpTask: Task<Void, Never>?
+    private var monitor: NWPathMonitor?
 
     init(baseURL: String) {
-        client = ResponderClient(baseURL: baseURL, store: KeychainResponderTokenStore())
-        account = client.account
+        let c = ResponderClient(baseURL: baseURL, store: KeychainResponderTokenStore())
+        client = c
+        account = c.account
+        available = c.account?.available ?? true
+        sharer = ResponderLocationSharer(client: c, now: { Int64(Date().timeIntervalSince1970 * 1000) })
+        sharer.onSessionLost = { [weak self] in self?.sessionLost() }
     }
 
     func login(username: String, password: String) async {
@@ -27,8 +58,12 @@ final class ResponderSession: ObservableObject {
         defer { loading = false }
         do {
             account = try await client.login(username: username, password: password)
+            signedInThisSession = true
+            available = account?.available ?? true
             error = nil
             await refresh()
+            // The switch was left on last time: resume, visibly (the chip shows as soon as it starts).
+            if UserDefaults.standard.bool(forKey: ResponderPrefs.shareKey), foreground { shareRequested = true; beginSharing() }
         } catch let e as ResponderError {
             error = e.message
         } catch {
@@ -37,7 +72,15 @@ final class ResponderSession: ObservableObject {
     }
 
     func logout() async {
+        stopSharing(clear: true, notice: nil)
+        // Best-effort clear while the token still works; after sign-out nothing more can be sent.
+        for attempt in 0..<2 where sharer.phase == .clearing {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            await sharer.pump()
+        }
+        sharer.abandon()
         await client.logout()
+        signedInThisSession = false
         account = nil
         cases = []
         lastUpdated = nil
@@ -89,8 +132,159 @@ final class ResponderSession: ObservableObject {
     }
 
     private func handle(_ e: ResponderError) {
-        if e == .signedOut { account = nil; cases = [] }
+        if e == .signedOut { sessionLost(); return }
         error = e.message
+    }
+
+    // MARK: Availability
+
+    func setAvailable(_ value: Bool) async {
+        let old = available
+        available = value
+        availabilityBusy = true
+        defer { availabilityBusy = false }
+        do {
+            try await client.setAvailable(value)
+            error = nil
+        } catch let e as ResponderError {
+            available = old
+            handle(e)
+        } catch {
+            available = old
+            self.error = error.localizedDescription
+        }
+    }
+
+    // MARK: Location sharing
+
+    /// The switch. Turning it on first shows the rationale; `confirmShare()` continues.
+    func setShareSwitch(_ on: Bool) {
+        if on {
+            guard !shareRequested else { return }
+            askShareRationale = true
+        } else {
+            stopSharing(clear: true, notice: nil)
+        }
+    }
+
+    func confirmShare() {
+        askShareRationale = false
+        shareNotice = nil
+        shareNeedsSettings = false
+        shareRequested = true
+        UserDefaults.standard.set(true, forKey: ResponderPrefs.shareKey)
+        beginSharing()
+    }
+
+    /// The Responder UI is on screen and the app is active (fixes only arrive while true).
+    func setForeground(_ active: Bool) {
+        foreground = active
+        guard sharing else { return }
+        if active { provider.start() } else { provider.stop() }
+    }
+
+    func openSystemSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+    }
+
+    private func beginSharing() {
+        guard account != nil, signedInThisSession else {
+            stopSharing(clear: false, notice: ResponderShareText.needSignIn)
+            return
+        }
+        switch provider.status {
+        case .notDetermined:
+            awaitingAuthorization = true
+            provider.requestWhenInUse()
+        case .denied:
+            stopSharing(clear: false, notice: ResponderShareText.denied, settings: true)
+        case .restricted:
+            stopSharing(clear: false, notice: ResponderShareText.restricted)
+        case .authorizedWhenInUse, .authorizedAlways:
+            startSharingNow()
+        @unknown default:
+            stopSharing(clear: false, notice: ResponderShareText.denied, settings: true)
+        }
+    }
+
+    private func startSharingNow() {
+        awaitingAuthorization = false
+        sharer.start()
+        sharer.setOnline(true)
+        startMonitor()
+        sharing = true
+        shareNotice = provider.isReducedAccuracy ? ResponderShareText.reduced : nil
+        shareNeedsSettings = provider.isReducedAccuracy
+        if foreground { provider.start() }
+        Haptics.shared.play(.success)
+        runPump()
+    }
+
+    private func authorizationChanged() {
+        if awaitingAuthorization {
+            if provider.status != .notDetermined { awaitingAuthorization = false; beginSharing() }
+            return
+        }
+        guard sharing || shareRequested else { return }
+        if !provider.isAuthorized && provider.status != .notDetermined {
+            Haptics.shared.play(.warning)
+            stopSharing(clear: true, notice: ResponderShareText.revoked, settings: true)
+        } else if sharing {
+            shareNotice = provider.isReducedAccuracy ? ResponderShareText.reduced : nil
+            shareNeedsSettings = provider.isReducedAccuracy
+        }
+    }
+
+    /// Stops sharing for any reason. `clear` removes the stored position on the server (retried until it works).
+    private func stopSharing(clear: Bool, notice: String?, settings: Bool = false) {
+        let wasOn = sharing || shareRequested
+        if wasOn { provider.stop() }
+        sharer.stop(clear: clear)
+        monitor?.cancel(); monitor = nil
+        awaitingAuthorization = false
+        askShareRationale = false
+        sharing = false
+        shareRequested = false
+        UserDefaults.standard.set(false, forKey: ResponderPrefs.shareKey)
+        shareNotice = notice
+        shareNeedsSettings = settings
+        if wasOn { Haptics.shared.play(.tap) }
+        if sharer.phase == .clearing { runPump() }
+    }
+
+    /// The server refused the session for good: nothing can be sent or cleared any more.
+    private func sessionLost() {
+        stopSharing(clear: false, notice: nil)
+        sharer.abandon()
+        account = nil
+        cases = []
+        error = ResponderError.signedOut.message
+    }
+
+    private func startMonitor() {
+        guard monitor == nil else { return }
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { [weak self] path in
+            let ok = path.status == .satisfied
+            Task { @MainActor in self?.sharer.setOnline(ok); await self?.sharer.pump() }
+        }
+        m.start(queue: DispatchQueue(label: "beacon.responder.path"))
+        monitor = m
+    }
+
+    /// Sleeps until the sharer is next due; ends once it is idle (not sharing, nothing left to clear).
+    private func runPump() {
+        guard pumpTask == nil else { return }
+        pumpTask = Task { [weak self] in
+            while !Task.isCancelled, let self {
+                await self.sharer.pump()
+                if self.sharer.phase == .idle { break }
+                let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+                let wait = min(max((self.sharer.nextWakeMs() ?? nowMs + 2_000) - nowMs, 500), 5_000)
+                try? await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000)
+            }
+            self?.pumpTask = nil
+        }
     }
 }
 
@@ -166,12 +360,7 @@ enum ResponderText {
 
 struct ResponderTab: View {
     @ObservedObject var node: MeshNode
-    @StateObject private var session: ResponderSession
-
-    init(node: MeshNode) {
-        self.node = node
-        _session = StateObject(wrappedValue: ResponderSession(baseURL: node.backendURL))
-    }
+    @ObservedObject var session: ResponderSession
 
     var body: some View {
         if session.account == nil {
@@ -256,6 +445,7 @@ struct ResponderDashboard: View {
     @State private var selectedId: String?
     @State private var showMesh = true
     @State private var fitToken = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     /// SOS messages this phone heard over Bluetooth that are still live: only the ~1 km routing cell is readable.
     private var meshTargets: [MapTarget] {
@@ -295,6 +485,7 @@ struct ResponderDashboard: View {
                 .frame(maxHeight: .infinity)
 
                 List {
+                    ResponderSharingSection(session: session)
                     Section {
                         if session.cases.isEmpty && meshTargets.isEmpty {
                             Text(session.lastUpdated == nil ? "Loading cases…" : "No open cases right now.")
@@ -319,6 +510,12 @@ struct ResponderDashboard: View {
                 }
                 .listStyle(.insetGrouped)
                 .frame(height: 300)
+                .alert(ResponderShareText.rationaleTitle, isPresented: $session.askShareRationale) {
+                    Button(ResponderShareText.rationaleConfirm) { session.confirmShare() }
+                    Button("Not now", role: .cancel) { }
+                } message: {
+                    Text(ResponderShareText.rationale)
+                }
             }
             .navigationTitle("Responder")
             .navigationBarTitleDisplayMode(.inline)
@@ -353,6 +550,8 @@ struct ResponderDashboard: View {
             }
         }
         .task { await session.poll() }
+        .onAppear { session.setForeground(scenePhase == .active) }
+        .onChange(of: scenePhase) { phase in session.setForeground(phase == .active) }
     }
 
     private var legend: some View {
@@ -363,6 +562,47 @@ struct ResponderDashboard: View {
         .font(.caption2)
         .padding(8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// "Share my location" and "Available" switches, plus the notices that go with them.
+struct ResponderSharingSection: View {
+    @ObservedObject var session: ResponderSession
+    @ObservedObject private var haptics = Haptics.shared
+
+    var body: some View {
+        Section {
+            Toggle(isOn: Binding(get: { session.shareRequested }, set: { session.setShareSwitch($0); haptics.play(.toggle) })) {
+                Label(ResponderShareText.switchTitle, systemImage: "location.fill")
+            }
+            .accessibilityHint("Lets dispatch and other responders see your position on the map")
+            if let n = session.shareNotice {
+                Text(n).font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                if session.shareNeedsSettings {
+                    Button(ResponderShareText.openSettings) { session.openSystemSettings() }
+                }
+            }
+            Toggle(isOn: Binding(get: { session.available }, set: { v in haptics.play(.toggle); Task { await session.setAvailable(v) } })) {
+                Label(ResponderShareText.availableTitle, systemImage: "checkmark.circle")
+            }
+            .disabled(session.availabilityBusy)
+        } footer: {
+            Text(ResponderShareText.availableFooter)
+        }
+    }
+}
+
+/// Visible above every tab whenever the position is being shared.
+struct SharingChip: View {
+    var body: some View {
+        Label(ResponderShareText.chip, systemImage: "location.fill")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.blue, in: Capsule())
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(ResponderShareText.chipA11y)
     }
 }
 

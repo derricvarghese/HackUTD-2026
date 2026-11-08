@@ -18,6 +18,26 @@ public enum KeychainKeyStore {
         return P256Signer(privateKey: key)
     }
 
+    /// Creates a brand-new signing key and stores it in place of the old one (the old key is gone for good).
+    /// Throws, leaving the old key untouched, if the Keychain refuses. Used by "Reset device identity".
+    public static func rotate() throws -> P256Signer {
+        let key = P256.Signing.PrivateKey()
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        var status = SecItemUpdate(base as CFDictionary, [kSecValueData as String: key.rawRepresentation] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = base
+            add[kSecValueData as String] = key.rawRepresentation
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw KeychainRotateError.failed(Int(status)) }
+        return P256Signer(privateKey: key)
+    }
+
     private static func read() -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -42,5 +62,12 @@ public enum KeychainKeyStore {
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
     }
+}
+
+public enum KeychainRotateError: Error, Equatable { case failed(Int) }
+
+public final class KeychainDeviceKeyRotator: DeviceKeyRotating {
+    public init() {}
+    public func rotateSigningKey() throws -> MeshSigner { try KeychainKeyStore.rotate() }
 }
 #endif

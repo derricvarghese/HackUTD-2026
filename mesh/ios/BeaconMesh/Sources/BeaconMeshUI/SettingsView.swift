@@ -1,11 +1,16 @@
 #if canImport(UIKit) && canImport(SwiftUI) && canImport(CoreBluetooth) && canImport(CoreLocation) && canImport(Combine) && canImport(Network)
 import BeaconMesh
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @ObservedObject var node: MeshNode
     @ObservedObject private var haptics = Haptics.shared
     @State private var showLog = false
+    @State private var confirmReset = false
+    @State private var resetFailed = false
+    @State private var copied = false
+    @AppStorage(ResponderPrefs.modeKey) private var responderMode = false
 
     var body: some View {
         NavigationStack {
@@ -16,6 +21,14 @@ struct SettingsView: View {
                         .accessibilityHint("Fixed in this build")
                 }
                 ProfileSettingsSection(node: node)
+                Section {
+                    Toggle("Responder mode", isOn: Binding(get: { responderMode }, set: { responderMode = $0; haptics.play(.toggle) }))
+                        .accessibilityHint("Adds a Responder tab. Turning it off signs you out and stops sharing your location")
+                } header: {
+                    Text("First responder mode")
+                } footer: {
+                    Text("Adds a Responder tab: sign in with your dashboard account to see people who asked for help on a map. The mesh keeps relaying while you use it. Turning this off signs you out.")
+                }
                 Section("Feedback") {
                     Toggle("Haptic feedback", isOn: Binding(get: { haptics.enabled }, set: { v in
                         haptics.enabled = v
@@ -28,6 +41,28 @@ struct SettingsView: View {
                     }
                     Toggle("Force offline (never act as gateway)", isOn: Binding(get: { node.forceOffline }, set: { node.forceOffline = $0; haptics.play(.toggle) }))
                     Button("Sync with server now") { haptics.play(.tap); node.syncNow() }
+                    Button("Reset device identity", role: .destructive) { haptics.play(.warning); confirmReset = true }
+                        .accessibilityHint("Makes this phone a new sender so the server does not merge your reports. Asks first")
+                    LabeledContent("Sender id", value: node.keyShortId)
+                    LabeledContent("Peer id", value: node.instanceShortId)
+                    if let r = node.lastIdentityReset {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Identity reset").font(.subheadline.weight(.semibold))
+                            Text("Sender: \(r.oldKeyId) to \(r.newKeyId)\nPeer: \(r.oldInstanceId) to \(r.newInstanceId)")
+                                .font(.footnote.monospaced())
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button(copied ? "Copied" : "Copy ids") {
+                                UIPasteboard.general.string = "sender \(r.oldKeyId) -> \(r.newKeyId), peer \(r.oldInstanceId) -> \(r.newInstanceId)"
+                                copied = true
+                                haptics.play(.success)
+                            }
+                            .accessibilityLabel("Copy old and new identity ids")
+                        }
+                        .accessibilityElement(children: .contain)
+                    }
+                    if resetFailed {
+                        Label("Could not create a new key. Nothing was changed.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
                 } header: {
                     Text("Debug and demo")
                 } footer: {
@@ -53,6 +88,17 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .alert("Reset device identity?", isPresented: $confirmReset) {
+                Button("Reset", role: .destructive) {
+                    copied = false
+                    let ok = node.resetIdentity()
+                    resetFailed = !ok
+                    haptics.play(ok ? .success : .error)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This phone gets a new signing key and a new Bluetooth peer id, and registers with the server as a new device, so new reports are not merged with earlier ones. Your profile is kept and sent to the new device. Message history stays on this phone. The old key is deleted and cannot be restored.")
+            }
         }
     }
 }

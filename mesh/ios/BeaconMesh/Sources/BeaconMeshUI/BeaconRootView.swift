@@ -9,8 +9,14 @@ public struct BeaconRootView: View {
     @AppStorage("beacon.onboarded") private var onboarded = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
+    /// Settings -> "Responder mode". Off (the default) = no Responder tab and no responder code runs.
+    @AppStorage(ResponderPrefs.modeKey) private var responderMode = false
+    @StateObject private var responder: ResponderSession
 
-    public init(node: MeshNode) { self.node = node }
+    public init(node: MeshNode) {
+        self.node = node
+        _responder = StateObject(wrappedValue: ResponderSession(baseURL: node.backendURL))
+    }
 
     public var body: some View {
         Group {
@@ -26,12 +32,25 @@ public struct BeaconRootView: View {
                         .badge(node.messages.filter { $0.isOwn && !$0.uploaded }.count)
                     MeshStatusView(node: node)
                         .tabItem { Label("Mesh", systemImage: "dot.radiowaves.left.and.right") }.tag(2)
-                    ResponderTab(node: node)
-                        .tabItem { Label("Responder", systemImage: "cross.case") }.tag(4)
+                    if responderMode {
+                        ResponderTab(node: node, session: responder)
+                            .tabItem { Label("Responder", systemImage: "cross.case") }.tag(4)
+                    }
                     SettingsView(node: node)
                         .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if responderMode && responder.sharing {
+                        SharingChip().frame(maxWidth: .infinity).padding(.vertical, 4).background(.bar)
+                    }
+                }
                 .onChange(of: tab) { _ in haptics.play(.select) }
+                .onChange(of: responderMode) { on in
+                    // Leaving responder mode signs out and stops sharing; never leave the user on a vanished tab.
+                    guard !on else { return }
+                    if tab == 4 { tab = 0 }
+                    Task { await responder.logout() }
+                }
             } else {
                 OnboardingView {
                     haptics.play(.success)
@@ -40,6 +59,8 @@ public struct BeaconRootView: View {
                 }
             }
         }
+        // One confirmation sheet per check-in: opened by a notification tap or the card on Home, never a pile.
+        .sheet(item: $node.checkinToShow) { checkin in WelfareSheet(node: node, checkin: checkin) }
         .onAppear { if onboarded { node.start() } }
         .onChange(of: scenePhase) { phase in
             if phase == .active { node.tick(); haptics.prepare() }

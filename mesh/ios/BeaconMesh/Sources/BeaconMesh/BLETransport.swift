@@ -19,7 +19,7 @@ public final class BLETransport: NSObject, MeshTransport {
     public weak var delegate: BLETransportDelegate?
 
     /// Stable identity of this install (lowercase UUID string).
-    public let instanceId: String
+    public private(set) var instanceId: String
 
     private let serviceUUID = CBUUID(string: MeshProtocol.serviceUUID)
     private let rxUUID = CBUUID(string: MeshProtocol.rxCharacteristicUUID)
@@ -29,7 +29,7 @@ public final class BLETransport: NSObject, MeshTransport {
     private var peripheralManager: CBPeripheralManager!
     private var rxCharacteristic: CBMutableCharacteristic?
     private let reassembler = Reassembler()
-    private let registry: PeerRegistry
+    private var registry: PeerRegistry
 
     private final class Link {
         let peripheral: CBPeripheral
@@ -64,6 +64,16 @@ public final class BLETransport: NSObject, MeshTransport {
         running = true
         central = CBCentralManager(delegate: self, queue: .main)
         peripheralManager = CBPeripheralManager(delegate: self, queue: .main)
+    }
+
+    /// Starts over under a new instance id (identity reset): drops every link and the peer registry, then resumes if
+    /// the transport was running so peers see the new id.
+    public func restart(withInstanceId id: String) {
+        let wasRunning = running
+        stop()
+        instanceId = id
+        registry = PeerRegistry(ownId: id)
+        if wasRunning { start() }
     }
 
     public func stop() {

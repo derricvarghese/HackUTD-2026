@@ -101,7 +101,7 @@ public enum ProfileSyncStatus: Equatable {
     case needsConsent
 }
 
-public final class ProfileSyncEngine {
+public final class ProfileSyncEngine: ProfileResetting {
     public let client: BackendClient
     public let config: BackendConfig
     private let store: ProfileStoring
@@ -222,6 +222,21 @@ public final class ProfileSyncEngine {
         r.skipped = true
         r.adoptionChecked = true
         r.revision = record.revision + 1
+        commit(r, resetBackoff: true)
+    }
+
+    /// The device identity was reset: the server knows nothing about this new device. Keep the local profile but
+    /// mark it unsynced (version 0, dirty) so it is PUT to the new device with `If-Match: 0` once online.
+    public func resetForNewDevice() {
+        var r = record
+        r.base = nil
+        r.serverVersion = 0
+        r.lastVerifiedAtMs = 0
+        r.lastSyncedAtMs = 0
+        r.lastError = nil
+        r.deletePending = false        // the old device's server copy is not ours to delete any more
+        r.adoptionChecked = true       // a brand-new key has nothing to adopt
+        if r.profile != nil { r.dirty = true; r.revision += 1 }
         commit(r, resetBackoff: true)
     }
 

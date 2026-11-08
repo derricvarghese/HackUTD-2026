@@ -44,7 +44,7 @@ import Crypto
         #expect(MeshCrypto.verifyB64(publicKeySPKI: sign, text: try r.signedPart(), signature: r.signature))
         let checkin = try fromBackendMessage(fx["backend_message_checkin"])
         #expect(checkin.checkinId == "0192a7f0-0000-7000-8000-0000000000c1")
-        #expect(CheckinPrompt.from(StoredBackend(id: checkin.id, payload: .message(checkin), receivedAt: 0, expiresAtMs: 0, verified: true))?.message == "Are you OK? Please reply.")
+        #expect(CheckinParser.fromBackend(checkin, nowMs: 0)?.message == "Are you OK? Please reply.")
     }
 
     @Test func serverRequestSignatureVerifiesAndMatchesSignedString() throws {

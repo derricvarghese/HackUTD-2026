@@ -35,6 +35,8 @@ public final class GatewayUploader {
                 guard let self else { return }
                 let was = self.isOnline
                 self.sync.reachable = path.status == .satisfied
+                self.sync.interface = path.usesInterfaceType(.wifi) ? .wifi : path.usesInterfaceType(.cellular) ? .cellular
+                    : path.status == .satisfied ? .other : .unknown
                 if !was && self.isOnline { self.becameOnline() }
                 self.onChange?()
             }
@@ -51,17 +53,21 @@ public final class GatewayUploader {
         timer?.invalidate()
     }
 
-    /// Periodic work: sync (upload, outbox, statuses, check-ins) and the heartbeat when due.
+    /// Periodic work: sync (upload, outbox, statuses, check-ins), the automatic heartbeat when due, and unsent check-in replies.
     /// Also called from BLE callbacks, which is what keeps the app useful while backgrounded.
     public func tick() {
         sync.requestCycle()
-        Task { await sync.heartbeatIfDue() }
+        Task {
+            await sync.heartbeatIfDue()
+            await sync.flushCheckinReplies()
+        }
     }
 
     public func syncNow() { sync.requestCycle(force: true) }
 
     private func becameOnline() {
         onOnline?()
+        sync.requestHeartbeat()          // connectivity returned: tell the server right away
         sync.requestCycle(force: true)
     }
 

@@ -51,6 +51,8 @@ public struct ServerInfo: Equatable {
     public var eventName: String?
     public var checkinIntervalSeconds: Int?
     public var heartbeatIntervalSeconds: Int?
+    /// `checkin_reminder_seconds`: the same overdue check-in is re-delivered this often (default 300, demo 20).
+    public var checkinReminderSeconds: Int? = nil
     public var silenceThresholdSeconds: Int?
     public var gatewayUploadMaxBatch: Int?
     /// `profile_required` (nil when the server did not say) and `profile_consent_version`.
@@ -72,6 +74,7 @@ public struct ServerInfo: Equatable {
             eventName: event?.optString("name"),
             checkinIntervalSeconds: pos("checkin_interval_seconds"),
             heartbeatIntervalSeconds: pos("heartbeat_interval_seconds"),
+            checkinReminderSeconds: pos("checkin_reminder_seconds"),
             silenceThresholdSeconds: pos("silence_threshold_seconds"),
             gatewayUploadMaxBatch: pos("gateway_upload_max_batch"),
             profileRequired: o["profile_required"]?.boolValue,
@@ -83,6 +86,7 @@ public struct ServerInfo: Equatable {
 /// hop table, heartbeat settings, event state and its own device registration.
 public final class BackendConfig {
     public static let defaultHeartbeatSeconds = 300
+    public static let defaultReminderSeconds = 300
     public static let defaultBatch = 500
 
     private let kv: KeyValueStore
@@ -123,6 +127,10 @@ public final class BackendConfig {
         let v = Int(kv.int("hb_interval"))
         return v > 0 ? v : Self.defaultHeartbeatSeconds
     }
+    public var checkinReminderSeconds: Int {
+        let v = Int(kv.int("reminder"))
+        return v > 0 ? v : Self.defaultReminderSeconds
+    }
     public var silenceThresholdSeconds: Int { Int(kv.int("silence")) }
     public var maxBatch: Int { min(max(Int(kv.int("batch")) == 0 ? Self.defaultBatch : Int(kv.int("batch")), 1), 500) }
     public var eventActive: Bool { kv.int("event_active") == 1 }
@@ -154,12 +162,23 @@ public final class BackendConfig {
         set { kv.setInt("hb_seq", Int64(newValue)) }
     }
 
+    /// Forgets this phone's registration so the next online moment registers the (new) key with POST /v1/devices:
+    /// device id, heartbeat sequence and timers, outbox cursor. Backend keys, hop table and event state stay.
+    public func resetDeviceRegistration() {
+        deviceId = nil
+        heartbeatSeq = 0
+        outboxCursor = nil
+        lastHeartbeatAtMs = 0
+        lastUploadAtMs = 0
+    }
+
     /// Stores a fresh /server-info. Garbage keys are ignored so a bad response cannot lock the phone out.
     public func update(_ info: ServerInfo, nowMs: Int64) {
         if let k = valid(info.encryptionPublicKey) { kv.setString("enc_key", k) }
         if let k = valid(info.signingPublicKey) { kv.setString("sign_key", k) }
         kv.setString("hops", info.hopLimits.toJSON().serialized())
         if let v = info.heartbeatIntervalSeconds { kv.setInt("hb_interval", Int64(v)) }
+        if let v = info.checkinReminderSeconds { kv.setInt("reminder", Int64(v)) }
         if let v = info.silenceThresholdSeconds { kv.setInt("silence", Int64(v)) }
         if let v = info.gatewayUploadMaxBatch { kv.setInt("batch", Int64(v)) }
         kv.setInt("event_active", info.eventActive ? 1 : 0)

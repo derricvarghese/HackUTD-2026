@@ -344,7 +344,7 @@ import Testing
     @Test func checkinRequestSurfacesAPromptOnlyOnTheAddressedPhone() throws {
         let (net, sos) = try setup()
         var prompts: [String] = []
-        net.nodes["A"]!.onCheckinRequest = { prompts.append(CheckinPrompt.from($0)?.checkinId ?? "?") }
+        net.nodes["A"]!.onCheckinRequest = { if case .message(let m) = $0.payload { prompts.append(m.checkinId ?? "?") } }
         var other: [String] = []
         net.nodes["B"]!.onCheckinRequest = { _ in other.append("B") }
         let cm = net.backend.message(kind: "checkin_request", sosId: sos.id, checkinId: "0192a7f0-0000-7000-8000-0000000000c1",

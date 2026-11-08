@@ -11,7 +11,7 @@ No Swift code was changed. The server accepts only v2 (`POST /v1/sos/batch`).
 | `signed.id` (uuid, random) | `id`: **UUIDv7** (RFC 9562: 48-bit unix ms, version 7, variant 10) |
 | `signed.pub` | `sender_public_key` (always include it) and, if the phone has no device id, also `sender_key_id` |
 | (none) | `sender_key_id`: device id from `POST /v1/devices`, else the base64 SPKI key |
-| `signed.kind` sos / checkin / safe | `kind`: `sos` / `checkin_reply` / `safe` / `offer` / `heartbeat`. Unprompted check-in becomes `kind=sos`, tier `normal`, category `other` |
+| `signed.kind` sos / checkin / safe | `kind`: `sos` / `checkin_reply` / `safe` / `heartbeat`. Unprompted check-in becomes `kind=sos`, tier `normal`, category `other` |
 | `signed.pri` | `tier`: critical / high / normal / safe / **heartbeat** (new) |
 | `signed.maxHops` | `max_hops` |
 | `hop` (outer) | `hop_count` |
@@ -31,7 +31,7 @@ Server rules: `kind=heartbeat` iff `tier=heartbeat`; `max_hops` in `1..table`; `
 Hop semantics are unchanged: the transmitter (origin included) increments `hop_count` and appends its 4-hex relay id before sending; `hop_count == hop_path.length` on receipt.
 
 Plaintext payload (`MeshPayload`): `{lat, lng, accuracy_m?, category, text?, people_count?, trapped?, water_rising?, injured?}` (UTF-8 JSON, any key order).
-Heartbeat: `{heartbeat: {sent_at, approx{lat,lng,radius_m}, battery_pct?, charging?, moving?, seq?}}`. Check-in reply: `{checkin_id, response: "ok"|"need_help"|"other", text?}`.
+Heartbeat: `{heartbeat: {sent_at, approx{lat,lng,radius_m}, battery_pct?, charging?, moving?, seq?}}`. Heartbeat optional fields: `transport`, `network`, `peers_nearby`, `gateway`, `open_sos_ids` (<= 20). Check-in reply: `{checkin_id, response: "still_here"|"no_longer_need_help"|"need_urgent_help"}`.
 `lat`/`lng` are required for `sos`; do not send an SOS without a location.
 
 ## 2. Canonical JSON and the signature
@@ -65,7 +65,7 @@ If there is no backend key (never online and none baked in), do not create the m
 
 * `BackendMessage` / `DeliveredReceipt` objects arrive as separate top-level JSON objects (told apart by `sos_id` / `delivered_at` / `sender_key_id`); relay them (max_hops 5, same hop rules, dedupe by `bm:<id>` / `rcpt:<id>`), and act only after verifying the backend signature (`signing_public_key`; canonical JSON of `{id, kind, sos_id, checkin_id|null, body, max_hops, expires_at, created_at}`; receipts `{id, delivered_at, max_hops: 5}`).
 * Gateway: `POST /v1/devices`, signed requests (`X-Device-Id`, `X-Timestamp` RFC 3339, `X-Device-Signature` over `METHOD\nPATH\nhex(SHA256(body))\nX-Timestamp`, DER, base64), `POST /v1/sos/batch` (<= `gateway_upload_max_batch`), per-item results, `GET /v1/mesh/outbox`, `GET /v1/server-info`, `GET /v1/sos/{id}/status`, `PATCH /v1/checkins/{id}`, `POST /v1/heartbeats`. See PROTOCOL.md.
-* Heartbeats while `server-info.event != null`, every `heartbeat_interval_seconds`.
+* Heartbeats are automatic: every `heartbeat_interval_seconds` while the app runs, event or not (section 8).
 * Relays verify with `sender_public_key` (or a key-as-`sender_key_id`); if neither is present they relay the message unverified.
 * Remove `POST /api/mesh/ingest` and the v1 envelope.
 
@@ -94,3 +94,10 @@ Server side check: `cd server && npm test` (`test/e2e/android-interop.test.ts` i
 Implemented against openapi `Profiles` + `ServerInfo.profile_required/profile_consent_version` + `MeshPayload.profile_summary`:
 `Profile.swift` (model, validation, flag/age derivation, `ProfileInput` JSON, summary), `ProfileSync.swift` (record + sync state machine: `PUT` with `If-Match`/`ETag`, 409 merge, 422 re-consent, 404/older server copy re-`PUT`, `DELETE`, reinstall adoption), `ProfileKeychainStore.swift` (one Keychain item, `AfterFirstUnlockThisDeviceOnly`), `BackendClient` profile calls, `GatewaySync.profileSync` (runs inside the online cycle), SwiftUI in `BeaconMeshUI/ProfileViews.swift`.
 The first SOS in `test-vectors/contract_v1_ios/ios_envelope.json` carries a `profile_summary`; the server's `summarySchema` accepts it (checked with the server's own `verifyEcdsa`/`eciesDecrypt`/`parseSummary` helpers). Profile content is never logged.
+
+## 8. Heartbeat and welfare check-ins on iOS
+
+Pure logic (BeaconMesh target, tested in `WelfareTests`, `GatewaySyncTests`): `Heartbeat.swift` (extras, open-SOS ids, network kind, send rule), `Welfare.swift` (`WelfareCheckin`, `CheckinParser` for REST and `checkin_request`, `WelfareManager` with dedupe by `checkin_id`, reminder re-alert, overdue, `FileWelfareStore` version 1, `WelfareReminderPlanner`, `WelfareNotificationModel`), `GatewaySync.heartbeatIfDue/requestHeartbeat/answerCheckin/deliverReply/flushCheckinReplies`.
+Apple glue (never compiled outside Xcode): `WelfareNotificationCenter.swift` (UNUserNotificationCenter delegate, category with three actions, `.timeSensitive`), `MeshNode`, `GatewayUploader` (NWPath interface, immediate heartbeat when online), `BeaconMeshUI/WelfareViews.swift`, `BeaconRootView` (one sheet per check-in).
+Rules: no alarm and no `alarm_at`; a missed check-in stays the single active one (overdue) and is re-delivered with the same `checkin_id` (new message id, body `reminder`); one notification per id (replaced, never stacked); the local reminder is the same single request (identifier = check-in id): non-repeating at `deadline_at`, upgraded to a repeating request (interval = max(60 s, `/server-info.checkin_reminder_seconds`), an iOS floor) whenever the app next runs after the deadline, so each firing replaces the previous delivery; in the foreground the exact interval is honoured (`WelfareManager.remindDueOverdue`). While the phone sleeps past the deadline only the deadline notification shows; answering after the deadline is accepted. The `kind=offer` envelope kind is gone.
+Xcode checklist: Signing & Capabilities -> add Time Sensitive Notifications; check that tapping "I'm still here" on a locked phone sends the PATCH without opening the app; Push Notifications is NOT enabled (no APNs).

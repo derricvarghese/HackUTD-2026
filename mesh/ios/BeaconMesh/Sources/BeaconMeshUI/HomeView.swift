@@ -10,7 +10,6 @@ struct HomeView: View {
     @ObservedObject private var haptics = Haptics.shared
     @State private var draft: Category?
     @State private var banner: Banner?
-    @State private var checkinPrompt: CheckinPrompt?
 
     struct Banner: Equatable {
         var text: String
@@ -26,13 +25,12 @@ struct HomeView: View {
                     MeshSummaryCard(node: node, onOpenMesh: onOpenMesh)
                     if let banner { BannerView(banner: banner) }
                     ProfileHomeSection(node: node)
-                    ForEach(node.checkins) { prompt in CheckinCard(prompt: prompt) { checkinPrompt = prompt } }
+                    ForEach(node.checkins) { checkin in WelfareCard(checkin: checkin) { node.checkinToShow = checkin } }
                     problems
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach([Category.trapped, .injured, .medical, .waterMeds, .safe], id: \.self) { c in tile(c) }
                     }
                     Menu {
-                        Button { open(.checkin) } label: { Label("Send a check-in", systemImage: Category.checkin.symbol) }
                         Button { open(.other) } label: { Label("Something else", systemImage: Category.other.symbol) }
                     } label: {
                         Label("More", systemImage: "plus.circle")
@@ -59,9 +57,6 @@ struct HomeView: View {
                 case nil: break
                 }
             }
-        }
-        .sheet(item: $checkinPrompt) { prompt in
-            CheckinSheet(node: node, prompt: prompt) { checkinPrompt = nil }
         }
         .onAppear { haptics.prepare() }
     }
@@ -187,86 +182,6 @@ struct BannerView: View {
         .padding(12)
         .background((banner.good ? Color.green : Color.orange).opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
-    }
-}
-
-struct CheckinCard: View {
-    let prompt: CheckinPrompt
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: "bell.badge.fill").font(.title2).foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Responders are checking on you").font(.headline)
-                    Text(prompt.message ?? "Are you OK? Please reply.").font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-            }
-            .padding(12)
-            .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Opens the reply options")
-    }
-}
-
-/// "I'm OK" / "I need help" / free text reply to a check-in request.
-struct CheckinSheet: View {
-    @ObservedObject var node: MeshNode
-    let prompt: CheckinPrompt
-    let done: () -> Void
-    @ObservedObject private var haptics = Haptics.shared
-    @State private var text = ""
-    @State private var sending = false
-    @State private var error: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Text(prompt.message ?? "Are you OK? Please reply.")
-                    if let d = prompt.deadlineAtMs {
-                        Text("Please answer by \(Date(timeIntervalSince1970: Double(d) / 1000).formatted(date: .omitted, time: .shortened))")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Section {
-                    Button { send("ok", "I'm OK") } label: { Label("I'm OK", systemImage: "hand.thumbsup.fill") }.tint(.green)
-                    Button { send("need_help", "I need help") } label: { Label("I need help", systemImage: "exclamationmark.triangle.fill") }.tint(.red)
-                }
-                .disabled(sending)
-                Section("Or write a reply") {
-                    TextField("Short message", text: $text, axis: .vertical).lineLimit(1...4)
-                    Button("Send reply") { send("other", nil) }.disabled(text.trimmingCharacters(in: .whitespaces).isEmpty || sending)
-                }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
-            }
-            .navigationTitle("Check-in")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Later") { haptics.play(.sheetDismiss); done() } } }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func send(_ response: String, _ fallbackText: String?) {
-        haptics.play(.tap)
-        sending = true
-        let body = text.trimmingCharacters(in: .whitespaces)
-        Task {
-            let failure = await node.reply(to: prompt, response: response, text: body.isEmpty ? fallbackText : body)
-            await MainActor.run {
-                sending = false
-                if let failure {
-                    haptics.play(.error)
-                    error = HomeView.message(for: failure)
-                } else {
-                    haptics.play(.success)
-                    done()
-                }
-            }
-        }
     }
 }
 #endif

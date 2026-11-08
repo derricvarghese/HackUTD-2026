@@ -60,7 +60,7 @@ public enum Tier: String, CaseIterable, Codable {
 public typealias Priority = Tier
 
 public enum EnvelopeKind: String, CaseIterable {
-    case sos, checkinReply = "checkin_reply", safe, offer, heartbeat
+    case sos, checkinReply = "checkin_reply", safe, heartbeat
 }
 
 /// Hop table in force on this phone: contract defaults, replaced by server-provided values once cached.
@@ -100,7 +100,8 @@ public struct HopLimits: Equatable {
 
 /// What the user picks in the UI. `apiCategory` is the contract `Category`; `kind` the envelope kind.
 /// `medical` is sent as `injured`, `water_meds` as `need_water_meds`. The un-prompted `checkin` is a normal-tier `sos`
-/// with category `other` (a `checkin_reply` envelope needs a backend check-in id).
+/// with category `other` (a `checkin_reply` envelope needs a backend check-in id). The app no longer offers it: liveness is
+/// the automatic heartbeat and welfare check-ins are answered from the server's request.
 public enum Category: String, Codable, CaseIterable {
     case trapped, injured, medical
     case waterMeds = "water_meds"
@@ -398,14 +399,14 @@ public enum MeshPayload {
     }
 
     public static func heartbeat(sentAtMs: Int64, lat: Double, lng: Double, batteryPct: Int?, charging: Bool?,
-                                 moving: Bool?, seq: Int) -> JSONValue {
+                                 moving: Bool?, seq: Int, extras: HeartbeatExtras = HeartbeatExtras()) -> JSONValue {
         .object(["heartbeat": heartbeatBody(sentAtMs: sentAtMs, lat: lat, lng: lng, batteryPct: batteryPct,
-                                            charging: charging, moving: moving, seq: seq)])
+                                            charging: charging, moving: moving, seq: seq, extras: extras)])
     }
 
     /// openapi `HeartbeatCreate` (also the body of POST /heartbeats).
     public static func heartbeatBody(sentAtMs: Int64, lat: Double, lng: Double, batteryPct: Int?, charging: Bool?,
-                                     moving: Bool?, seq: Int) -> JSONValue {
+                                     moving: Bool?, seq: Int, extras: HeartbeatExtras = HeartbeatExtras()) -> JSONValue {
         var hb: [String: JSONValue] = [
             "sent_at": .string(Iso.format(sentAtMs)),
             "approx": .object(["lat": .double(Routing.cell(lat)), "lng": .double(Routing.cell(lng)), "radius_m": .int(1000)]),
@@ -414,6 +415,7 @@ public enum MeshPayload {
         if let batteryPct { hb["battery_pct"] = .int(Int64(min(max(batteryPct, 0), 100))) }
         if let charging { hb["charging"] = .bool(charging) }
         if let moving { hb["moving"] = .bool(moving) }
+        extras.put(into: &hb)
         return .object(hb)
     }
 }

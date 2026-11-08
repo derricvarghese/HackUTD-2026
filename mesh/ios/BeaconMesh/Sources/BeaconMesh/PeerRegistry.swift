@@ -91,6 +91,13 @@ public enum InstanceId {
         return id(fromBytes: Data(b[1...]))
     }
 
+    /// Replaces the stored id with a fresh one and returns it.
+    public static func rotate(defaults: UserDefaults = .standard, key: String = "beacon.instanceId") -> String {
+        let fresh = newId()
+        defaults.set(fresh, forKey: key)
+        return fresh
+    }
+
     /// Loads the id from `defaults` or creates and stores a fresh one.
     public static func loadOrCreate(defaults: UserDefaults = .standard, key: String = "beacon.instanceId") -> String {
         if let s = defaults.string(forKey: key), UUID(uuidString: s) != nil { return s.lowercased() }

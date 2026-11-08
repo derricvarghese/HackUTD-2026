@@ -79,25 +79,8 @@ public struct BatchResponse {
 public struct HeartbeatReply: Equatable {
     public var nextInSeconds: Int?
     public var eventActive: Bool?
-}
-
-/// A check-in the user is asked to answer (from a mesh `checkin_request` or `GET /checkins/pending`).
-public struct CheckinPrompt: Equatable, Identifiable {
-    public var checkinId: String
-    public var sosId: String
-    public var message: String?
-    public var deadlineAtMs: Int64?
-    public var id: String { checkinId }
-
-    public init(checkinId: String, sosId: String, message: String?, deadlineAtMs: Int64?) {
-        self.checkinId = checkinId; self.sosId = sosId; self.message = message; self.deadlineAtMs = deadlineAtMs
-    }
-
-    public static func from(_ item: StoredBackend) -> CheckinPrompt? {
-        guard case .message(let m) = item.payload, m.kind == "checkin_request", let cid = m.checkinId else { return nil }
-        return CheckinPrompt(checkinId: cid, sosId: m.sosId, message: m.body.optString("message"),
-                             deadlineAtMs: m.body.optString("deadline_at").flatMap(Iso.parse))
-    }
+    /// `pending_checkins` of the 202 body: welfare check-ins to show right away.
+    public var pendingCheckins: [WelfareCheckin] = []
 }
 
 /// Typed access to the Beacon REST API (openapi.yaml). All paths carry the `/v1` prefix; signed requests follow
@@ -135,13 +118,16 @@ public final class BackendClient {
     /// POST /v1/devices. Idempotent on the public key. Stores and returns the device id.
     @discardableResult
     public func registerDevice(appVersion: String?, displayName: String? = nil) async throws -> String {
+        let keyAtStart = signer.publicKeyBase64
         var body: [String: JSONValue] = [
-            "public_key": .string(signer.publicKeyBase64), "platform": .string(MeshProtocol.devicePlatform),
+            "public_key": .string(keyAtStart), "platform": .string(MeshProtocol.devicePlatform),
         ]
         if let appVersion { body["app_version"] = .string(appVersion) }
         if let displayName, !displayName.isEmpty { body["display_name"] = .string(String(displayName.prefix(60))) }
         let json = try await call("POST", "/v1/devices", body: .object(body), auth: false)
         guard let id = json.optString("id"), Uuid7.isUUID(id) else { throw BackendError.badResponse }
+        // The identity was reset while this call was in flight: this id belongs to the old key, drop it.
+        guard signer.publicKeyBase64 == keyAtStart else { throw BackendError.badResponse }
         config.deviceId = id
         return id
     }
@@ -192,18 +178,17 @@ public final class BackendClient {
 
     public func sendHeartbeat(_ body: JSONValue) async throws -> HeartbeatReply {
         let json = try await call("POST", "/v1/heartbeats", body: body, auth: true)
-        return HeartbeatReply(nextInSeconds: json["next_heartbeat_in_seconds"]?.intValue, eventActive: json["event_active"]?.boolValue)
+        return HeartbeatReply(nextInSeconds: json["next_heartbeat_in_seconds"]?.intValue, eventActive: json["event_active"]?.boolValue,
+                              pendingCheckins: CheckinParser.fromRestArray(json["pending_checkins"], nowMs: now()))
     }
 
-    public func pendingCheckins() async throws -> [CheckinPrompt] {
+    /// GET /v1/checkins/pending: unanswered, not-yet-missed welfare check-ins of this device's open cases.
+    public func pendingCheckins() async throws -> [WelfareCheckin] {
         let json = try await call("GET", "/v1/checkins/pending", auth: true)
-        return (json["data"]?.arrayValue ?? []).compactMap { c in
-            guard let id = c.optString("id"), let sos = c.optString("sos_id") else { return nil }
-            return CheckinPrompt(checkinId: id, sosId: sos, message: nil, deadlineAtMs: c.optString("deadline_at").flatMap(Iso.parse))
-        }
+        return CheckinParser.fromRestArray(json["data"], nowMs: now())
     }
 
-    /// PATCH /v1/checkins/{id}. `response`: ok | need_help | other.
+    /// PATCH /v1/checkins/{id}. `response`: still_here | no_longer_need_help | need_urgent_help; `responded_at` = client time.
     public func respondCheckin(id: String, response: String, text: String?) async throws {
         var b: [String: JSONValue] = ["response": .string(response), "responded_at": .string(Iso.format(adjustedNow()))]
         if let text, !text.isEmpty { b["text"] = .string(String(text.prefix(1000))) }
