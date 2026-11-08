@@ -34,6 +34,8 @@ public final class MeshRouter {
     public var onCheckinRequest: ((StoredBackend) -> Void)?
     /// A status update / delivered notice for one of our SOS was applied.
     public var onStatusApplied: ((StoredMessage) -> Void)?
+    /// Identity hint for new sos/safe envelopes (`MeshPayload.profile_summary`); nil = none. Never logged.
+    public var profileSummary: () -> JSONValue? = { nil }
 
     public private(set) var connectedPeers: [String] = []
 
@@ -85,7 +87,8 @@ public final class MeshRouter {
     public func originate(category: Category, text: String? = nil, lat: Double?, lng: Double?, accuracy: Double? = nil,
                           people: Int? = nil, nonCriticalHopCap: Int? = nil) throws -> StoredMessage {
         guard let lat, let lng else { throw MeshError.noLocation }
-        let payload = MeshPayload.sos(category: category, text: text, lat: lat, lng: lng, accuracy: accuracy, people: people)
+        let payload = MeshPayload.sos(category: category, text: text, lat: lat, lng: lng, accuracy: accuracy, people: people,
+                                      profileSummary: profileSummary())
         let own = OwnInfo(category: category.rawValue, text: text, people: people, lat: lat, lng: lng, accuracy: accuracy)
         let msg = try build(kind: category.kind, tier: category.tier, payload: payload,
                             routing: Routing.build(lat: lat, lng: lng, category: category.apiCategory),

@@ -53,6 +53,9 @@ public struct ServerInfo: Equatable {
     public var heartbeatIntervalSeconds: Int?
     public var silenceThresholdSeconds: Int?
     public var gatewayUploadMaxBatch: Int?
+    /// `profile_required` (nil when the server did not say) and `profile_consent_version`.
+    public var profileRequired: Bool?
+    public var profileConsentVersion: String?
 
     public static func fromJSON(_ o: JSONValue) -> ServerInfo {
         func pos(_ k: String) -> Int? { o[k]?.intValue.flatMap { $0 > 0 ? $0 : nil } }
@@ -70,7 +73,9 @@ public struct ServerInfo: Equatable {
             checkinIntervalSeconds: pos("checkin_interval_seconds"),
             heartbeatIntervalSeconds: pos("heartbeat_interval_seconds"),
             silenceThresholdSeconds: pos("silence_threshold_seconds"),
-            gatewayUploadMaxBatch: pos("gateway_upload_max_batch"))
+            gatewayUploadMaxBatch: pos("gateway_upload_max_batch"),
+            profileRequired: o["profile_required"]?.boolValue,
+            profileConsentVersion: nonBlank("profile_consent_version"))
     }
 }
 
@@ -122,6 +127,9 @@ public final class BackendConfig {
     public var maxBatch: Int { min(max(Int(kv.int("batch")) == 0 ? Self.defaultBatch : Int(kv.int("batch")), 1), 500) }
     public var eventActive: Bool { kv.int("event_active") == 1 }
     public var lastInfoAtMs: Int64 { kv.int("info_at") }
+    /// From the last /server-info: nil = never learned (treated as required by the UI).
+    public var profileRequired: Bool? { kv.int("profile_required") == 0 ? nil : kv.int("profile_required") == 1 ? true : false }
+    public var profileConsentVersion: String? { kv.string("profile_consent_version") }
 
     public var deviceId: String? {
         get { kv.string("device_id") }
@@ -155,6 +163,8 @@ public final class BackendConfig {
         if let v = info.silenceThresholdSeconds { kv.setInt("silence", Int64(v)) }
         if let v = info.gatewayUploadMaxBatch { kv.setInt("batch", Int64(v)) }
         kv.setInt("event_active", info.eventActive ? 1 : 0)
+        if let r = info.profileRequired { kv.setInt("profile_required", r ? 1 : 2) }
+        if let v = info.profileConsentVersion { kv.setString("profile_consent_version", v) }
         kv.setInt("info_at", nowMs)
     }
 }

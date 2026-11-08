@@ -51,6 +51,8 @@ public final class GatewaySync {
     public var now: () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     public var log: (String) -> Void = { _ in }
     public var sample: () -> HeartbeatSample? = { nil }
+    /// Profile sync runs inside the same online cycle (after registration and uploads); it has its own backoff and never fails the cycle.
+    public var profileSync: ProfileSyncEngine?
 
     /// Callbacks (called on `hop`'s queue).
     public var onUploadResult: ((UploadResult) -> Void)?
@@ -92,10 +94,16 @@ public final class GatewaySync {
         do {
             try await refreshInfoIfStale()
             try await ensureRegistered()
-            try await flushUploads()
-            try await pollOutbox()
-            try await pollStatuses()
-            try await pollCheckins()
+            // SOS traffic first; the profile step runs even when one of these fails so a bad batch cannot starve it.
+            var stepError: Error?
+            do {
+                try await flushUploads()
+                try await pollOutbox()
+                try await pollStatuses()
+                try await pollCheckins()
+            } catch { stepError = error }
+            await profileSync?.runCycle()
+            if let stepError { throw stepError }
             _ = await heartbeatIfDue()
             await main { [self] in
                 backoff.succeed()

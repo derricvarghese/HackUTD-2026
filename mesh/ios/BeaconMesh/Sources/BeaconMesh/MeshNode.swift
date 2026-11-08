@@ -38,6 +38,18 @@ public final class MeshNode: NSObject, ObservableObject {
     @Published public private(set) var hasLocation = false
     @Published public private(set) var syncError: String?
     @Published public private(set) var heldBackendCount = 0
+    // Profile (identity). Contents stay in memory only while the app runs; never logged.
+    @Published public private(set) var userProfile: UserProfile?
+    @Published public private(set) var profileStatus: ProfileSyncStatus = .empty
+    @Published public private(set) var needsProfileOnboarding = false
+    @Published public private(set) var profileRequired = true
+    @Published public private(set) var profileDeleting = false
+    @Published public private(set) var profileConsentVersion = ProfileConsent.bundledVersion
+    @Published public private(set) var acceptedConsent: ProfileConsentInfo?
+    @Published public private(set) var lastProfileSyncAt: Date?
+    /// "Complete your profile" banner dismissed in this launch only (not persisted: it returns next launch).
+    @Published public private(set) var profileBannerDismissed = false
+    @Published public private(set) var profileNudgeProminent = false
 
     /// Demo setting: cap max_hops for non-critical messages (nil = use the hop table).
     @Published public var demoHopCap: Int? = nil {
@@ -63,6 +75,7 @@ public final class MeshNode: NSObject, ObservableObject {
     private let transport = BLETransport()
     private let config: BackendConfig
     private let sync: GatewaySync
+    public let profile: ProfileSyncEngine
     private let uploader: GatewayUploader
     private let location = CLLocationManager()
     private var lastLocation: CLLocation?
@@ -72,7 +85,8 @@ public final class MeshNode: NSObject, ObservableObject {
 
     public init(signer: MeshSigner = KeychainKeyStore.loadOrCreate(),
                 store: MessageStore = FileMessageStore.defaultStore(),
-                keyValueStore: KeyValueStore = UserDefaultsKeyValueStore()) {
+                keyValueStore: KeyValueStore = UserDefaultsKeyValueStore(),
+                profileStore: ProfileStoring = ProfileKeychainStore()) {
         config = BackendConfig(store: keyValueStore,
                                builtInEncryptionKey: BackendBuildConfig.encryptionPublicKey,
                                builtInSigningKey: BackendBuildConfig.signingPublicKey)
@@ -80,7 +94,13 @@ public final class MeshNode: NSObject, ObservableObject {
         let client = BackendClient(baseURL: BackendBuildConfig.backendURL, http: URLSessionTransport(), signer: signer, config: config)
         sync = GatewaySync(client: client, router: router, config: config)
         uploader = GatewayUploader(sync: sync)
+        profile = ProfileSyncEngine(client: client, config: config, store: profileStore)
         super.init()
+        sync.profileSync = profile
+        profile.requestGatewayCycle = { [weak self] in self?.sync.requestCycle(force: true) }
+        profile.onChange = { [weak self] in self?.refresh() }
+        profile.log = { [weak self] in self?.append($0) }   // engine log lines carry status codes only, never profile content
+        router.profileSummary = { [weak self] in self?.profile.meshSummary() }
 
         let cap = defaults.integer(forKey: "beacon.demoHopCap")
         demoHopCap = cap > 0 ? cap : nil
@@ -190,6 +210,19 @@ public final class MeshNode: NSObject, ObservableObject {
 
     public func syncNow() { uploader.syncNow() }
 
+    // MARK: Profile
+
+    /// Validates and stores the profile (offline-safe), then syncs when possible. Returns field issues; empty = saved.
+    @discardableResult
+    public func saveProfile(_ p: UserProfile, consentVersion: String) -> [String: String] {
+        profile.save(p, consentVersion: consentVersion)
+    }
+    public func renewProfileConsent() { profile.renewConsent(version: profile.consentVersion) }
+    public func skipProfile() { profile.skip() }
+    public func dismissProfileBanner() { profileBannerDismissed = true }
+    public func deleteProfile() { profile.deleteProfile() }
+    public func retryProfileSync() { profile.retry() }
+
     // MARK: State
 
     private func currentCoordinate() -> (Double, Double)? {
@@ -223,6 +256,15 @@ public final class MeshNode: NSObject, ObservableObject {
         lastInfoAt = config.lastInfoAtMs > 0 ? Date(timeIntervalSince1970: Double(config.lastInfoAtMs) / 1000) : nil
         lastHeartbeatAt = config.lastHeartbeatAtMs > 0 ? Date(timeIntervalSince1970: Double(config.lastHeartbeatAtMs) / 1000) : nil
         syncError = sync.lastError
+        userProfile = profile.profile
+        profileStatus = profile.status
+        needsProfileOnboarding = profile.needsOnboarding
+        profileRequired = profile.profileRequired
+        profileDeleting = profile.isDeleting
+        profileNudgeProminent = profile.nudgeIsProminent
+        profileConsentVersion = profile.consentVersion
+        acceptedConsent = profile.record.consentVersion.map { ProfileConsentInfo(version: $0, acceptedAtMs: profile.record.consentAcceptedAtMs) }
+        lastProfileSyncAt = profile.record.lastSyncedAtMs > 0 ? Date(timeIntervalSince1970: Double(profile.record.lastSyncedAtMs) / 1000) : nil
         heldBackendCount = router.backendItems.count
         hasLocation = currentCoordinate() != nil
         var merged = router.pendingCheckins.compactMap(CheckinPrompt.from)

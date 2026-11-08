@@ -376,8 +376,9 @@ public enum MeshWire {
 
 /// Plaintext inside `MeshEnvelope.payload` (openapi `MeshPayload`).
 public enum MeshPayload {
+    /// `profileSummary`: openapi `ProfileSummary` (see `ProfileSummary.build`), added for kind sos/safe only.
     public static func sos(category: Category, text: String?, lat: Double, lng: Double, accuracy: Double?,
-                           people: Int?) -> JSONValue {
+                           people: Int?, profileSummary: JSONValue? = nil) -> JSONValue {
         var o: [String: JSONValue] = [
             "lat": .double(lat), "lng": .double(lng), "category": .string(category.apiCategory),
         ]
@@ -386,6 +387,7 @@ public enum MeshPayload {
         if let people, people >= 1 { o["people_count"] = .int(Int64(people)) }
         if category == .trapped { o["trapped"] = .bool(true) }
         if category == .injured || category == .medical { o["injured"] = .bool(true) }
+        if let profileSummary { o["profile_summary"] = profileSummary }
         return .object(o)
     }
 

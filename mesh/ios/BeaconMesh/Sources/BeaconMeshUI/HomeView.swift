@@ -22,6 +22,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let banner { BannerView(banner: banner) }
+                    ProfileHomeSection(node: node)
                     ForEach(node.checkins) { prompt in CheckinCard(prompt: prompt) { checkinPrompt = prompt } }
                     problems
                     LazyVGrid(columns: columns, spacing: 12) {

@@ -215,7 +215,8 @@ public final class BackendClient {
     func adjustedNow() -> Int64 { now() + clockOffsetMs }
 
     /// Builds the signed request (exposed for tests).
-    public func makeRequest(method: String, path: String, query: String? = nil, body: Data, auth: Bool) throws -> HTTPRequest {
+    public func makeRequest(method: String, path: String, query: String? = nil, body: Data, auth: Bool,
+                            extraHeaders: [String: String] = [:]) throws -> HTTPRequest {
         guard let url = URL(string: baseURL + path + (query.map { "?" + $0 } ?? "")) else { throw BackendError.badResponse }
         var headers = ["Accept": "application/json"]
         if !body.isEmpty { headers["Content-Type"] = "application/json" }
@@ -225,6 +226,7 @@ public final class BackendClient {
             let h = try RequestSigner.headers(deviceId: device, signer: signer, method: method, path: path, body: body, nowMs: adjustedNow())
             headers.merge(h) { $1 }
         }
+        headers.merge(extraHeaders) { $1 }   // e.g. If-Match: not part of the signed string
         return HTTPRequest(method: method.uppercased(), url: url, headers: headers, body: body)
     }
 
@@ -233,7 +235,15 @@ public final class BackendClient {
     }
 
     private func callRaw(_ method: String, _ path: String, query: String? = nil, body: JSONValue? = nil, auth: Bool) async throws -> (Int, JSONValue) {
-        let req = try makeRequest(method: method, path: path, query: query, body: body?.serializedData() ?? Data(), auth: auth)
+        let r = try await callFull(method, path, query: query, body: body, auth: auth)
+        return (r.status, r.json)
+    }
+
+    /// Like `callRaw` but also returns the response headers (lower-cased names), e.g. `etag`.
+    func callFull(_ method: String, _ path: String, query: String? = nil, body: JSONValue? = nil, auth: Bool,
+                  extraHeaders: [String: String] = [:]) async throws -> (status: Int, json: JSONValue, headers: [String: String]) {
+        let req = try makeRequest(method: method, path: path, query: query, body: body?.serializedData() ?? Data(), auth: auth,
+                                  extraHeaders: extraHeaders)
         let resp: HTTPResponse
         do { resp = try await http.send(req) } catch let e as BackendError { throw e } catch { throw BackendError.transport(error.localizedDescription) }
         guard (200..<300).contains(resp.status) else {
@@ -241,6 +251,64 @@ public final class BackendClient {
             if resp.status == 401, code == "unauthorized", auth { config.deviceId = nil }   // unknown device: register again
             throw BackendError.http(status: resp.status, code: code, retryAfterSeconds: resp.headers["retry-after"].flatMap { Int($0) })
         }
-        return (resp.status, JSONValue.parse(resp.data) ?? .object([:]))
+        return (resp.status, JSONValue.parse(resp.data) ?? .object([:]), resp.headers)
+    }
+}
+
+// MARK: - Profiles (openapi tag Profiles)
+
+public struct ProfileWriteResult {
+    public var created: Bool
+    /// `profile_version` from the ETag header (falls back to the body).
+    public var version: Int
+}
+
+public struct ProfileReadResult {
+    public var version: Int
+    public var profile: UserProfile?
+    public var consentVersion: String?
+    public var consentAcceptedAtMs: Int64?
+}
+
+extension BackendClient {
+    private func profilePath() throws -> String {
+        guard let id = config.deviceId else { throw BackendError.notRegistered }
+        return "/v1/devices/\(id)/profile"
+    }
+
+    /// `"3"` or `3` -> 3.
+    static func parseETag(_ s: String?) -> Int? {
+        guard let s else { return nil }
+        let t = s.trimmingCharacters(in: CharacterSet(charactersIn: "\" ")).replacingOccurrences(of: "W/", with: "")
+        return Int(t.trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
+    }
+
+    /// PUT /v1/devices/{id}/profile. `ifMatch`: the known server `profile_version`, or "0" for create-only; nil = unconditional.
+    public func putProfile(_ body: JSONValue, ifMatch: String?) async throws -> ProfileWriteResult {
+        let path = try profilePath()
+        let r = try await callFull("PUT", path, body: body, auth: true, extraHeaders: ifMatch.map { ["If-Match": $0] } ?? [:])
+        guard let v = Self.parseETag(r.headers["etag"]) ?? r.json["profile_version"]?.intValue else { throw BackendError.badResponse }
+        return ProfileWriteResult(created: r.status == 201, version: v)
+    }
+
+    /// GET /v1/devices/{id}/profile (the device itself gets the full view). 404 throws `.http(404, ...)`.
+    public func getProfile() async throws -> ProfileReadResult {
+        let r = try await callFull("GET", try profilePath(), auth: true)
+        guard let v = Self.parseETag(r.headers["etag"]) ?? r.json["profile_version"]?.intValue else { throw BackendError.badResponse }
+        return ProfileReadResult(version: v, profile: UserProfile.fromJSON(r.json), consentVersion: r.json["consent"]?.optString("version"),
+                                 consentAcceptedAtMs: r.json["consent"]?.optString("accepted_at").flatMap(Iso.parse))
+    }
+
+    /// DELETE /v1/devices/{id}/profile (right to erasure). 404 means already gone and is not an error here.
+    public func deleteProfile() async throws {
+        do { _ = try await callFull("DELETE", try profilePath(), auth: true) }
+        catch BackendError.http(404, _, _) { }
+    }
+
+    /// `Device.profile_version` from GET /v1/devices/{id}: the server copy's version, nil when it holds none.
+    public func serverProfileVersion() async throws -> Int? {
+        guard let id = config.deviceId else { throw BackendError.notRegistered }
+        let r = try await callFull("GET", "/v1/devices/\(id)", auth: true)
+        return r.json["profile_version"]?.intValue
     }
 }

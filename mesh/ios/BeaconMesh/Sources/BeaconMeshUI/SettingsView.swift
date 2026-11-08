@@ -15,6 +15,7 @@ struct SettingsView: View {
                     LabeledContent("Server", value: node.backendHost)
                         .accessibilityHint("Fixed in this build")
                 }
+                ProfileSettingsSection(node: node)
                 Section("Feedback") {
                     Toggle("Haptic feedback", isOn: Binding(get: { haptics.enabled }, set: { v in
                         haptics.enabled = v

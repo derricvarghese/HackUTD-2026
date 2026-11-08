@@ -22,6 +22,9 @@ struct MeshStatusView: View {
                         tint: node.encryptionKeyStatus == .none ? .red : .green)
                     row("Signing key", node.signingKeyStatus.label, symbol: "checkmark.seal",
                         tint: node.signingKeyStatus == .none ? .orange : .green)
+                    row("Profile", node.profileDeleting ? "being deleted" : node.profileStatus.title, symbol: node.profileStatus.symbol,
+                        tint: node.profileStatus == .synced ? .green : node.profileStatus == .empty ? .secondary : .orange)
+                    if let at = node.lastProfileSyncAt { row("Profile last synced", Fmt.time(at), symbol: "person.crop.circle.badge.checkmark") }
                     row("This phone is registered", node.deviceId.map { "yes (\($0.prefix(8)))" } ?? "not yet", symbol: "person.badge.key")
                     row("Last upload", node.lastUpload.map { "\(Fmt.time(Date(timeIntervalSince1970: Double($0.atMs) / 1000))) \($0.ok ? "ok" : "failed")" } ?? "none yet",
                         symbol: "arrow.up.circle", tint: node.lastUpload.map { $0.ok ? .green : .red } ?? .secondary)

@@ -14,7 +14,10 @@ public struct BeaconRootView: View {
 
     public var body: some View {
         Group {
-            if onboarded {
+            if onboarded && node.needsProfileOnboarding {
+                // Right after the permissions explainer: consent, then name and details. Works offline; syncs later.
+                ProfileOnboardingView(node: node, onClose: nil)
+            } else if onboarded {
                 TabView(selection: $tab) {
                     HomeView(node: node)
                         .tabItem { Label("Home", systemImage: "sos") }.tag(0)
@@ -27,7 +30,6 @@ public struct BeaconRootView: View {
                         .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
                 }
                 .onChange(of: tab) { _ in haptics.play(.select) }
-                .onAppear { node.start() }
             } else {
                 OnboardingView {
                     haptics.play(.success)
@@ -36,6 +38,7 @@ public struct BeaconRootView: View {
                 }
             }
         }
+        .onAppear { if onboarded { node.start() } }
         .onChange(of: scenePhase) { phase in
             if phase == .active { node.tick(); haptics.prepare() }
         }

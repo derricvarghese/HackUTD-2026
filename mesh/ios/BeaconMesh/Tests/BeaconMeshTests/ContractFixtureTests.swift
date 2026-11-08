@@ -116,6 +116,7 @@ import Crypto
             // origin copies have hop_count 0; relays validate the copy that arrives after one transmission
             #expect(MeshValidation.validate(env.forwarded(by: "E45B"), limits: .default, nowMs: now) == nil)
             #expect(try be.decrypt(env) == e["payload"])
+            #expect(try be.decrypt(env)["profile_summary"] != nil || env.id != envs[0]["id"]?.stringValue)   // first SOS carries the summary
             #expect(env.senderKeyId == ios.optString("device_public_key"))
         }
         // the signed batch request verifies with the device key
@@ -136,9 +137,15 @@ import Crypto
             envs.append(m.envelope.toJSON())
             expected.append(.object(["id": .string(m.id), "payload": payload]))
         }
+        // An offline SOS from a phone whose user has a profile: name, age range and coarse flags travel inside the encrypted payload.
+        var me = UserProfile(fullName: "Maria Elena Gonzalez"); me.birthYear = 1951
+        me.mobility.needs = [.oxygenDependent, .walksWithAid]; me.medical.conditions = ["type 2 diabetes"]
+        let summary = try #require(ProfileSummary.build(me, profileVersion: 0, nowYear: ProfileDerive.utcYear(ms: Self.fixedNow)))
+        router.profileSummary = { summary }
         let sosPayload = MeshPayload.sos(category: .trapped, text: "Trapped on roof, 2 people é中 \"quoted\" \\ slash", lat: 32.9857,
-                                         lng: -96.7501, accuracy: 8.5, people: 2)
+                                         lng: -96.7501, accuracy: 8.5, people: 2, profileSummary: summary)
         add(try router.originate(category: .trapped, text: "Trapped on roof, 2 people é中 \"quoted\" \\ slash", lat: 32.9857, lng: -96.7501, accuracy: 8.5, people: 2), sosPayload)
+        router.profileSummary = { nil }   // the second SOS is from a phone without a profile
         add(try router.originate(category: .safe, lat: 32.9857, lng: -96.7501), MeshPayload.sos(category: .safe, text: nil, lat: 32.9857, lng: -96.7501, accuracy: nil, people: nil))
         add(try router.originateCheckinReply(checkinId: "0192a7f0-0000-7000-8000-0000000000c1", response: "ok", text: "fine", lat: 32.9857, lng: -96.7501),
             MeshPayload.checkinReply(checkinId: "0192a7f0-0000-7000-8000-0000000000c1", response: "ok", text: "fine"))

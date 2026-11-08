@@ -88,3 +88,9 @@ If there is no backend key (never online and none baked in), do not create the m
 * `canonical_json_cases`: `input_json` parsed and re-serialised must equal `output` exactly.
 * `android_envelope.json`: four envelopes made by Android; they must verify (use `requireHop=false` for the unsigned hop fields) and decrypt with the same private key.
 Server side check: `cd server && npm test` (`test/e2e/android-interop.test.ts` ingests the Android envelopes). Regenerate the server fixture: `cd server && npx tsx scripts/make-contract-fixtures.ts ../mesh/test-vectors/contract_v1/server_envelope.json`.
+
+## 7. Profile (identity) on iOS
+
+Implemented against openapi `Profiles` + `ServerInfo.profile_required/profile_consent_version` + `MeshPayload.profile_summary`:
+`Profile.swift` (model, validation, flag/age derivation, `ProfileInput` JSON, summary), `ProfileSync.swift` (record + sync state machine: `PUT` with `If-Match`/`ETag`, 409 merge, 422 re-consent, 404/older server copy re-`PUT`, `DELETE`, reinstall adoption), `ProfileKeychainStore.swift` (one Keychain item, `AfterFirstUnlockThisDeviceOnly`), `BackendClient` profile calls, `GatewaySync.profileSync` (runs inside the online cycle), SwiftUI in `BeaconMeshUI/ProfileViews.swift`.
+The first SOS in `test-vectors/contract_v1_ios/ios_envelope.json` carries a `profile_summary`; the server's `summarySchema` accepts it (checked with the server's own `verifyEcdsa`/`eciesDecrypt`/`parseSummary` helpers). Profile content is never logged.
