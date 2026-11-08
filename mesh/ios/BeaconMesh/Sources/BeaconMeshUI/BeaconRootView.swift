@@ -26,6 +26,8 @@ public struct BeaconRootView: View {
                         .badge(node.messages.filter { $0.isOwn && !$0.uploaded }.count)
                     MeshStatusView(node: node)
                         .tabItem { Label("Mesh", systemImage: "dot.radiowaves.left.and.right") }.tag(2)
+                    ResponderTab(node: node)
+                        .tabItem { Label("Responder", systemImage: "cross.case") }.tag(4)
                     SettingsView(node: node)
                         .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
                 }
