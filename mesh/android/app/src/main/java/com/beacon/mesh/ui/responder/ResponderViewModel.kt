@@ -1,6 +1,7 @@
 package com.beacon.mesh.ui.responder
 
 import android.app.Application
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -34,7 +35,7 @@ enum class ShareNotice { PERMISSION_REVOKED, NO_PROVIDER }
 
 data class ShareUi(
     /** The persisted switch. */
-    val wanted: Boolean = false,
+    val wanted: Boolean = true,
     /** Actually sending (or waiting for a fix) right now. */
     val active: Boolean = false,
     /** Only an approximate location permission was granted. */
@@ -76,16 +77,18 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
         }
     }, System::currentTimeMillis, { isOnline(app) })
 
-    private val _sharePref = MutableStateFlow(sharePrefs.getBoolean(KEY_SHARE, false))
+    private val _sharePref = MutableStateFlow(sharePrefs.getBoolean(KEY_SHARE, true))
     /** True when sharing is running now: the switch is on AND the user signed in or resumed during this process. */
     private val _armed = MutableStateFlow(false)
     private val _approximate = MutableStateFlow(false)
     private val _shareNotice = MutableStateFlow<ShareNotice?>(null)
     val shareNotice: StateFlow<ShareNotice?> = _shareNotice
+    private val _requestPermissionTrigger = MutableStateFlow(0)
+    val requestPermissionTrigger: StateFlow<Int> = _requestPermissionTrigger
 
     val share: StateFlow<ShareUi> = kotlinx.coroutines.flow.combine(_sharePref, _armed, _approximate, sharer.state) { pref, armed, approx, st ->
         ShareUi(pref, armed && st.armed, approx, st.failing, st.lastSentAtMs != null, st.clearing)
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, ShareUi())
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ShareUi(wanted = sharePrefs.getBoolean(KEY_SHARE, true)))
 
     val state: StateFlow<ResponderState> = controller.state
 
@@ -133,13 +136,16 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
     fun setActive(active: Boolean) {
         controller.setActive(active)
         if (!active) {
-            if (_armed.value) {
-                source.stop()
-                sharer.stop(clearRemote = false)
-            }
+            source.stop()
+            _armed.value = false
+            sharer.stop(clearRemote = true)
         } else {
             if (_sharePref.value && !_armed.value && state.value.account != null) {
-                beginSharing()
+                if (source.hasFine() || source.hasCoarse()) {
+                    beginSharing()
+                } else {
+                    requestLocationPermission()
+                }
             }
         }
     }
@@ -155,8 +161,14 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
             if (controller.login(u, p)) {
                 _password.value = ""
                 controller.setActive(true)
-                // The switch survives restarts, but sharing starts only after a sign-in the user just made.
-                if (_sharePref.value) beginSharing()
+                // Responders automatically share real location upon sign in
+                if (_sharePref.value) {
+                    if (source.hasFine() || source.hasCoarse()) {
+                        beginSharing()
+                    } else {
+                        requestLocationPermission()
+                    }
+                }
             }
         }
     }
@@ -166,12 +178,13 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
             handle[KEY_SELECTED] = null
             _password.value = ""
             // Take our position off the dashboard map before the token is wiped (best effort, short wait).
-            val wasSharing = _armed.value
-            source.stop(); _armed.value = false
-            if (wasSharing) {
-                sharer.stop(clearRemote = true)
+            source.stop()
+            _armed.value = false
+            sharer.stop(clearRemote = true)
+            if (sharer.state.value.clearing) {
                 withTimeoutOrNull(3_000) { sharer.state.first { !it.clearing } }
             }
+            runCatching { withTimeoutOrNull(2_000) { client.clearLocation() } }
             sharer.abandon()
             controller.logout()
         }
@@ -179,30 +192,46 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
 
     // ---- sharing controls ----
 
+    fun requestLocationPermission() {
+        _requestPermissionTrigger.value += 1
+    }
+
     /** The UI got a location permission result (or already had one) and the user confirmed the rationale. */
     fun enableSharing(fine: Boolean) {
-        _sharePref.value = true; sharePrefs.edit().putBoolean(KEY_SHARE, true).apply()
+        _sharePref.value = true
+        sharePrefs.edit { putBoolean(KEY_SHARE, true) }
         _approximate.value = !fine
         beginSharing()
     }
 
     fun disableSharing() {
-        _sharePref.value = false; sharePrefs.edit().putBoolean(KEY_SHARE, false).apply()
-        source.stop(); _armed.value = false
+        _sharePref.value = false
+        sharePrefs.edit { putBoolean(KEY_SHARE, false) }
+        source.stop()
+        _armed.value = false
         sharer.stop(clearRemote = true)
     }
 
     /** Switch was already on from last launch; the user taps Resume after seeing the screen. */
     fun resumeSharing(fine: Boolean) { _approximate.value = !fine; beginSharing() }
 
-    /** Called when the screen resumes: permission pulled in system settings ends sharing. */
+    /** Called when the screen resumes or permission changes: permission pulled in system settings ends sharing; newly granted permission starts sharing if wanted. */
     fun onPermissionState(fine: Boolean, coarse: Boolean) {
-        if (!fine && !coarse && (_armed.value || _sharePref.value)) {
-            val was = _armed.value || _sharePref.value
-            disableSharing()
-            if (was) _shareNotice.value = ShareNotice.PERMISSION_REVOKED
-        } else if (_armed.value) {
+        if (!fine && !coarse) {
+            if (_armed.value) {
+                source.stop()
+                _armed.value = false
+                sharer.stop(clearRemote = true)
+                _shareNotice.value = ShareNotice.PERMISSION_REVOKED
+            }
+        } else {
+            if (_shareNotice.value == ShareNotice.PERMISSION_REVOKED) {
+                _shareNotice.value = null
+            }
             _approximate.value = !fine
+            if (_sharePref.value && !_armed.value && state.value.account != null) {
+                beginSharing()
+            }
         }
     }
 
@@ -210,9 +239,18 @@ class ResponderViewModel(app: Application, private val handle: SavedStateHandle)
 
     private fun beginSharing() {
         if (state.value.account == null) return
+        if (!source.hasFine() && !source.hasCoarse()) {
+            requestLocationPermission()
+            return
+        }
+        _approximate.value = !source.hasFine()
         sharer.start()
         _armed.value = true
-        if (!source.start { lat, lng -> sharer.onFix(lat, lng) }) _shareNotice.value = ShareNotice.NO_PROVIDER
+        if (!source.start { lat, lng -> sharer.onFix(lat, lng) }) {
+            _shareNotice.value = ShareNotice.NO_PROVIDER
+        } else if (_shareNotice.value == ShareNotice.NO_PROVIDER) {
+            _shareNotice.value = null
+        }
     }
 
     fun setAvailable(on: Boolean) { viewModelScope.launch { controller.setAvailable(on) } }

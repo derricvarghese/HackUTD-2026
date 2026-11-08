@@ -100,7 +100,7 @@ const getNearbyCases: ToolDef = {
 
 export async function responderCandidates(ctx: Ctx, sos: SosRow, limit = 10) {
   const rows = await ctx.db.selectFrom('responders').select(['id', 'name', 'role', 'skills', 'available', 'lat', 'lng', 'last_seen_at', 'in_app', 'location_updated_at'])
-    .where('active', '=', true).where('available', '=', true).execute();
+    .where('active', '=', true).where('available', '=', true).where('role', '!=', 'admin').execute();
   const counts = rows.length ? await ctx.db.selectFrom('assignments').select(['responder_id', (eb) => eb.fn.countAll<string>().as('n')])
     .where('status', 'in', ['assigned', 'en_route', 'on_scene']).where('responder_id', 'in', rows.map((r) => r.id)).groupBy('responder_id').execute() : [];
   const by = new Map(counts.map((c) => [c.responder_id, Number(c.n)]));
@@ -164,7 +164,7 @@ const getEventContext: ToolDef = {
     ]).where('event_id', '=', ev.id).executeTakeFirstOrThrow();
     const ring = geofenceRing(ev.region);
     const lat = sos.lat ?? sos.approx_lat, lng = sos.lng ?? sos.approx_lng;
-    const resp = await ctx.db.selectFrom('responders').select((eb) => eb.fn.countAll<string>().as('n')).where('active', '=', true).where('available', '=', true).executeTakeFirstOrThrow();
+    const resp = await ctx.db.selectFrom('responders').select((eb) => eb.fn.countAll<string>().as('n')).where('active', '=', true).where('available', '=', true).where('role', '!=', 'admin').executeTakeFirstOrThrow();
     return {
       event: {
         name: clip(ev.name, 80), status: ev.status,

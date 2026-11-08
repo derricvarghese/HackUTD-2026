@@ -21,6 +21,7 @@ export function overviewStats(cases: Sos[], responders: Responder[], now = Date.
   const triage = cases.filter((c) => c.category !== 'safe' && c.score >= 20);
   const crit = triage.filter((c) => c.score >= CRITICAL_MIN);
   const silent = triage.filter((c) => c.silent);
+  const fieldResponders = responders.filter((r) => r.role !== 'admin');
   return {
     open: triage.length,
     openNewHour: triage.filter((c) => recent(c.received_at ?? c.created_at)).length,
@@ -28,9 +29,9 @@ export function overviewStats(cases: Sos[], responders: Responder[], now = Date.
     criticalNewHour: crit.filter((c) => recent(c.received_at ?? c.created_at)).length,
     silent: silent.length,
     silentNewHour: silent.filter((c) => recent(c.silent_since)).length,
-    deployed: responders.filter((r) => (r.active_assignments ?? 0) > 0).length,
-    responders: responders.length,
-    available: responders.filter((r) => r.available && !(r.active_assignments ?? 0)).length,
+    deployed: fieldResponders.filter((r) => (r.active_assignments ?? 0) > 0).length,
+    responders: fieldResponders.length,
+    available: fieldResponders.filter((r) => r.available && !(r.active_assignments ?? 0)).length,
   };
 }
 

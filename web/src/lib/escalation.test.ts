@@ -27,7 +27,12 @@ describe('latest escalation', () => {
 describe('stats from data', () => {
   it('counts the overview tiles', () => {
     const cases = [makeSos({ score: 90, received_at: at(10) }), makeSos({ id: 'x', score: 60, silent: true, silent_since: at(5), received_at: at(200) })];
-    const r = [{ id: '1', username: 'a', name: 'A', role: 'responder' as const, available: true, active_assignments: 1 }, { id: '2', username: 'b', name: 'B', role: 'responder' as const, available: true, active_assignments: 0 }];
+    const r = [
+      { id: '1', username: 'a', name: 'A', role: 'responder' as const, available: true, active_assignments: 1 },
+      { id: '2', username: 'b', name: 'B', role: 'responder' as const, available: true, active_assignments: 0 },
+      { id: '3', username: 'admin', name: 'Admin', role: 'admin' as const, available: true, active_assignments: 0 },
+    ];
+    // admins should not count towards deployed, responders, or available ("x free")
     expect(overviewStats(cases, r, NOW)).toEqual({ open: 2, openNewHour: 1, critical: 1, criticalNewHour: 1, silent: 1, silentNewHour: 1, deployed: 1, responders: 2, available: 1 });
   });
   it('summarises check-ins', () => {

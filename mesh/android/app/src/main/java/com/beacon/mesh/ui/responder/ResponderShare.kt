@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -204,17 +205,43 @@ private fun SwitchRow(title: String, body: String, checked: Boolean, enabled: Bo
     }
 }
 
-/** Call from the screen: re-checks the permission whenever the app returns to the foreground. */
+/** Call from the screen: re-checks the permission whenever the app returns to the foreground or permission is requested. */
 @Composable
 fun PermissionWatcher(vm: ResponderViewModel, signedIn: Boolean) {
     val context = LocalContext.current
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    fun fine() = context.hasPerm(Manifest.permission.ACCESS_FINE_LOCATION)
+    fun coarse() = context.hasPerm(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        vm.onPermissionState(fine(), coarse())
+    }
+
+    val requestTrigger by vm.requestPermissionTrigger.collectAsStateWithLifecycle()
+    LaunchedEffect(requestTrigger) {
+        if (requestTrigger > 0) {
+            if (!fine() && !coarse()) {
+                launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            } else {
+                vm.onPermissionState(fine(), coarse())
+            }
+        }
+    }
+
+    LaunchedEffect(signedIn) {
+        if (signedIn) {
+            if (!fine() && !coarse()) {
+                launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            } else {
+                vm.onPermissionState(fine(), coarse())
+            }
+        }
+    }
+
     androidx.compose.runtime.DisposableEffect(owner, signedIn) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
             if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME && signedIn) {
-                vm.onPermissionState(
-                    context.hasPerm(Manifest.permission.ACCESS_FINE_LOCATION), context.hasPerm(Manifest.permission.ACCESS_COARSE_LOCATION),
-                )
+                vm.onPermissionState(fine(), coarse())
             }
         }
         owner.lifecycle.addObserver(obs)

@@ -30,16 +30,14 @@ class ResponderLocationSource(context: Context) {
         fun offer(location: Location) {
             if (best.offer(com.beacon.mesh.location.LocationProviders.info(location), location)) onFix(location.latitude, location.longitude)
         }
-        val l = object : LocationListener {
-            override fun onLocationChanged(location: Location) { offer(location) }
-            @Deprecated("Deprecated in API 29") override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-        }
+        val l = LocationListener { offer(it) }
         // Same provider logic as the mesh node: fused (API 31+), then GPS (fine permission only), then network.
         val providers = com.beacon.mesh.location.LocationProviders.chooseProviders(lm, hasFine())
         var any = false
         try {
+            for (loc in com.beacon.mesh.location.LocationProviders.lastKnown(lm, providers)) {
+                offer(loc)
+            }
             for (p in providers) {
                 try { com.beacon.mesh.location.LocationProviders.request(lm, p, INTERVAL_MS, l); any = true } catch (_: IllegalArgumentException) { }
             }

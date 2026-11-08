@@ -152,6 +152,7 @@ export function Responders() {
   const counts = useMemo(() => {
     let available = 0, enroute = 0, onscene = 0;
     for (const r of list) {
+      if (r.role === 'admin') continue;
       const a = byResp.get(r.id);
       if (!a) { if (r.available) available++; } else if (a.status === 'on_scene') onscene++; else enroute++;
     }
@@ -160,9 +161,9 @@ export function Responders() {
   const today = (resolved.data ?? []).filter((a) => a.resolved_at && new Date(a.resolved_at).toDateString() === new Date(now).toDateString()).length;
 
   const rows = list.filter((r) => {
-    if (f === 'responder' && r.role === 'volunteer') return false;
+    if (f === 'responder' && r.role !== 'responder') return false;
     if (f === 'volunteer' && r.role !== 'volunteer') return false;
-    if (f === 'available' && !(r.available && !byResp.has(r.id))) return false;
+    if (f === 'available' && (r.role === 'admin' || !(r.available && !byResp.has(r.id)))) return false;
     if (f === 'in_app' && !r.in_app) return false;
     const s = q.trim().toLowerCase();
     return !s || [r.name, r.username, r.organization ?? '', ...(r.skills ?? [])].some((x) => x.toLowerCase().includes(s));

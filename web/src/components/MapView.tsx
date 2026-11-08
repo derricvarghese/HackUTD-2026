@@ -403,7 +403,7 @@ export function MapView(p: MapViewProps) {
     if (p.canAct === false) return; // volunteers never see responder positions
     const now = Date.now();
     for (const r of p.responders ?? []) {
-      if (!r.location || !r.in_app) continue; // pin only when location set and in_app
+      if (!r.location || !r.in_app || r.role === 'admin') continue; // pin only when location set, in_app, and not admin
       const isStale = !r.location_updated_at || (now - Date.parse(r.location_updated_at)) > 15 * 60 * 1000;
       const initials = r.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
       const color = isStale ? '#94A3B8' : r.available ? '#16A34A' : '#2563EB';

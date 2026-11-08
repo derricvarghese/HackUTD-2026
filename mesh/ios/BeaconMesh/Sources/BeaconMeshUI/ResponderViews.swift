@@ -51,10 +51,14 @@ final class ResponderSession: ObservableObject {
     private var webSocket: ResponderWebSocket?
 
     init(baseURL: String) {
+        ResponderPrefs.registerDefaults()
         let c = ResponderClient(baseURL: baseURL, store: KeychainResponderTokenStore())
         client = c
         account = c.account
         available = c.account?.available ?? true
+        if c.account != nil {
+            signedInThisSession = true
+        }
         sharer = ResponderLocationSharer(client: c, now: { Int64(Date().timeIntervalSince1970 * 1000) })
         sharer.onSessionLost = { [weak self] in self?.sessionLost() }
         webSocket = ResponderWebSocket(urlProvider: { [weak c] in c?.webSocketURL() })
@@ -73,8 +77,11 @@ final class ResponderSession: ObservableObject {
             error = nil
             await setActive(true)
             await refresh()
-            // The switch was left on last time: resume, visibly (the chip shows as soon as it starts).
-            if UserDefaults.standard.bool(forKey: ResponderPrefs.shareKey), foreground { shareRequested = true; beginSharing() }
+            // Automatically check authorization and start sharing real location upon login
+            if ResponderPrefs.isLocationSharingEnabled, foreground {
+                shareRequested = true
+                beginSharing()
+            }
         } catch let e as ResponderError {
             error = e.message
         } catch {
@@ -84,6 +91,7 @@ final class ResponderSession: ObservableObject {
 
     func logout() async {
         stopSharing(clear: false, notice: nil)
+        _ = try? await client.sendLocation(nil)
         await setActive(false)
         sharer.abandon()
         await client.logout()
@@ -94,7 +102,7 @@ final class ResponderSession: ObservableObject {
     }
 
     /// Sets responder active presence.
-    /// When active (foreground on Responder tab): sends online presence, starts 60 s keepalive, opens websocket.
+    /// When active (foreground on Responder tab): sends online presence, starts 60 s keepalive, opens websocket, and starts real location sharing.
     /// When inactive (background / left responder mode): sends offline presence and clears location (location: null).
     func setActive(_ active: Bool) async {
         guard active != isPresenceActive else { return }
@@ -121,7 +129,13 @@ final class ResponderSession: ObservableObject {
                 }
             }
             webSocket?.connect()
-            if sharing { provider.start() }
+            // When responder tab becomes active/foreground, automatically check authorization and start sharing real location
+            if ResponderPrefs.isLocationSharingEnabled {
+                shareRequested = true
+                beginSharing()
+            } else if sharing {
+                provider.start()
+            }
         } else {
             presenceTask?.cancel()
             presenceTask = nil
@@ -221,12 +235,17 @@ final class ResponderSession: ObservableObject {
 
     // MARK: Location sharing
 
-    /// The switch. Turning it on first shows the rationale; `confirmShare()` continues.
+    /// The switch. Turning it on starts sharing immediately; turning it off stops and clears stored location.
     func setShareSwitch(_ on: Bool) {
         if on {
             guard !shareRequested else { return }
-            askShareRationale = true
+            UserDefaults.standard.set(true, forKey: ResponderPrefs.shareKey)
+            shareNotice = nil
+            shareNeedsSettings = false
+            shareRequested = true
+            beginSharing()
         } else {
+            UserDefaults.standard.set(false, forKey: ResponderPrefs.shareKey)
             stopSharing(clear: true, notice: nil)
         }
     }
@@ -275,11 +294,15 @@ final class ResponderSession: ObservableObject {
         sharer.start()
         sharer.setOnline(true)
         startMonitor()
+        let wasSharing = sharing
         sharing = true
+        shareRequested = true
         shareNotice = provider.isReducedAccuracy ? ResponderShareText.reduced : nil
         shareNeedsSettings = provider.isReducedAccuracy
         if foreground { provider.start() }
-        Haptics.shared.play(.success)
+        if !wasSharing {
+            Haptics.shared.play(.success)
+        }
         runPump()
     }
 
@@ -308,7 +331,6 @@ final class ResponderSession: ObservableObject {
         askShareRationale = false
         sharing = false
         shareRequested = false
-        UserDefaults.standard.set(false, forKey: ResponderPrefs.shareKey)
         shareNotice = notice
         shareNeedsSettings = settings
         if wasOn { Haptics.shared.play(.tap) }

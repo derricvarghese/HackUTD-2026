@@ -208,6 +208,8 @@ private func north(_ p: SharedPosition, metres: Double) -> SharedPosition {
         try await c.sendLocation(nil)
         #expect(http.paths() == ["PATCH /v1/responders/r-1", "PATCH /v1/responders/r-1"])
         #expect(http.requests[0].headers["Authorization"] == "Bearer AT")
+        #expect(http.requests[0].headers["X-Beacon-Client"] == "app")
+        #expect(http.requests[1].headers["X-Beacon-Client"] == "app")
         let b0 = JSONValue.parse(http.requests[0].body)!
         #expect(b0["location"]?["lat"]?.doubleValue == 1.5 && b0["location"]?["lng"]?.doubleValue == -2.25)
         let b1 = JSONValue.parse(http.requests[1].body)!

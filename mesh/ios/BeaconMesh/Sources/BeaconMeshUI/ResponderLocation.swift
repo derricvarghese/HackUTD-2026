@@ -3,12 +3,30 @@ import BeaconMesh
 import CoreLocation
 import Foundation
 
-/// UserDefaults keys for responder mode. Both default to off.
+/// UserDefaults keys for responder mode. Location sharing defaults to true.
 enum ResponderPrefs {
     /// Settings -> "Responder mode": shows the Responder tab. Off = the plain victim app.
     static let modeKey = "beacon.responderMode"
-    /// "Share my location with dispatch". Only takes effect after a sign-in in the current app session.
+    /// "Share my location with dispatch". Defaults to true so responders automatically share real location.
     static let shareKey = "beacon.responder.shareLocation"
+
+    static func registerDefaults() {
+        UserDefaults.standard.register(defaults: [shareKey: true])
+    }
+
+    /// Whether location sharing is enabled. Defaults to true.
+    static var isLocationSharingEnabled: Bool {
+        get {
+            registerDefaults()
+            guard let val = UserDefaults.standard.object(forKey: shareKey) as? Bool else {
+                return true
+            }
+            return val
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: shareKey)
+        }
+    }
 }
 
 /// User-facing wording for location sharing, in one place.
@@ -50,7 +68,13 @@ final class ResponderLocationProvider: NSObject, CLLocationManagerDelegate {
     var isReducedAccuracy: Bool { manager.accuracyAuthorization == .reducedAccuracy }
 
     func requestWhenInUse() { manager.requestWhenInUseAuthorization() }
-    func start() { manager.startUpdatingLocation() }
+    func start() {
+        manager.startUpdatingLocation()
+        if let loc = manager.location, loc.horizontalAccuracy >= 0 {
+            let p = SharedPosition(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+            onFix?(p)
+        }
+    }
     func stop() { manager.stopUpdatingLocation() }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
