@@ -34,6 +34,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.onFocusChanged
@@ -182,8 +187,7 @@ private fun SectionFields(section: ProfileSection, f: ProfileForm, e: Map<String
             PField(f.phone, { v -> ed.edit { it.copy(phone = v) } }, R.string.profile_f_phone, e["phone"], KeyboardType.Phone, ImeAction.Done)
         }
         ProfileSection.APPEARANCE -> {
-            PField(f.height, { v -> ed.edit { it.copy(height = v.filter(Char::isDigit).take(3)) } }, R.string.profile_f_height, e["appearance.height_cm"],
-                KeyboardType.Number, ImeAction.Next)
+            HeightField(f.height, e["appearance.height_cm"]) { cm -> ed.edit { it.copy(height = cm) } }
             PField(f.hair, { v -> ed.edit { it.copy(hair = v) } }, R.string.profile_f_hair, e["appearance.hair"], KeyboardType.Text, ImeAction.Next)
             PField(f.clothing, { v -> ed.edit { it.copy(clothing = v) } }, R.string.profile_f_clothing, e["appearance.clothing"], KeyboardType.Text, ImeAction.Next)
             PField(f.marks, { v -> ed.edit { it.copy(marks = v) } }, R.string.profile_f_marks, e["appearance.distinguishing_marks"], KeyboardType.Text, ImeAction.Done, singleLine = false)
@@ -228,16 +232,17 @@ private fun PField(
     hint: Int? = null,
     required: Boolean = false,
     capitalization: KeyboardCapitalization = KeyboardCapitalization.Sentences,
+    errorOverride: String? = null,
 ) {
     val haptics = LocalHaptics.current
     val focus = LocalFocusManager.current
     val labelText = stringResource(label) + if (required) " *" else ""
-    val errorText = error?.text()
+    val errorText = errorOverride ?: error?.text()
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(labelText) },
-        isError = error != null,
+        isError = errorText != null,
         supportingText = (errorText ?: hint?.let { stringResource(it) })?.let { t -> { Text(t) } },
         singleLine = singleLine,
         minLines = minLines,
@@ -338,6 +343,62 @@ private fun PetsEditor(pets: List<PetForm>, errors: Map<String, FieldError>, onC
                 Icon(Icons.Rounded.Add, null)
                 Text(stringResource(R.string.profile_add_pet), modifier = Modifier.padding(start = 8.dp))
             }
+        }
+    }
+}
+
+/**
+ * Height in centimetres or feet + inches with a segmented toggle. The form always stores centimetres (the API contract);
+ * the ft/in boxes are display state and only write the form when the user types, so toggling never changes the stored value.
+ */
+@Composable
+private fun HeightField(cmText: String, error: FieldError?, onCm: (String) -> Unit) {
+    val haptics = LocalHaptics.current
+    val system = com.beacon.mesh.ui.LocalUnitSystem.current
+    var imperial by rememberSaveable { mutableStateOf(system == com.beacon.mesh.units.UnitSystem.IMPERIAL) }
+    val initial = remember { com.beacon.mesh.ui.logic.HeightInput.fromCm(cmText) }
+    var feet by rememberSaveable { mutableStateOf(initial.first) }
+    var inches by rememberSaveable { mutableStateOf(initial.second) }
+    // Form changed from outside (discard, reload): re-derive the boxes unless they already produce this value.
+    androidx.compose.runtime.LaunchedEffect(cmText) {
+        if (com.beacon.mesh.ui.logic.HeightInput.toCm(feet, inches) != cmText) {
+            com.beacon.mesh.ui.logic.HeightInput.fromCm(cmText).let { feet = it.first; inches = it.second }
+        }
+    }
+    val ftInvalid = imperial && cmText.isNotEmpty() && com.beacon.mesh.units.Units.parseHeightFeetInches(feet, inches) == null
+    val label = stringResource(R.string.profile_f_height)
+    val toggleLabel = stringResource(R.string.profile_height_unit_label)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionTitle(label, modifier = Modifier.weight(1f))
+            Row(
+                Modifier.semantics { contentDescription = toggleLabel },
+                horizontalArrangement = Arrangement.spacedBy(androidx.compose.material3.ButtonGroupDefaults.ConnectedSpaceBetween),
+            ) {
+                listOf(false to R.string.profile_height_unit_cm, true to R.string.profile_height_unit_ftin).forEachIndexed { i, (isImperial, text) ->
+                    androidx.compose.material3.ToggleButton(
+                        checked = imperial == isImperial,
+                        onCheckedChange = { if (imperial != isImperial) { haptics.perform(HapticEvent.Select); imperial = isImperial } },
+                        modifier = Modifier.heightIn(min = 48.dp).semantics { role = androidx.compose.ui.semantics.Role.RadioButton },
+                        shapes = if (i == 0) androidx.compose.material3.ButtonGroupDefaults.connectedLeadingButtonShapes()
+                        else androidx.compose.material3.ButtonGroupDefaults.connectedTrailingButtonShapes(),
+                    ) { Text(stringResource(text), maxLines = 1) }
+                }
+            }
+        }
+        if (!imperial) {
+            PField(cmText, { v -> onCm(v.filter(Char::isDigit).take(3)) }, R.string.profile_f_height_cm, error, KeyboardType.Number, ImeAction.Next)
+        } else {
+            val ftError = if (ftInvalid || error != null) stringResource(R.string.profile_height_ftin_error) else null
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                PField(feet, { v -> feet = v.filter(Char::isDigit).take(1); onCm(com.beacon.mesh.ui.logic.HeightInput.toCm(feet, inches)) },
+                    R.string.profile_f_height_feet, null, KeyboardType.Number, ImeAction.Next, modifier = Modifier.weight(1f),
+                    errorOverride = if (ftError != null) " " else null)
+                PField(inches, { v -> inches = v.filter(Char::isDigit).take(2); onCm(com.beacon.mesh.ui.logic.HeightInput.toCm(feet, inches)) },
+                    R.string.profile_f_height_inches, null, KeyboardType.Number, ImeAction.Next, modifier = Modifier.weight(1f),
+                    errorOverride = if (ftError != null) " " else null)
+            }
+            if (ftError != null) Text(ftError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }

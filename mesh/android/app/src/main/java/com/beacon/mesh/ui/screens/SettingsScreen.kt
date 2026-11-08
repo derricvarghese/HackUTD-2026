@@ -72,6 +72,7 @@ fun SettingsScreen(
     onTheme: (ThemeMode) -> Unit,
     onDynamic: (Boolean) -> Unit,
     onOpenDebug: () -> Unit,
+    onUnits: (com.beacon.mesh.units.UnitPreference) -> Unit = {},
     onHaptics: (Boolean) -> Unit = {},
     onResponderMode: (Boolean) -> Unit = {},
     onOpenProfile: () -> Unit = {},
@@ -122,6 +123,9 @@ fun SettingsScreen(
                         enabled = dynamicSupported,
                     )
                 }
+                Text(stringResource(R.string.settings_units), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.settings_units_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                UnitPreferenceGroup(settings.unitPreference, onUnits)
                 SystemIntents.appLanguage(context)?.let { intent ->
                     FilledTonalButton(
                         onClick = haptics.onClick { context.safeStart(intent) },
@@ -264,6 +268,41 @@ fun ThemeModeGroup(mode: ThemeMode, onChange: (ThemeMode) -> Unit) {
                             ThemeMode.SYSTEM -> R.string.theme_system
                             ThemeMode.LIGHT -> R.string.theme_light
                             ThemeMode.DARK -> R.string.theme_dark
+                        }
+                    ),
+                    maxLines = 2,
+                )
+            }
+        }
+    }
+}
+
+/** Automatic / Metric / Imperial as a connected button group. */
+@Composable
+fun UnitPreferenceGroup(pref: com.beacon.mesh.units.UnitPreference, onChange: (com.beacon.mesh.units.UnitPreference) -> Unit) {
+    val haptics = LocalHaptics.current
+    val options = com.beacon.mesh.units.UnitPreference.entries
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+    ) {
+        options.forEachIndexed { i, option ->
+            ToggleButton(
+                checked = option == pref,
+                onCheckedChange = { if (option != pref) { haptics.perform(HapticEvent.Select); onChange(option) } },
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { role = Role.RadioButton },
+                shapes = when (i) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+            ) {
+                Text(
+                    stringResource(
+                        when (option) {
+                            com.beacon.mesh.units.UnitPreference.AUTOMATIC -> R.string.units_automatic
+                            com.beacon.mesh.units.UnitPreference.METRIC -> R.string.units_metric
+                            com.beacon.mesh.units.UnitPreference.IMPERIAL -> R.string.units_imperial
                         }
                     ),
                     maxLines = 2,

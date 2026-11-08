@@ -173,7 +173,7 @@ fun CaseDetailContent(
             if (c.hasExactLocation) {
                 Text(stringResource(R.string.responder_exact_gps, "%.5f".format(c.lat), "%.5f".format(c.lng)), style = MaterialTheme.typography.bodyLarge)
             } else {
-                Text(stringResource(R.string.responder_area_within, c.radiusM.toInt()), style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.responder_area_within, com.beacon.mesh.units.Units.formatDistance(c.radiusM, com.beacon.mesh.ui.LocalUnitSystem.current, com.beacon.mesh.ui.currentLocale())), style = MaterialTheme.typography.bodyLarge)
                 if (!claimedByOther && account?.canAct == true) {
                     Text(stringResource(R.string.responder_claim_for_exact), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -190,7 +190,7 @@ fun CaseDetailContent(
                 )
             }
             if (!c.hasExactLocation) {
-                Text(stringResource(R.string.responder_directions_area_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.responder_directions_area_note, com.beacon.mesh.units.Units.formatDistance(1000.0, com.beacon.mesh.ui.LocalUnitSystem.current, com.beacon.mesh.ui.currentLocale())), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 

@@ -93,8 +93,8 @@
     <string name="responder_mesh_group_closed">Collapsed</string>
     <string name="gps_denied">Location unavailable. The alert is sent without GPS.</string>
     <string name="gps_searching">Searching for GPS</string>
-    <string name="gps_fix">%1$s, about %2$d m</string>
-    <string name="gps_fix_km">%1$s, about %2$.1f km</string>
+    <string name="gps_fix">%1$s, %2$s</string>
+    <string name="approx_value">about %1$s</string>
     <string name="gps_src_gps">GPS</string>
     <string name="gps_src_fused">Fused location</string>
     <string name="gps_src_network">Network location</string>
@@ -215,6 +215,17 @@
     <!-- Settings -->
     <string name="settings_appearance">Appearance</string>
     <string name="settings_theme">Theme</string>
+    <string name="settings_units">Units</string>
+    <string name="settings_units_body">Distances and heights. Automatic follows your phone\'s region.</string>
+    <string name="units_automatic">Automatic</string>
+    <string name="units_metric">Metric</string>
+    <string name="units_imperial">Imperial</string>
+    <plurals name="spoken_meters"><item quantity="one">%1$s meter</item><item quantity="other">%1$s meters</item></plurals>
+    <plurals name="spoken_kilometers"><item quantity="one">%1$s kilometer</item><item quantity="other">%1$s kilometers</item></plurals>
+    <plurals name="spoken_feet"><item quantity="one">%1$s foot</item><item quantity="other">%1$s feet</item></plurals>
+    <plurals name="spoken_inches"><item quantity="one">%1$s inch</item><item quantity="other">%1$s inches</item></plurals>
+    <plurals name="spoken_miles"><item quantity="one">%1$s mile</item><item quantity="other">%1$s miles</item></plurals>
+    <plurals name="spoken_centimeters"><item quantity="one">%1$s centimeter</item><item quantity="other">%1$s centimeters</item></plurals>
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
@@ -318,7 +329,15 @@
     <string name="profile_f_languages">Languages</string>
     <string name="profile_f_languages_hint">Separate with commas, for example es, en</string>
     <string name="profile_f_phone">Phone number</string>
-    <string name="profile_f_height">Height (cm)</string>
+    <string name="profile_f_height">Height</string>
+    <string name="profile_f_height_cm">Height (cm)</string>
+    <string name="profile_f_height_feet">Feet</string>
+    <string name="profile_f_height_inches">Inches</string>
+    <string name="profile_height_unit_cm">cm</string>
+    <string name="profile_height_unit_ftin">ft/in</string>
+    <string name="profile_height_unit_label">Height unit</string>
+    <string name="profile_height_ftin_error">Enter feet from 1 to 8 and inches from 0 to 11</string>
+    <string name="profile_height_spoken">%1$s: %2$s</string>
     <string name="profile_f_hair">Hair</string>
     <string name="profile_f_clothing">Usual clothing</string>
     <string name="profile_f_marks">Distinguishing marks</string>

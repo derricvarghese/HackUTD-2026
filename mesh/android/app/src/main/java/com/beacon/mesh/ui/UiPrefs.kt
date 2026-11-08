@@ -2,11 +2,14 @@ package com.beacon.mesh.ui
 
 import android.content.Context
 import com.beacon.mesh.ui.theme.ThemeMode
+import com.beacon.mesh.units.UnitPreference
 
 /** User-interface settings (not mesh state). Mesh settings stay in [com.beacon.mesh.MeshNode]. */
 data class UiSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
+    /** Metric / imperial for distances and heights; Automatic follows the phone's region. */
+    val unitPreference: UnitPreference = UnitPreference.AUTOMATIC,
     val onboardingDone: Boolean = false,
     /** Master switch for every haptic in the app, including hold-to-send. */
     val hapticsEnabled: Boolean = true,
@@ -23,6 +26,8 @@ class UiPrefs(context: Context) {
         themeMode = runCatching { ThemeMode.valueOf(prefs.getString("theme", null) ?: "SYSTEM") }
             .getOrDefault(ThemeMode.SYSTEM),
         dynamicColor = prefs.getBoolean("dynamic", true),
+        unitPreference = runCatching { UnitPreference.valueOf(prefs.getString("units", null) ?: "AUTOMATIC") }
+            .getOrDefault(UnitPreference.AUTOMATIC),
         onboardingDone = prefs.getBoolean("onboarded", false),
         hapticsEnabled = prefs.getBoolean("haptics", true),
         responderMode = prefs.getBoolean("responder", false),
@@ -33,6 +38,7 @@ class UiPrefs(context: Context) {
         prefs.edit()
             .putString("theme", s.themeMode.name)
             .putBoolean("dynamic", s.dynamicColor)
+            .putString("units", s.unitPreference.name)
             .putBoolean("onboarded", s.onboardingDone)
             .putBoolean("haptics", s.hapticsEnabled)
             .putBoolean("responder", s.responderMode)

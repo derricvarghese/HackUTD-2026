@@ -236,3 +236,23 @@ object ProfileStatusLogic {
         else -> ProfileChipKind.PENDING
     }
 }
+
+/** Glue between the stored centimetre text of the form and the feet/inches boxes. Pure. */
+object HeightInput {
+    /** Centimetre text -> (feet, inches) box text; blank or unparsable stays blank. */
+    fun fromCm(cm: String): Pair<String, String> {
+        val v = cm.trim().toIntOrNull() ?: return "" to ""
+        if (v <= 0) return "" to ""
+        val fi = com.beacon.mesh.units.Units.cmToFeetInches(v)
+        return fi.feet.toString() to fi.inches.toString()
+    }
+
+    /**
+     * Feet/inches box text -> centimetre text for the form. Blank boxes give blank. Anything else that is not a valid
+     * height gives "0", which the profile rules reject (30..260), so a bad entry can never be saved by accident.
+     */
+    fun toCm(feet: String, inches: String): String {
+        if (feet.isBlank() && inches.isBlank()) return ""
+        return com.beacon.mesh.units.Units.parseHeightFeetInches(feet, inches)?.toString() ?: "0"
+    }
+}

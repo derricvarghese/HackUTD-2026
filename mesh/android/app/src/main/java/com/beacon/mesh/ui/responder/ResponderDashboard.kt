@@ -321,7 +321,7 @@ private fun MeshInfoDialog(t: MapTarget, onDismiss: () -> Unit) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { haptics.perform(HapticEvent.SheetDismiss); onDismiss() },
         title = { Text(t.title) },
-        text = { Text(stringResource(R.string.responder_mesh_info)) },
+        text = { Text(stringResource(R.string.responder_mesh_info, com.beacon.mesh.units.Units.formatDistance(1000.0, com.beacon.mesh.ui.LocalUnitSystem.current, com.beacon.mesh.ui.currentLocale()))) },
         confirmButton = { TextButton(onClick = haptics.onClick { onDismiss() }) { Text(stringResource(R.string.state_done)) } },
     )
 }

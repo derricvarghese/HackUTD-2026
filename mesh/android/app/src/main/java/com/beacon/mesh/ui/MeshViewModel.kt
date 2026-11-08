@@ -92,6 +92,7 @@ class MeshViewModel(app: Application, private val handle: SavedStateHandle) : An
     // ---- Settings ----
 
     fun setThemeMode(mode: ThemeMode) = updateSettings { it.copy(themeMode = mode) }
+    fun setUnitPreference(p: com.beacon.mesh.units.UnitPreference) = updateSettings { it.copy(unitPreference = p) }
     fun setDynamicColor(on: Boolean) = updateSettings { it.copy(dynamicColor = on) }
     fun setHapticsEnabled(on: Boolean) = updateSettings { it.copy(hapticsEnabled = on) }
     fun setResponderMode(on: Boolean) = updateSettings { it.copy(responderMode = on) }

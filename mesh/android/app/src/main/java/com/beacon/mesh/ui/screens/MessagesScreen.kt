@@ -278,7 +278,7 @@ private fun MessageDetail(item: MessageItem, relayId: String, now: Long, pad: Pa
                     SectionTitle(stringResource(R.string.detail_location))
                     Text(
                         "%.5f, %.5f".format(item.lat, item.lng) +
-                            (item.accuracyM?.let { "  ±${it.toInt()} m" } ?: ""),
+                            (item.accuracyM?.let { "  ±" + com.beacon.mesh.units.Units.accuracy(it, com.beacon.mesh.ui.LocalUnitSystem.current).text(com.beacon.mesh.ui.currentLocale()) } ?: ""),
                         style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
                     )
                 }

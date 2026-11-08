@@ -12,7 +12,7 @@ v1 and does not interoperate with Android until it follows [`ios/CONTRACT-MIGRAT
 ```
 
 * **Wire protocol**: [`PROTOCOL.md`](PROTOCOL.md) (v2, the API contract; v1 is deprecated). Read this first.
-* **iOS**: [`ios/BeaconMesh`](ios/BeaconMesh), a Swift package (CoreBluetooth + CryptoKit, no dependencies).
+* **iOS**: [`ios/BeaconMesh`](ios/BeaconMesh), a Swift package (CoreBluetooth + CryptoKit, no dependencies). Units (metric or imperial, Settings -> Units) are all formatted by one pure type, `Units` in `BeaconMesh/Units.swift`; storage stays metric.
 * **Android**: [`android`](android), a Kotlin app module (platform BLE + AndroidKeyStore + SQLite for the mesh; Jetpack Compose + Material 3 Expressive for the UI).
 * **Shared test vectors**: [`test-vectors/contract_v1/`](test-vectors/contract_v1): `server_envelope.json` (made by the server's own test helper:
   signed + encrypted envelope, backend message, receipt, request signature, canonical JSON cases, test keys) is verified/decrypted by the Android

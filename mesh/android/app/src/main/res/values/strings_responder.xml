@@ -85,7 +85,7 @@
     <string name="responder_just_now">just now</string>
     <string name="responder_mesh_row_sub">Heard nearby over Bluetooth, not on the server yet</string>
     <string name="responder_mesh_title">%1$s (Bluetooth)</string>
-    <string name="responder_mesh_info">This phone heard this SOS over Bluetooth. Its exact location is encrypted for the server, so only the area of about 1 km is shown. It becomes a case once any phone uploads it.</string>
+    <string name="responder_mesh_info">This phone heard this SOS over Bluetooth. Its exact location is encrypted for the server, so only the area of about %1$s is shown. It becomes a case once any phone uploads it.</string>
     <string name="responder_unnamed">Unnamed person</string>
 
     <!-- Status -->
@@ -132,8 +132,8 @@
     <string name="responder_exact_gps">Exact GPS: %1$s, %2$s</string>
     <string name="responder_directions">Directions in Maps</string>
     <string name="responder_directions_area">Directions to the area</string>
-    <string name="responder_directions_area_note">Approximate: this leads to the centre of an area of about 1 km. Claim the case for the exact spot.</string>
-    <string name="responder_area_within">Somewhere within %1$d m of the circle\'s centre</string>
+    <string name="responder_directions_area_note">Approximate: this leads to the centre of an area of about %1$s. Claim the case for the exact spot.</string>
+    <string name="responder_area_within">Somewhere within %1$s of the circle\'s centre</string>
     <string name="responder_claim_for_exact">Claim the case to get the exact spot.</string>
 
     <string name="responder_section_details">Details</string>

@@ -97,16 +97,6 @@ import com.beacon.mesh.ui.welfare.WelfareAnswerScreen
 import com.beacon.mesh.welfare.WelfareLaunch
 import com.beacon.mesh.welfare.WelfareResponse
 
-private object Routes {
-    const val HOME = "home"
-    const val MESSAGES = "messages"
-    const val MESH = "mesh"
-    const val RESPONDER = "responder"
-    const val SETTINGS = "settings"
-    const val DEBUG = "settings/debug"
-    const val PROFILE = "settings/profile"
-}
-
 private enum class Stage { PERMISSIONS, PROFILE, MAIN }
 
 private data class TopLevel(val route: String, val label: Int, val icon: androidx.compose.ui.graphics.vector.ImageVector)
@@ -134,7 +124,8 @@ fun BeaconApp(
         Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     }
     val appHaptics = rememberHaptics(settings.hapticsEnabled)
-    CompositionLocalProvider(LocalHaptics provides appHaptics) {
+    val unitSystem = rememberUnitSystem(settings.unitPreference)
+    CompositionLocalProvider(LocalHaptics provides appHaptics, LocalUnitSystem provides unitSystem) {
     BeaconTheme(settings.themeMode, settings.dynamicColor, reduceMotion) {
         val dark = isDark(settings.themeMode)
         val activity = LocalActivity.current as? ComponentActivity
@@ -196,19 +187,17 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
 
     val nav = rememberNavController()
     val backEntry by nav.currentBackStackEntryAsState()
-    val hierarchy = backEntry?.destination?.hierarchy
-    fun selected(route: String) = hierarchy?.any { it.route == route } == true ||
-        (route == Routes.SETTINGS && (backEntry?.destination?.route == Routes.DEBUG || backEntry?.destination?.route == Routes.PROFILE))
-
     val topLevels = remember(settings.responderMode) { topLevels(settings.responderMode) }
+    // The tab that owns the current screen: Profile opened from Home keeps Home selected, Debug keeps Settings.
+    val selectedTab = TabNav.selectedTab(
+        // Secondary screens are only ever one level above their tab root, so the entry below the top is enough.
+        listOf(nav.previousBackStackEntry?.destination?.route, backEntry?.destination?.route),
+        topLevels.map { it.route },
+    )
+    fun selected(route: String) = route == selectedTab
 
-    fun goTop(route: String) {
-        nav.navigate(route) {
-            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-            launchSingleTop = true
-            restoreState = true
-        }
-    }
+    val leaveGuard = remember { LeaveGuard() }
+    fun goTop(route: String) = leaveGuard.request { TabNav.goTop(nav, route) }
 
     LaunchedEffect(settings.responderMode, backEntry?.destination?.route) {
         if (!settings.responderMode && backEntry?.destination?.route == Routes.RESPONDER) goTop(Routes.HOME)
@@ -276,11 +265,13 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: 
     val imeVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
 
     val navHost: @Composable (Modifier) -> Unit = { modifier ->
-        ShellNavHost(nav, modifier, vm, profileVm, responderVm, dark, mesh, items, system, settings, requestedMessage,
-            onRequestConsumed = { requestedMessage = null },
-            onOpenMessage = ::openMessage,
-            onGoTop = ::goTop,
-        )
+        CompositionLocalProvider(LocalLeaveGuard provides leaveGuard) {
+            ShellNavHost(nav, modifier, vm, profileVm, responderVm, dark, mesh, items, system, settings, requestedMessage,
+                onRequestConsumed = { requestedMessage = null },
+                onOpenMessage = ::openMessage,
+                onGoTop = ::goTop,
+            )
+        }
     }
 
     Row(Modifier.fillMaxSize()) {
@@ -430,6 +421,7 @@ private fun ShellNavHost(
                 system = system,
                 onTheme = vm::setThemeMode,
                 onDynamic = vm::setDynamicColor,
+                onUnits = vm::setUnitPreference,
                 onHaptics = vm::setHapticsEnabled,
                 onResponderMode = { on ->
                     vm.setResponderMode(on)

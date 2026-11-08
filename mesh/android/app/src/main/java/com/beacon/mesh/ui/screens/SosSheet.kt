@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import com.beacon.mesh.GpsFix
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.accuracyText
 import com.beacon.mesh.ui.haptics.HapticEvent
 import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.components.BadgeIcon
@@ -132,12 +133,21 @@ fun SosSheet(
 @Composable
 fun gpsFixText(gps: GpsFix): String {
     val src = stringResource(when (gps.source) { "gps" -> R.string.gps_src_gps; "fused" -> R.string.gps_src_fused; "network" -> R.string.gps_src_network; else -> R.string.gps_src_other })
-    val m = com.beacon.mesh.location.LocationSelector.displayMeters(gps.accuracyM ?: return src)
-    return if (m >= 1000) stringResource(R.string.gps_fix_km, src, m / 1000f) else stringResource(R.string.gps_fix, src, m)
+    val acc = gps.accuracyM ?: return src
+    return stringResource(R.string.gps_fix, src, accuracyText(acc.toDouble()).first)
+}
+
+/** Spoken form for TalkBack: "GPS, about 16 feet". */
+@Composable
+fun gpsFixSpoken(gps: GpsFix): String {
+    val src = stringResource(when (gps.source) { "gps" -> R.string.gps_src_gps; "fused" -> R.string.gps_src_fused; "network" -> R.string.gps_src_network; else -> R.string.gps_src_other })
+    val acc = gps.accuracyM ?: return src
+    return stringResource(R.string.gps_fix, src, accuracyText(acc.toDouble()).second)
 }
 
 @Composable
 fun GpsLine(gps: GpsFix?, locationAllowed: Boolean, modifier: Modifier = Modifier) {
+    val spoken = if (locationAllowed && gps?.accuracyM != null) gpsFixSpoken(gps) else null
     val (icon, text) = when {
         !locationAllowed -> Icons.Rounded.GpsOff to stringResource(R.string.gps_denied)
         gps == null -> Icons.Rounded.GpsNotFixed to stringResource(R.string.gps_searching)
@@ -146,7 +156,7 @@ fun GpsLine(gps: GpsFix?, locationAllowed: Boolean, modifier: Modifier = Modifie
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
-        Text(text, style = MaterialTheme.typography.bodyMedium)
+        Text(text, style = MaterialTheme.typography.bodyMedium, modifier = if (spoken != null) Modifier.semantics { contentDescription = spoken } else Modifier)
     }
 }
 

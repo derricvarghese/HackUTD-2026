@@ -272,6 +272,15 @@ fun ProfileSettingsScreen(vm: ProfileViewModel, onBack: () -> Unit) {
     val dirty = form != ProfileForm.fromProfile(record.profile)
 
     fun leaveEdit() { vm.discardEdit(); editing = false }
+    // The navigation bar asks before leaving an edited form: "Keep editing" stays (the draft is untouched), "Discard" leaves.
+    val leaveGuard = com.beacon.mesh.ui.LocalLeaveGuard.current
+    var pendingLeave by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val dirtyNow by androidx.compose.runtime.rememberUpdatedState(editing && dirty)
+    androidx.compose.runtime.DisposableEffect(leaveGuard) {
+        val h: (() -> Unit) -> Boolean = { proceed -> if (dirtyNow) { pendingLeave = proceed; confirmDiscard = true; true } else false }
+        leaveGuard.handler = h
+        onDispose { if (leaveGuard.handler === h) leaveGuard.handler = null }
+    }
     BackHandler(enabled = editing) { if (dirty) confirmDiscard = true else leaveEdit() }
     val consented by vm.consentGiven.collectAsState()
 
@@ -331,11 +340,11 @@ fun ProfileSettingsScreen(vm: ProfileViewModel, onBack: () -> Unit) {
     }
     if (confirmDiscard) {
         AlertDialog(
-            onDismissRequest = { confirmDiscard = false },
+            onDismissRequest = { confirmDiscard = false; pendingLeave = null },
             title = { Text(stringResource(R.string.profile_discard_title)) },
             text = { Text(stringResource(R.string.profile_discard_body)) },
-            confirmButton = { TextButton(onClick = haptics.onClick(HapticEvent.Warning) { confirmDiscard = false; leaveEdit() }) { Text(stringResource(R.string.profile_discard_confirm)) } },
-            dismissButton = { TextButton(onClick = haptics.onClick(HapticEvent.SheetDismiss) { confirmDiscard = false }) { Text(stringResource(R.string.profile_discard_keep)) } },
+            confirmButton = { TextButton(onClick = haptics.onClick(HapticEvent.Warning) { confirmDiscard = false; leaveEdit(); pendingLeave?.invoke(); pendingLeave = null }) { Text(stringResource(R.string.profile_discard_confirm)) } },
+            dismissButton = { TextButton(onClick = haptics.onClick(HapticEvent.SheetDismiss) { confirmDiscard = false; pendingLeave = null }) { Text(stringResource(R.string.profile_discard_keep)) } },
         )
     }
 }
@@ -406,7 +415,7 @@ private fun ProfileSummaryCard(p: UserProfile) {
     }
     ElevatedSection {
         SectionTitle(stringResource(R.string.profile_sec_appearance))
-        Info(R.string.profile_f_height, p.heightCm?.toString() ?: none); Info(R.string.profile_f_hair, v(p.hair))
+        HeightInfo(p.heightCm, none); Info(R.string.profile_f_hair, v(p.hair))
         Info(R.string.profile_f_clothing, v(p.clothing)); Info(R.string.profile_f_marks, v(p.distinguishingMarks))
     }
     ElevatedSection {
@@ -439,5 +448,19 @@ private fun Info(label: Int, value: String) {
     Column(Modifier.semantics(mergeDescendants = true) { contentDescription = "$l: $value" }) {
         Text(l, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+@Composable
+private fun HeightInfo(cm: Int?, none: String) {
+    if (cm == null) { Info(R.string.profile_f_height, none); return }
+    val system = com.beacon.mesh.ui.LocalUnitSystem.current
+    val locale = com.beacon.mesh.ui.currentLocale()
+    val res = androidx.compose.ui.platform.LocalContext.current.resources
+    val l = stringResource(R.string.profile_f_height)
+    val spoken = com.beacon.mesh.ui.heightSpoken(res, cm, system, locale)
+    Column(Modifier.semantics(mergeDescendants = true) { contentDescription = "$l: $spoken" }) {
+        Text(l, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(com.beacon.mesh.units.Units.formatHeight(cm, system, locale), style = MaterialTheme.typography.bodyLarge)
     }
 }
