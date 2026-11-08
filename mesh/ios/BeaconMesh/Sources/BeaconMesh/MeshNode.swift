@@ -252,6 +252,11 @@ public final class MeshNode: NSObject, ObservableObject {
 
     public func syncNow() { uploader.syncNow() }
 
+    /// Photos the server holds for one of this phone's own cases.
+    public func listCaseImages(sosId: String) async throws -> [CaseImageMeta] {
+        try await sync.client.listCaseImages(sosId: sosId)
+    }
+
     // MARK: Profile
 
     /// Validates and stores the profile (offline-safe), then syncs when possible. Returns field issues; empty = saved.

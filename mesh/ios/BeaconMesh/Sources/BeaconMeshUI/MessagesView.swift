@@ -160,7 +160,7 @@ struct MessageDetail: View {
         .task {
             if item.isOwn && item.uploaded {
                 do {
-                    serverPhotos = try await node.sync.client.listCaseImages(sosId: item.id)
+                    serverPhotos = try await node.listCaseImages(sosId: item.id)
                 } catch {
                     serverPhotos = []
                 }
