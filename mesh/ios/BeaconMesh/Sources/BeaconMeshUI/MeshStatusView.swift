@@ -5,6 +5,7 @@ import SwiftUI
 struct MeshStatusView: View {
     @ObservedObject var node: MeshNode
     @ObservedObject private var haptics = Haptics.shared
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
 
     var body: some View {
         NavigationStack {
@@ -34,7 +35,7 @@ struct MeshStatusView: View {
                     if let e = node.syncError { row("Last problem", e, symbol: "exclamationmark.circle", tint: .red) }
                 }
                 Section("This phone") {
-                    row("Location", node.hasLocation ? (node.gpsAccuracy.map { "±\(Int($0)) m" } ?? "known") : "none yet",
+                    row("Location", node.hasLocation ? (node.gpsAccuracy.map { "±\(Units.accuracy(meters: $0, system: UnitSettings.system(for: unitPref)))" } ?? "known") : "none yet",
                         symbol: "location", tint: node.hasLocation ? .green : .orange)
                     row("Relay id", node.relayId, symbol: "number")
                 }

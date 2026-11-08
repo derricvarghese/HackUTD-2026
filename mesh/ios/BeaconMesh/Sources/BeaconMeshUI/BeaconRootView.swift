@@ -9,6 +9,8 @@ public struct BeaconRootView: View {
     @AppStorage("beacon.onboarded") private var onboarded = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
+    /// Pushed screens inside the Settings tab (My profile). Reset when that tab is tapped again.
+    @State private var settingsPath = NavigationPath()
     /// Settings -> "Responder mode". Off (the default) = no Responder tab and no responder code runs.
     @AppStorage(ResponderPrefs.modeKey) private var responderMode = false
     @StateObject private var responder: ResponderSession
@@ -24,7 +26,7 @@ public struct BeaconRootView: View {
                 // Right after the permissions explainer: consent, then name and details. Works offline; syncs later.
                 ProfileOnboardingView(node: node, onClose: nil)
             } else if onboarded {
-                TabView(selection: $tab) {
+                TabView(selection: tabSelection) {
                     HomeView(node: node, onOpenMesh: { tab = 2 })
                         .tabItem { Label("Home", systemImage: "sos") }.tag(0)
                     MessagesView(node: node)
@@ -36,7 +38,7 @@ public struct BeaconRootView: View {
                         ResponderTab(node: node, session: responder)
                             .tabItem { Label("Responder", systemImage: "cross.case") }.tag(4)
                     }
-                    SettingsView(node: node)
+                    SettingsView(node: node, path: $settingsPath)
                         .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
@@ -65,6 +67,22 @@ public struct BeaconRootView: View {
         .onChange(of: scenePhase) { phase in
             if phase == .active { node.tick(); haptics.prepare() }
         }
+    }
+
+    /// Tapping a tab writes the selection; tapping the tab that is already selected also pops it to its root.
+    /// Home has no pushed screens (its profile flow is a sheet), so only Settings has anything to pop.
+    private var tabSelection: Binding<Int> {
+        Binding(
+            get: { tab },
+            set: { new in
+                if new == tab { popToRoot(new) }
+                tab = new
+            }
+        )
+    }
+
+    private func popToRoot(_ tabIndex: Int) {
+        if tabIndex == 3 { settingsPath = NavigationPath() }
     }
 }
 

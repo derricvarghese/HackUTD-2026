@@ -3,22 +3,42 @@ import BeaconMesh
 import SwiftUI
 import UIKit
 
+/// Destinations pushed inside the Settings tab. Kept in a NavigationPath owned by the root view so that tapping the
+/// Settings tab again can pop back to this root.
+enum SettingsRoute: Hashable {
+    case myProfile
+}
+
 struct SettingsView: View {
     @ObservedObject var node: MeshNode
+    @Binding var path: NavigationPath
     @ObservedObject private var haptics = Haptics.shared
     @State private var showLog = false
     @State private var confirmReset = false
     @State private var resetFailed = false
     @State private var copied = false
     @AppStorage(ResponderPrefs.modeKey) private var responderMode = false
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section("Server") {
                     // Fixed at build time; shown read-only.
                     LabeledContent("Server", value: node.backendHost)
                         .accessibilityHint("Fixed in this build")
+                }
+                Section {
+                    Picker("Units", selection: Binding(get: { unitPref }, set: { unitPref = $0; haptics.play(.select) })) {
+                        ForEach(UnitPreference.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Units")
+                } header: {
+                    Text("Units")
+                } footer: {
+                    let shown = UnitSettings.system(for: unitPref) == .imperial ? "feet, inches and miles" : "centimeters, meters and kilometers"
+                    Text("Automatic follows your region. Right now Beacon shows \(shown). Storage and the server always use metric.")
                 }
                 ProfileSettingsSection(node: node)
                 Section {
@@ -88,6 +108,11 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .navigationDestination(for: SettingsRoute.self) { route in
+                switch route {
+                case .myProfile: MyProfileView(node: node)
+                }
+            }
             .alert("Reset device identity?", isPresented: $confirmReset) {
                 Button("Reset", role: .destructive) {
                     copied = false

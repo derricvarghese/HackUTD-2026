@@ -440,6 +440,8 @@ struct ResponderLoginView: View {
 // MARK: - Dashboard
 
 struct ResponderDashboard: View {
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
+    private var units: UnitSystem { UnitSettings.system(for: unitPref) }
     @ObservedObject var node: MeshNode
     @ObservedObject var session: ResponderSession
     @State private var selectedId: String?
@@ -546,7 +548,7 @@ struct ResponderDashboard: View {
             .alert(selectedMesh?.title ?? "", isPresented: Binding(get: { selectedMesh != nil }, set: { if !$0 { selectedId = nil } })) {
                 Button("OK", role: .cancel) { selectedId = nil }
             } message: {
-                Text("This phone heard this SOS over Bluetooth. Its exact location is encrypted for the server, so only the ~1 km area is shown. It will appear as a case once any phone uploads it.")
+                Text("This phone heard this SOS over Bluetooth. Its exact location is encrypted for the server, so only the area of about \(Units.distance(meters: 1000, system: units)) is shown. It will appear as a case once any phone uploads it.")
             }
         }
         .task { await session.poll() }
@@ -660,6 +662,8 @@ struct CaseDetailSheet: View {
     @ObservedObject var session: ResponderSession
     @Environment(\.dismiss) private var dismiss
     @State private var confirmResolve = false
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
+    private var units: UnitSystem { UnitSettings.system(for: unitPref) }
 
     private var claimedByOther: Bool { c.assigneeId != nil && !mine && c.assignmentStatus.map { !["released", "cancelled"].contains($0) } ?? false }
 
@@ -697,7 +701,7 @@ struct CaseDetailSheet: View {
                         Label(String(format: "Exact GPS: %.5f, %.5f", c.lat, c.lng), systemImage: "mappin.circle.fill")
                         Button { openDirections() } label: { Label("Directions in Maps", systemImage: "car.fill") }
                     } else {
-                        Label("Somewhere within \(Int(c.radiusM)) m of the circle's centre", systemImage: "circle.dashed")
+                        Label("Somewhere within \(Units.distance(meters: c.radiusM, system: units)) of the circle's centre", systemImage: "circle.dashed")
                         if !claimedByOther { Text("Claim the case to get the exact spot.").font(.footnote).foregroundStyle(.secondary) }
                         Button { openDirections() } label: { Label("Directions to the area", systemImage: "car") }
                     }

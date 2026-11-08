@@ -118,6 +118,7 @@ struct MeshSummaryCard: View {
     var onOpenMesh: (() -> Void)?
 
     private var searching: Bool { node.peerCount == 0 }
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -147,9 +148,10 @@ struct MeshSummaryCard: View {
                 Spacer(minLength: 0)
             }
 
-            Label(gpsText, systemImage: node.hasLocation ? "location.fill" : "location.slash")
+            Label(gpsText(spoken: false), systemImage: node.hasLocation ? "location.fill" : "location.slash")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(gpsText(spoken: true))
 
             if let onOpenMesh {
                 Button("Mesh details", action: onOpenMesh)
@@ -163,9 +165,12 @@ struct MeshSummaryCard: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var gpsText: String {
+    private func gpsText(spoken: Bool) -> String {
         guard node.hasLocation else { return "Searching for GPS" }
-        if let acc = node.gpsAccuracy { return "GPS fix, accurate to \(Int(acc.rounded())) m" }
+        if let acc = node.gpsAccuracy {
+            let system = UnitSettings.system(for: unitPref)
+            return "GPS fix, accurate to \(Units.accuracy(meters: acc, system: system, spoken: spoken))"
+        }
         return "GPS fix"
     }
 }

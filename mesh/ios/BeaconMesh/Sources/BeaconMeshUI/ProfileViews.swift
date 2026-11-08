@@ -210,7 +210,9 @@ struct ProfileFormView: View {
 
     init(initial: UserProfile?, requireName: Bool, saveTitle: String = "Save profile", onCancel: (() -> Void)? = nil,
          onSave: @escaping (UserProfile) -> [String: String]) {
-        _draft = State(initialValue: initial.map(ProfileDraft.init) ?? ProfileDraft())
+        var start = initial.map(ProfileDraft.init) ?? ProfileDraft()
+        start.setHeightSystem(UnitSettings.current)
+        _draft = State(initialValue: start)
         self.requireName = requireName
         self.saveTitle = saveTitle
         self.onCancel = onCancel
@@ -285,11 +287,48 @@ struct ProfileFormView: View {
 
     private var appearance: some View {
         Section {
-            field("Height in cm (optional)", text: $draft.heightCm, path: "appearance.height_cm", keyboard: .numberPad)
+            Picker("Height unit", selection: Binding(get: { draft.heightSystem }, set: { draft.setHeightSystem($0); haptics.play(.select) })) {
+                Text("cm").tag(UnitSystem.metric)
+                Text("ft/in").tag(UnitSystem.imperial)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Height unit")
+            if draft.heightSystem == .metric {
+                field("Height in cm (optional)", text: $draft.heightCm, path: "appearance.height_cm", keyboard: .numberPad)
+            } else {
+                heightFeetInches
+            }
             field("Hair (optional)", text: $draft.hair, path: "appearance.hair", multiline: true)
             field("Clothing you usually wear (optional)", text: $draft.clothing, path: "appearance.clothing", multiline: true)
             field("Scars, tattoos, glasses (optional)", text: $draft.distinguishingMarks, path: "appearance.distinguishing_marks", multiline: true)
         } header: { Text("Appearance") } footer: { Text("Helps rescuers recognise you.") }
+    }
+
+    /// Height typed as feet and inches. Stored as centimetres by `ProfileDraft`; the error for the pair shows below.
+    private var heightFeetInches: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Height (optional)").font(.subheadline).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    TextField("Feet", text: Binding(get: { draft.heightFeet }, set: { draft.editHeightFeet($0) }))
+                        .keyboardType(.numberPad)
+                        .focused($focused, equals: "height.feet")
+                        .accessibilityLabel("Feet, 1 to 8")
+                    Text("feet, 1 to 8").font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    TextField("Inches", text: Binding(get: { draft.heightInches }, set: { draft.editHeightInches($0) }))
+                        .keyboardType(.numberPad)
+                        .focused($focused, equals: "height.inches")
+                        .accessibilityLabel("Inches, 0 to 11")
+                    Text("inches, 0 to 11").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let e = error("appearance.height_cm") {
+                Label(e, systemImage: "exclamationmark.circle.fill").font(.footnote).foregroundStyle(.red)
+                    .accessibilityLabel("Problem: \(e)")
+            }
+        }
     }
 
     private var medical: some View {
@@ -529,6 +568,7 @@ struct MyProfileView: View {
     @ObservedObject var node: MeshNode
     @ObservedObject private var haptics = Haptics.shared
     @State private var editing = false
+    @AppStorage(UnitPreference.storageKey) private var unitPref = UnitPreference.automatic.rawValue
 
     var body: some View {
         List {
@@ -542,7 +582,7 @@ struct MyProfileView: View {
                 }
                 if !p.appearance.isEmpty {
                     Section("Appearance") {
-                        row("Height", p.appearance.heightCm.map { "\($0) cm" })
+                        row("Height", p.appearance.heightCm.map { Units.height(cm: $0, system: UnitSettings.system(for: unitPref)) })
                         row("Hair", p.appearance.hair); row("Clothing", p.appearance.clothing); row("Marks", p.appearance.distinguishingMarks)
                     }
                 }
@@ -629,9 +669,7 @@ struct ProfileSettingsSection: View {
 
     var body: some View {
         Section {
-            NavigationLink {
-                MyProfileView(node: node)
-            } label: {
+            NavigationLink(value: SettingsRoute.myProfile) {
                 Label("My profile", systemImage: "person.crop.circle")
                 if node.userProfile == nil { Text("Not set up").font(.footnote).foregroundStyle(.secondary) }
             }

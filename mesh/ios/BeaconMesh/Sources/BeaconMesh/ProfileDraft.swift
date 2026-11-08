@@ -16,7 +16,14 @@ public struct ProfileDraft: Equatable {
     /// Comma or line separated.
     public var languages = ""
     public var phone = ""
+    /// Canonical height in centimetres (text). With the ft/in view, edits keep it in sync via `editHeightFeet/Inches`.
     public var heightCm = ""
+    /// Which height view the form shows. Display only: `heightCm` is always the stored value.
+    public var heightSystem: UnitSystem = .metric
+    public var heightFeet = ""
+    public var heightInches = ""
+    /// True once the user typed into the ft/in fields; validation then checks those fields.
+    public private(set) var heightEditedInImperial = false
     public var hair = ""
     public var clothing = ""
     public var distinguishingMarks = ""
@@ -64,6 +71,68 @@ public struct ProfileDraft: Equatable {
     /// nil = empty field; `.some(nil)` is not representable, so unparsable text is reported by `validate`.
     static func int(_ s: String) -> Int? { Int(s.trimmingCharacters(in: .whitespaces)) }
 
+    // MARK: Height views
+
+    /// Switches the height view. Going to ft/in shows the stored centimetres in feet and inches (display only, so
+    /// cm -> ft/in -> cm without typing never changes the value). Going back to cm needs no conversion because every
+    /// ft/in edit already wrote the centimetres.
+    public mutating func setHeightSystem(_ system: UnitSystem) {
+        guard system != heightSystem else { return }
+        heightSystem = system
+        if system == .imperial {
+            refreshHeightFields()
+        }
+    }
+
+    /// Feet typed in the ft/in view. Writes `heightCm` whenever the pair is a valid height.
+    public mutating func editHeightFeet(_ text: String) {
+        heightFeet = text
+        heightEditedInImperial = true
+        syncHeightCm()
+    }
+
+    /// Inches typed in the ft/in view. Writes `heightCm` whenever the pair is a valid height.
+    public mutating func editHeightInches(_ text: String) {
+        heightInches = text
+        heightEditedInImperial = true
+        syncHeightCm()
+    }
+
+    /// Message for the ft/in fields, nil when they are empty or describe a valid height. Inches may be left empty (0).
+    public var heightFeetInchesError: String? {
+        let f = heightFeet.trimmingCharacters(in: .whitespaces), i = heightInches.trimmingCharacters(in: .whitespaces)
+        if f.isEmpty && i.isEmpty { return nil }
+        guard !f.isEmpty else { return "Enter feet too" }
+        guard let feet = Int(f), Units.feetRange.contains(feet) else { return "Feet: a whole number from 1 to 8" }
+        if !i.isEmpty {
+            guard let inches = Int(i), Units.inchesRange.contains(inches) else { return "Inches: a whole number from 0 to 11" }
+        }
+        let cm = Units.centimeters(feet: feet, inches: Int(i) ?? 0)
+        return ProfileLimits.heightRange.contains(cm) ? nil : "Between 1 ft 0 in and 8 ft 6 in"
+    }
+
+    private mutating func refreshHeightFields() {
+        if let cm = Self.int(heightCm) {
+            let (feet, inches) = Units.feetAndInches(cm: cm)
+            heightFeet = String(feet)
+            heightInches = String(inches)
+        } else {
+            heightFeet = ""
+            heightInches = ""
+        }
+        heightEditedInImperial = false
+    }
+
+    private mutating func syncHeightCm() {
+        let f = heightFeet.trimmingCharacters(in: .whitespaces), i = heightInches.trimmingCharacters(in: .whitespaces)
+        if f.isEmpty && i.isEmpty {
+            heightCm = ""
+        } else if heightFeetInchesError == nil, let feet = Int(f) {
+            heightCm = String(Units.centimeters(feet: feet, inches: Int(i) ?? 0))
+        }
+        // An invalid pair leaves heightCm alone; validation reports the fields and blocks saving.
+    }
+
     public func toProfile() -> UserProfile {
         var p = UserProfile(fullName: fullName)
         p.preferredName = preferredName
@@ -90,6 +159,7 @@ public struct ProfileDraft: Equatable {
             if !t.isEmpty, Int(t) == nil { e[path] = "Enter a whole number" }
         }
         number("birth_year", birthYear); number("appearance.height_cm", heightCm)
+        if heightEditedInImperial, let message = heightFeetInchesError { e["appearance.height_cm"] = message }
         number("household.people_count", peopleCount); number("household.children", children); number("household.elderly", elderly)
         for (i, pet) in pets.enumerated() { number("household.pets.\(i).count", pet.count) }
         return e
