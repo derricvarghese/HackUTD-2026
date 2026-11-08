@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -24,6 +25,7 @@ import kotlinx.coroutines.launch
 class MeshService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcher: Job? = null
+    private var ticker: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -41,6 +43,15 @@ class MeshService : Service() {
                 node.state.map { it.peers.size }.distinctUntilChanged().collect { n ->
                     getSystemService(NotificationManager::class.java)
                         ?.notify(NOTIFICATION_ID, buildNotification(node.relayId, n))
+                }
+            }
+        }
+        if (ticker == null) {
+            // Heartbeats, outbox/status polling and server-info refresh run here so they work with the screen off.
+            ticker = scope.launch {
+                while (true) {
+                    try { node.tick() } catch (e: Exception) { /* never let a bad tick kill the service */ }
+                    delay(TICK_MS)
                 }
             }
         }
@@ -85,5 +96,6 @@ class MeshService : Service() {
     companion object {
         private const val CHANNEL = "beacon_mesh"
         private const val NOTIFICATION_ID = 1
+        private const val TICK_MS = 30_000L
     }
 }

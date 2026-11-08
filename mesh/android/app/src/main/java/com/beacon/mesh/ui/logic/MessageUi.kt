@@ -2,6 +2,7 @@ package com.beacon.mesh.ui.logic
 
 import com.beacon.mesh.protocol.Category
 import com.beacon.mesh.store.StoredMessage
+import org.json.JSONObject
 
 enum class MessageStatus {
     /** Own message, no peer in range yet: waiting in the local store. */
@@ -16,6 +17,13 @@ enum class MessageStatus {
     RELAYING,
     /** Received, hop limit reached: kept only, not forwarded. */
     HELD,
+    /** The server refused the message for good (bad signature, expired, ...). */
+    REJECTED,
+    /** Contract SosStatus values reported by the backend for our own message. */
+    ASSIGNED,
+    EN_ROUTE,
+    ON_SCENE,
+    RESOLVED,
 }
 
 enum class AgeUnit { NOW, MINUTES, HOURS, DAYS }
@@ -47,6 +55,11 @@ data class MessageItem(
     /** Peers an own message was handed to when created (0 = queued). */
     val relayedTo: Int,
     val canForward: Boolean,
+    /** ETA from the latest status update, minutes. */
+    val etaMinutes: Int? = null,
+    /** Human text from the backend ("Help is on the way, ETA 40 min"). */
+    val statusMessage: String? = null,
+    val rejectReason: String? = null,
 )
 
 object MessageUi {
@@ -55,39 +68,50 @@ object MessageUi {
         sentToPeers: Map<String, Int> = emptyMap(),
         uploadingIds: Set<String> = emptySet(),
     ): MessageItem {
-        val body = m.header.body
+        val payload = m.ownPayload?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val relayed = sentToPeers[m.id] ?: 0
+        val remote = m.remote
         val status = when {
-            m.uploaded -> MessageStatus.DELIVERED
+            m.rejectReason != null -> MessageStatus.REJECTED
+            remote?.status == "assigned" -> MessageStatus.ASSIGNED
+            remote?.status == "en_route" -> MessageStatus.EN_ROUTE
+            remote?.status == "on_scene" -> MessageStatus.ON_SCENE
+            remote?.status == "resolved" || remote?.status == "closed" -> MessageStatus.RESOLVED
+            m.uploaded || remote?.reachedResponders == true -> MessageStatus.DELIVERED
             m.id in uploadingIds -> MessageStatus.UPLOADING
             m.isOwn && relayed > 0 -> MessageStatus.RELAYED
             m.isOwn -> MessageStatus.QUEUED
             m.canForward -> MessageStatus.RELAYING
             else -> MessageStatus.HELD
         }
+        // Relays cannot read payloads (encrypted to the backend); only our own messages have details.
+        val apiCategory = payload?.optString("category") ?: m.envelope.category
         return MessageItem(
             id = m.id,
             shortId = m.id.take(8),
-            category = Category.entries.firstOrNull { it.wire == body?.category },
-            categoryWire = body?.category ?: m.header.kind,
-            kind = m.header.kind,
-            critical = m.header.pri == "critical",
-            text = body?.text,
-            people = body?.people,
-            lat = body?.lat,
-            lng = body?.lng,
-            accuracyM = body?.acc,
-            createdAt = m.header.createdAt,
+            category = Category.entries.firstOrNull { it.wire == apiCategory } ?: Category.entries.firstOrNull { it.apiCategory == apiCategory },
+            categoryWire = apiCategory ?: m.envelope.kind,
+            kind = m.envelope.kind,
+            critical = m.envelope.tier == "critical",
+            text = payload?.optString("text")?.ifBlank { null },
+            people = payload?.let { if (it.has("people_count")) it.optInt("people_count") else null },
+            lat = payload?.let { if (it.has("lat")) it.optDouble("lat") else null },
+            lng = payload?.let { if (it.has("lng")) it.optDouble("lng") else null },
+            accuracyM = payload?.let { if (it.has("accuracy_m")) it.optDouble("accuracy_m") else null },
+            createdAt = m.envelope.createdAtMs,
             receivedAt = m.receivedAt,
-            expiresAt = m.header.expiresAt,
+            expiresAt = m.envelope.expiresAtMs,
             isOwn = m.isOwn,
             uploaded = m.uploaded,
-            hop = m.envelope.hop,
-            maxHops = m.header.maxHops,
-            path = m.envelope.path,
+            hop = m.envelope.hopCount,
+            maxHops = m.envelope.maxHops,
+            path = m.envelope.hopPath,
             status = status,
             relayedTo = relayed,
             canForward = m.canForward,
+            etaMinutes = remote?.etaMinutes,
+            statusMessage = remote?.message,
+            rejectReason = m.rejectReason,
         )
     }
 
@@ -105,7 +129,7 @@ object MessageUi {
     fun route(item: MessageItem): List<String> = item.path.map { it.uppercase() }
 
     /** Messages that are still waiting for a gateway (the "held offline" count). */
-    fun heldOffline(items: List<MessageItem>): Int = items.count { !it.uploaded }
+    fun heldOffline(items: List<MessageItem>): Int = items.count { !it.uploaded && it.rejectReason == null }
 
     enum class Filter { ALL, MINE, RECEIVED, HELD }
 
@@ -113,6 +137,6 @@ object MessageUi {
         Filter.ALL -> items
         Filter.MINE -> items.filter { it.isOwn }
         Filter.RECEIVED -> items.filter { !it.isOwn }
-        Filter.HELD -> items.filter { !it.uploaded }
+        Filter.HELD -> items.filter { !it.uploaded && it.rejectReason == null }
     }
 }

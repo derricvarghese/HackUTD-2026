@@ -1,6 +1,15 @@
 package com.beacon.mesh.ui.screens
 
 import android.content.ClipData
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -39,7 +48,9 @@ import com.beacon.mesh.ui.components.ElevatedSection
 import com.beacon.mesh.ui.components.ScreenScaffold
 import com.beacon.mesh.ui.components.ScrollColumn
 import com.beacon.mesh.ui.components.SectionTitle
-import com.beacon.mesh.ui.logic.BackendUrlResult
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
+import com.beacon.mesh.ui.haptics.hapticClickable
 import kotlinx.coroutines.launch
 
 /** Demo / debug controls, one level below Settings: hop cap, force offline, backend URL, raw log. */
@@ -49,18 +60,20 @@ fun DebugScreen(
     onBack: () -> Unit,
     onHopCap: (Int?) -> Unit,
     onForceOffline: (Boolean) -> Unit,
-    onSaveUrl: (String) -> BackendUrlResult,
 ) {
     val clipboard = LocalClipboard.current
+    val haptics = LocalHaptics.current
     val scope = rememberCoroutineScope()
     val cap = mesh.demoHopCap
     ScreenScaffold(
         title = stringResource(R.string.settings_debug),
         navigationIcon = {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.action_back)) }
+            IconButton(onClick = haptics.onClick(HapticEvent.Navigate, onBack)) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.action_back)) }
         },
     ) { pad ->
         ScrollColumn(pad) {
+            HapticsLab()
+
             ElevatedSection {
                 SectionTitle(stringResource(R.string.debug_hopcap_title))
                 Text(
@@ -69,7 +82,7 @@ fun DebugScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FilledTonalIconButton(onClick = { onHopCap(cap?.minus(1)?.takeIf { it >= 1 }) }, enabled = cap != null) {
+                    FilledTonalIconButton(onClick = haptics.onClick(HapticEvent.Tick) { onHopCap(cap?.minus(1)?.takeIf { it >= 1 }) }, enabled = cap != null) {
                         Icon(Icons.Rounded.Remove, stringResource(R.string.debug_hopcap_less))
                     }
                     Text(
@@ -77,13 +90,13 @@ fun DebugScreen(
                         style = MaterialTheme.typography.headlineSmallEmphasized,
                         modifier = Modifier.weight(1f),
                     )
-                    FilledTonalIconButton(onClick = { onHopCap(((cap ?: 0) + 1).coerceAtMost(10)) }, enabled = (cap ?: 0) < 10) {
+                    FilledTonalIconButton(onClick = haptics.onClick(HapticEvent.Tick) { onHopCap(((cap ?: 0) + 1).coerceAtMost(10)) }, enabled = (cap ?: 0) < 10) {
                         Icon(Icons.Rounded.Add, stringResource(R.string.debug_hopcap_more))
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = { onHopCap(2) }, label = { Text(stringResource(R.string.debug_hopcap_demo)) })
-                    AssistChip(onClick = { onHopCap(null) }, label = { Text(stringResource(R.string.debug_hopcap_clear)) })
+                    AssistChip(onClick = haptics.onClick(HapticEvent.LightTap) { onHopCap(2) }, label = { Text(stringResource(R.string.debug_hopcap_demo)) })
+                    AssistChip(onClick = haptics.onClick(HapticEvent.LightTap) { onHopCap(null) }, label = { Text(stringResource(R.string.debug_hopcap_clear)) })
                 }
             }
 
@@ -101,13 +114,18 @@ fun DebugScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = mesh.forceOffline, onCheckedChange = onForceOffline)
+                    Switch(checked = mesh.forceOffline, onCheckedChange = haptics.onToggle(onForceOffline))
                 }
             }
 
             ElevatedSection {
                 SectionTitle(stringResource(R.string.settings_gateway))
-                BackendUrlField(saved = mesh.backendUrl, onSave = onSaveUrl)
+                ServerLine(mesh.backendUrl)
+                KeyStatusLines(mesh)
+                Text(
+                    mesh.deviceId?.let { stringResource(R.string.backend_device_registered, it) } ?: stringResource(R.string.backend_device_unregistered),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
             }
 
             ElevatedSection {
@@ -125,7 +143,7 @@ fun DebugScreen(
                         }
                     }
                     FilledTonalButton(
-                        onClick = { scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("log", mesh.log.joinToString("\n")))) } },
+                        onClick = haptics.onClick(HapticEvent.Success) { scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("log", mesh.log.joinToString("\n")))) } },
                         shapes = ButtonDefaults.shapes(),
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(stringResource(R.string.debug_log_copy)) }
@@ -133,4 +151,68 @@ fun DebugScreen(
             }
         }
     }
+}
+
+/** One button per semantic haptic event, collapsed by default, to compare them side by side. */
+@Composable
+private fun HapticsLab() {
+    val haptics = LocalHaptics.current
+    var open by rememberSaveable { mutableStateOf(false) }
+    ElevatedSection {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).hapticClickable(
+                if (open) HapticEvent.Collapse else HapticEvent.Expand,
+                role = Role.Button,
+            ) { open = !open },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.debug_haptics_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null)
+        }
+        AnimatedVisibility(open) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    stringResource(if (haptics.isEnabled) R.string.debug_haptics_body else R.string.debug_haptics_off_note),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HapticEvent.entries.forEach { e ->
+                        FilledTonalButton(
+                            // Lab buttons play their own effect; no extra tap on top.
+                            onClick = { haptics.perform(e) },
+                            shapes = ButtonDefaults.shapes(),
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        ) { Text(stringResource(e.labelRes())) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun HapticEvent.labelRes(): Int = when (this) {
+    HapticEvent.Tap -> R.string.haptic_tap
+    HapticEvent.LightTap -> R.string.haptic_light_tap
+    HapticEvent.ToggleOn -> R.string.haptic_toggle_on
+    HapticEvent.ToggleOff -> R.string.haptic_toggle_off
+    HapticEvent.Select -> R.string.haptic_select
+    HapticEvent.Tick -> R.string.haptic_tick
+    HapticEvent.FrequentTick -> R.string.haptic_frequent_tick
+    HapticEvent.Success -> R.string.haptic_success
+    HapticEvent.Error -> R.string.haptic_error
+    HapticEvent.Warning -> R.string.haptic_warning
+    HapticEvent.LongPress -> R.string.haptic_long_press
+    HapticEvent.ContextClick -> R.string.haptic_context_click
+    HapticEvent.SheetOpen -> R.string.haptic_sheet_open
+    HapticEvent.SheetDismiss -> R.string.haptic_sheet_dismiss
+    HapticEvent.GestureCommit -> R.string.haptic_gesture_commit
+    HapticEvent.GestureThreshold -> R.string.haptic_gesture_threshold
+    HapticEvent.Expand -> R.string.haptic_expand
+    HapticEvent.Collapse -> R.string.haptic_collapse
+    HapticEvent.Navigate -> R.string.haptic_navigate
 }

@@ -24,6 +24,8 @@ import android.os.Handler
 import android.os.ParcelUuid
 import com.beacon.mesh.MeshTransport
 import com.beacon.mesh.protocol.MeshProtocol
+import java.nio.ByteBuffer
+import java.util.UUID
 import kotlin.random.Random
 
 /**
@@ -52,11 +54,48 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     private var gattServer: BluetoothGattServer? = null
     private var running = false
 
-    private companion object { const val MAX_ATTRIBUTE_LEN = 512 }
+    companion object {
+        /** Read-only characteristic holding the 16 raw bytes (big-endian) of the phone's instance UUID. */
+        val ID_CHARACTERISTIC_UUID: UUID = UUID.fromString("B5A10003-7E4C-4C3A-9D2F-6B8E1C0FBEAC")
+        /** Single-chunk frame: type byte 0x02 followed by the sender's 16-byte instance UUID. */
+        const val FRAME_TYPE_HELLO: Byte = 0x02
+        private const val MAX_ATTRIBUTE_LEN = 512
+    }
+
+    /**
+     * Stable identity of this app install, kept in its own preferences file so it survives restarts.
+     * Peers read it from [ID_CHARACTERISTIC_UUID] and use it instead of the (rotating) BLE address.
+     */
+    val instanceId: String = loadOrCreateInstanceId()
+    private val registry = PeerRegistry(instanceId)
+    /** Inbound writers (phones that connected to our GATT server) that said hello: address -> phone id. */
+    private val inboundIds = HashMap<String, String>()
+
+    private fun loadOrCreateInstanceId(): String {
+        val prefs = context.getSharedPreferences("beacon_instance", Context.MODE_PRIVATE)
+        prefs.getString("id", null)?.let { return it }
+        val fresh = UUID.randomUUID().toString().lowercase()
+        prefs.edit().putString("id", fresh).apply()
+        return fresh
+    }
+
+    private fun idBytes(): ByteArray {
+        val u = UUID.fromString(instanceId)
+        return ByteBuffer.allocate(16).putLong(u.mostSignificantBits).putLong(u.leastSignificantBits).array()
+    }
+
+    private fun idFromBytes(b: ByteArray): String? {
+        if (b.size != 16) return null
+        val buf = ByteBuffer.wrap(b)
+        return UUID(buf.long, buf.long).toString().lowercase()
+    }
 
     private class Link(val address: String) {
         var gatt: BluetoothGatt? = null
         var rx: BluetoothGattCharacteristic? = null
+        var idChar: BluetoothGattCharacteristic? = null
+        /** Phone id once identified; null while the link is still being set up. */
+        var peerId: String? = null
         var mtu = 23
         val queue = ArrayDeque<ByteArray>()
         var writing = false
@@ -67,7 +106,7 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     private val links = HashMap<String, Link>()
     private val cooldownUntil = HashMap<String, Long>()
 
-    val readyPeerCount: Int get() = links.values.count { it.rx != null }
+    val readyPeerCount: Int get() = registry.count
 
     val isBluetoothOn: Boolean get() = manager?.adapter?.isEnabled == true
 
@@ -90,6 +129,8 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
         manager?.adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
         links.values.forEach { it.gatt?.disconnect(); it.gatt?.close() }
         links.clear()
+        registry.clear()
+        inboundIds.clear()
         gattServer?.close()
         gattServer = null
     }
@@ -97,8 +138,8 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     // ---- MeshTransport ----
 
     override fun send(envelopeJson: ByteArray, peer: String) {
-        val link = links[peer]
-        if (link == null || link.rx == null) {
+        val link = links[registry.addressFor(peer) ?: peer]
+        if (link == null || link.rx == null || link.peerId == null) {
             log("TX to $peer skipped: no ready link (links=${links.keys})")
             return
         }
@@ -159,8 +200,14 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
             BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
+        val idChar = BluetoothGattCharacteristic(
+            ID_CHARACTERISTIC_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ,
+        )
         val service = BluetoothGattService(MeshProtocol.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         service.addCharacteristic(rx)
+        service.addCharacteristic(idChar)
         server.addService(service)
         gattServer = server
     }
@@ -168,7 +215,23 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
     private val serverCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             val state = if (newState == BluetoothProfile.STATE_CONNECTED) "connected" else "disconnected"
+            if (newState != BluetoothProfile.STATE_CONNECTED) main.post { inboundIds.remove(device.address) }
             main.post { log("Inbound ${device.address} $state") }
+        }
+
+        override fun onCharacteristicReadRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            offset: Int,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            if (characteristic.uuid != ID_CHARACTERISTIC_UUID) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, 0, null)
+                return
+            }
+            val id = idBytes()
+            val slice = if (offset >= id.size) ByteArray(0) else id.copyOfRange(offset, id.size)
+            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
         }
 
         override fun onCharacteristicWriteRequest(
@@ -190,8 +253,17 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
                 return
             }
             val frame = value.copyOf()
-            val peer = device.address
+            val address = device.address
             main.post {
+                if (frame.size == 1 + 16 && frame[0] == FRAME_TYPE_HELLO) {
+                    idFromBytes(frame.copyOfRange(1, frame.size))?.let {
+                        inboundIds[address] = it
+                        log("Inbound hello from ${it.take(8)} ($address)")
+                    }
+                    return@post
+                }
+                // Prefer the sender's stable id so the router never echoes a message back to its source.
+                val peer = inboundIds[address] ?: registry.idFor(address) ?: "in:$address"
                 val whole = reassembler.ingest(frame, peer)
                 if (whole == null) log("Inbound frame from $peer buffered or invalid (${frame.size} B)")
                 whole?.let { listener?.onEnvelope(it, peer) }
@@ -266,18 +338,24 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
         log("Found peer $address rssi $rssi, connecting")
         link.gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         main.postDelayed({
-            if (links[address] === link && link.rx == null) dropLink(address, "connect timeout")
+            if (links[address] === link && link.peerId == null) dropLink(address, "connect timeout")
         }, 10_000)
     }
 
-    private fun dropLink(address: String, reason: String) {
+    private fun dropLink(address: String, reason: String, cooldownMs: Long = 5_000) {
         val link = links.remove(address) ?: return
         link.gatt?.disconnect()
         link.gatt?.close()
-        cooldownUntil[address] = System.currentTimeMillis() + 5_000
+        cooldownUntil[address] = System.currentTimeMillis() + cooldownMs
         reassembler.reset(address)
-        log("Peer $address lost: $reason")
-        listener?.onPeerLost(address)
+        val id = registry.release(address)
+        reassembler.reset(id ?: address)
+        if (id != null && link.peerId == id) {
+            log("Peer ${id.take(8)} lost: $reason")
+            listener?.onPeerLost(id)
+        } else {
+            log("Link $address dropped: $reason")
+        }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -314,14 +392,65 @@ class BleMeshTransport(private val context: Context, private val main: Handler) 
                     return@post
                 }
                 link.rx = rx
-                log("Peer $address ready (mtu ${link.mtu})")
-                listener?.onPeerReady(address)
+                val idChar = gatt.getService(MeshProtocol.SERVICE_UUID)?.getCharacteristic(ID_CHARACTERISTIC_UUID)
+                if (idChar == null) {
+                    // Older build without the id characteristic: fall back to address identity.
+                    identified(link, PeerRegistry.legacyId(address))
+                } else {
+                    link.idChar = idChar
+                    if (!gatt.readCharacteristic(idChar)) identified(link, PeerRegistry.legacyId(address))
+                }
             }
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) {
+            handleIdRead(gatt.device.address, characteristic, value, status)
+        }
+
+        @Deprecated("Used on Android 12 and lower")
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (Build.VERSION.SDK_INT < 33) handleIdRead(gatt.device.address, characteristic, characteristic.value ?: ByteArray(0), status)
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             val address = gatt.device.address
             main.post { links[address]?.let { onWriteComplete(it, status) } }
+        }
+    }
+
+    private fun handleIdRead(address: String, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+        if (characteristic.uuid != ID_CHARACTERISTIC_UUID) return
+        val copy = value.copyOf()
+        main.post {
+            val link = links[address] ?: return@post
+            if (link.peerId != null) return@post
+            val id = if (status == BluetoothGatt.GATT_SUCCESS) idFromBytes(copy) else null
+            identified(link, id ?: PeerRegistry.legacyId(address))
+        }
+    }
+
+    /** The peer's stable id is known: keep one link per phone, drop duplicates and ourselves. */
+    private fun identified(link: Link, id: String) {
+        when (val d = registry.identify(link.address, id)) {
+            PeerRegistry.Decision.Self -> dropLink(link.address, "that is this phone", cooldownMs = 120_000)
+            is PeerRegistry.Decision.Duplicate -> {
+                log("Ignoring ${link.address}: already linked to ${d.id.take(8)} via ${d.existingAddress}")
+                dropLink(link.address, "duplicate of ${d.id.take(8)}", cooldownMs = 60_000)
+            }
+            is PeerRegistry.Decision.Accept -> {
+                link.peerId = d.id
+                log("Peer ${d.id.take(8)} ready (${link.address}, mtu ${link.mtu})")
+                // Tell the other side who we are, so its router can tell our messages apart from echoes.
+                link.queue.addFirst(byteArrayOf(FRAME_TYPE_HELLO) + idBytes())
+                pump(link)
+                listener?.onPeerReady(d.id)
+            }
         }
     }
 

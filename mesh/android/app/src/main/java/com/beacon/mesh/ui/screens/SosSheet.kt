@@ -40,6 +40,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import com.beacon.mesh.GpsFix
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.components.BadgeIcon
 import com.beacon.mesh.ui.components.HoldToConfirmButton
 import com.beacon.mesh.ui.components.categoryStyle
@@ -63,8 +65,10 @@ fun SosSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    val haptics = LocalHaptics.current
     val style = categoryStyle(draft.category.wire)
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    // Swipe down, scrim tap or back. (Opening plays SheetOpen at the tile / menu item that opened it.)
+    ModalBottomSheet(onDismissRequest = { haptics.perform(HapticEvent.SheetDismiss); onDismiss() }, sheetState = sheetState) {
         Column(
             Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -100,6 +104,7 @@ fun SosSheet(
             )
 
             val dismiss: () -> Unit = {
+                haptics.perform(HapticEvent.SheetDismiss)
                 scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismiss() }
             }
             val confirm: () -> Unit = {
@@ -109,7 +114,8 @@ fun SosSheet(
                 HoldToConfirmButton(onConfirm = confirm, container = style.strong, content = style.onStrong)
             } else {
                 Button(
-                    onClick = confirm,
+                    // No hold here, so no hold-to-send pop: play the success cue instead.
+                    onClick = haptics.onClick(HapticEvent.Success, confirm),
                     shapes = ButtonDefaults.shapes(),
                     colors = ButtonDefaults.buttonColors(containerColor = style.strong, contentColor = style.onStrong),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
@@ -138,6 +144,7 @@ fun GpsLine(gps: GpsFix?, locationAllowed: Boolean, modifier: Modifier = Modifie
 
 @Composable
 private fun PeopleStepper(people: Int, onPeople: (Int) -> Unit) {
+    val haptics = LocalHaptics.current
     val peopleLabel = stringResource(R.string.sos_people_label)
     Row(
         Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = "$peopleLabel: $people" },
@@ -145,11 +152,11 @@ private fun PeopleStepper(people: Int, onPeople: (Int) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(peopleLabel, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        FilledTonalIconButton(onClick = { onPeople(people - 1) }, enabled = people > 1, modifier = Modifier.size(48.dp)) {
+        FilledTonalIconButton(onClick = haptics.onClick(HapticEvent.Tick) { onPeople(people - 1) }, enabled = people > 1, modifier = Modifier.size(48.dp)) {
             Icon(Icons.Rounded.Remove, stringResource(R.string.sos_people_less))
         }
         Text("$people", style = MaterialTheme.typography.headlineSmallEmphasized, modifier = Modifier.widthIn(min = 32.dp))
-        FilledTonalIconButton(onClick = { onPeople(people + 1) }, enabled = people < SosDraft.MAX_PEOPLE, modifier = Modifier.size(48.dp)) {
+        FilledTonalIconButton(onClick = haptics.onClick(HapticEvent.Tick) { onPeople(people + 1) }, enabled = people < SosDraft.MAX_PEOPLE, modifier = Modifier.size(48.dp)) {
             Icon(Icons.Rounded.Add, stringResource(R.string.sos_people_more))
         }
     }

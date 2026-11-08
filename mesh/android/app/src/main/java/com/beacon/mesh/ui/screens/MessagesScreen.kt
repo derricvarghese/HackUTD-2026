@@ -48,6 +48,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.components.BadgeIcon
 import com.beacon.mesh.ui.components.ElevatedSection
 import com.beacon.mesh.ui.components.EmptyState
@@ -83,6 +85,7 @@ fun MessagesScreen(
     requestedId: String?,
     onRequestConsumed: () -> Unit,
 ) {
+    val haptics = LocalHaptics.current
     val navigator = rememberListDetailPaneScaffoldNavigator<String>()
     val scope = rememberCoroutineScope()
     var filter by rememberSaveable { mutableStateOf(MessageUi.Filter.ALL) }
@@ -122,7 +125,7 @@ fun MessagesScreen(
                     title = stringResource(R.string.detail_title),
                     navigationIcon = {
                         if (canGoBack) {
-                            IconButton(onClick = { scope.launch { navigator.navigateBack() } }) {
+                            IconButton(onClick = haptics.onClick(HapticEvent.Navigate) { scope.launch { navigator.navigateBack() } }) {
                                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.action_back))
                             }
                         }
@@ -152,6 +155,7 @@ private fun MessageList(
     padding: PaddingValues,
     onOpen: (String) -> Unit,
 ) {
+    val haptics = LocalHaptics.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -165,7 +169,7 @@ private fun MessageList(
                 MessageUi.Filter.entries.forEach { f ->
                     FilterChip(
                         selected = f == filter,
-                        onClick = { onFilter(f) },
+                        onClick = { if (f != filter) haptics.perform(HapticEvent.Select); onFilter(f) },
                         label = {
                             Text(
                                 stringResource(
@@ -200,6 +204,7 @@ private fun MessageList(
 @Composable
 private fun MessageDetail(item: MessageItem, relayId: String, now: Long, pad: PaddingValues) {
     val context = LocalContext.current
+    val haptics = LocalHaptics.current
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val style = categoryStyle(item.categoryWire)
@@ -227,6 +232,14 @@ private fun MessageDetail(item: MessageItem, relayId: String, now: Long, pad: Pa
                 }
             }
             Row { StatusPill(item) }
+            if (item.statusMessage != null || item.rejectReason != null) {
+                ElevatedSection {
+                    SectionTitle(stringResource(R.string.detail_backend_status))
+                    item.statusMessage?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
+                    item.etaMinutes?.let { Text(stringResource(R.string.detail_eta, it), style = MaterialTheme.typography.titleMediumEmphasized) }
+                    item.rejectReason?.let { Text(stringResource(R.string.detail_rejected_reason, it), color = MaterialTheme.colorScheme.error) }
+                }
+            }
             item.text?.let {
                 ElevatedSection { SectionTitle(stringResource(R.string.detail_note)); Text(it, style = MaterialTheme.typography.bodyLarge) }
             }
@@ -249,6 +262,11 @@ private fun MessageDetail(item: MessageItem, relayId: String, now: Long, pad: Pa
                             MessageStatus.DELIVERED -> R.string.detail_explain_delivered
                             MessageStatus.RELAYING -> R.string.detail_explain_relaying
                             MessageStatus.HELD -> R.string.detail_explain_held
+                            MessageStatus.REJECTED -> R.string.detail_explain_rejected
+                            MessageStatus.ASSIGNED -> R.string.detail_explain_assigned
+                            MessageStatus.EN_ROUTE -> R.string.detail_explain_en_route
+                            MessageStatus.ON_SCENE -> R.string.detail_explain_on_scene
+                            MessageStatus.RESOLVED -> R.string.detail_explain_resolved
                         }
                     ),
                     style = MaterialTheme.typography.bodyMedium,
@@ -277,15 +295,15 @@ private fun MessageDetail(item: MessageItem, relayId: String, now: Long, pad: Pa
             colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
             modifier = Modifier.align(Alignment.BottomCenter).padding(pad).padding(bottom = 16.dp),
         ) {
-            IconButton(onClick = {
+            IconButton(onClick = haptics.onClick(HapticEvent.Success) {
                 scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("id", item.id))) }
             }) { Icon(Icons.Rounded.ContentCopy, copyLabel) }
-            IconButton(onClick = {
+            IconButton(onClick = haptics.onClick {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shareText)
                 context.startActivity(Intent.createChooser(send, shareLabel))
             }) { Icon(Icons.Rounded.Share, shareLabel) }
             if (hasLocation) {
-                IconButton(onClick = {
+                IconButton(onClick = haptics.onClick {
                     val geo = Intent(Intent.ACTION_VIEW, Uri.parse("geo:${item.lat},${item.lng}?q=${item.lat},${item.lng}"))
                     try { context.startActivity(geo) } catch (_: Exception) {}
                 }) { Icon(Icons.Rounded.Map, mapLabel) }

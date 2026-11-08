@@ -53,5 +53,5 @@ private fun Host(dark: Boolean = false, content: @Composable () -> Unit) {
 
 @Preview(name = "Settings dark", widthDp = 360, heightDp = 640, showBackground = true)
 @Composable fun SettingsDarkPreview() = Host(dark = true) {
-    SettingsScreen(UiSettings(), Mesh, ReadySystem, {}, {}, { com.beacon.mesh.ui.logic.BackendUrl.validate(it) }, {})
+    SettingsScreen(UiSettings(), Mesh, ReadySystem, {}, {}, {})
 }

@@ -22,9 +22,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
@@ -33,11 +32,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.logic.SosDraft
 
 /**
- * Press and hold to send, so a pocket tap can never raise a false alarm. Haptics on start and on
- * completion. TalkBack users activate it with a normal double tap through the click semantic.
+ * Press and hold to send, so a pocket tap can never raise a false alarm. A vibration builds in intensity while held, then pops on send (see [HoldHaptics]). TalkBack users activate it with a normal double tap through the click semantic.
  */
 @Composable
 fun HoldToConfirmButton(
@@ -47,17 +46,26 @@ fun HoldToConfirmButton(
     modifier: Modifier = Modifier,
     holdMillis: Long = SosDraft.HOLD_MILLIS,
 ) {
-    val haptics = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val appHaptics = LocalHaptics.current
+    val haptics = remember(context, appHaptics) { HoldHaptics(context) { appHaptics.isEnabled } }
     var pressing by remember { mutableStateOf(false) }
     val progress = remember { Animatable(0f) }
     val sendNow = stringResource(R.string.sos_send_now_desc)
     LaunchedEffect(pressing) {
         if (pressing) {
-            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            progress.animateTo(1f, tween(holdMillis.toInt(), easing = LinearEasing))
-            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-            pressing = false
-            onConfirm()
+            var completed = false
+            try {
+                haptics.startRamp(holdMillis)
+                progress.animateTo(1f, tween(holdMillis.toInt(), easing = LinearEasing))
+                completed = true
+                haptics.pop()
+                pressing = false
+                onConfirm()
+            } finally {
+                // Finger lifted early: stop the build-up straight away.
+                if (!completed) haptics.cancel()
+            }
         } else {
             progress.snapTo(0f)
         }
@@ -75,7 +83,7 @@ fun HoldToConfirmButton(
             }
             .semantics(mergeDescendants = true) {
                 role = Role.Button
-                onClick(label = sendNow) { onConfirm(); true }
+                onClick(label = sendNow) { haptics.pop(); onConfirm(); true }
             },
         shape = MaterialTheme.shapes.extraLarge,
         color = container,

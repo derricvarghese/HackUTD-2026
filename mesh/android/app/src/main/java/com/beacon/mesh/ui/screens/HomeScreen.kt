@@ -68,6 +68,8 @@ import com.beacon.mesh.ui.components.categoryLabel
 import com.beacon.mesh.ui.components.categoryStyle
 import com.beacon.mesh.ui.components.rememberNow
 import com.beacon.mesh.ui.logic.MessageItem
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.theme.LocalReduceMotion
 import androidx.graphics.shapes.Morph
 
@@ -83,7 +85,9 @@ fun HomeScreen(
     onOpenMessage: (String) -> Unit,
     onFixSetup: () -> Unit,
     onOpenMesh: () -> Unit,
+    onCheckinReply: (com.beacon.mesh.store.CheckinPrompt, String) -> Unit = { _, _ -> },
 ) {
+    val haptics = LocalHaptics.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = menuOpen) { menuOpen = false }
     val wide = LocalConfiguration.current.screenWidthDp >= 600
@@ -97,7 +101,7 @@ fun HomeScreen(
                 button = {
                     ToggleFloatingActionButton(
                         checked = menuOpen,
-                        onCheckedChange = { menuOpen = it },
+                        onCheckedChange = { menuOpen = it; haptics.perform(if (it) HapticEvent.Expand else HapticEvent.Collapse) },
                         modifier = Modifier.semantics { stateDescription = "" },
                     ) {
                         val image = if (checkedProgress > 0.5f) Icons.Rounded.Close else Icons.Rounded.Add
@@ -112,7 +116,7 @@ fun HomeScreen(
                 MoreMenu.forEach { cat ->
                     val st = categoryStyle(cat.wire)
                     FloatingActionButtonMenuItem(
-                        onClick = { menuOpen = false; onSos(cat) },
+                        onClick = haptics.onClick(HapticEvent.SheetOpen) { menuOpen = false; onSos(cat) },
                         icon = { Icon(st.icon, null) },
                         text = { Text(stringResource(st.label)) },
                     )
@@ -126,6 +130,7 @@ fun HomeScreen(
             } else {
                 MeshSummary(mesh, system, onOpenMesh)
             }
+            mesh.checkins.forEach { c -> CheckinCard(c, onReply = { onCheckinReply(c, it) }) }
 
             SectionTitle(stringResource(R.string.home_send_title))
             val perRow = if (wide) 4 else 2
@@ -163,8 +168,10 @@ fun HomeScreen(
 @Composable
 private fun SosTile(category: Category, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val st = categoryStyle(category.wire)
+    val haptics = LocalHaptics.current
     Button(
-        onClick = onClick,
+        // Opens the SOS sheet, so the sheet-open effect is the only feedback (no tap + sheet double).
+        onClick = haptics.onClick(HapticEvent.SheetOpen, onClick),
         shapes = ButtonDefaults.shapes(),
         colors = ButtonDefaults.buttonColors(containerColor = st.strong, contentColor = st.onStrong),
         contentPadding = PaddingValues(16.dp),
@@ -183,6 +190,7 @@ private fun SosTile(category: Category, onClick: () -> Unit, modifier: Modifier 
 
 @Composable
 private fun SetupBanner(onFix: () -> Unit) {
+    val haptics = LocalHaptics.current
     ElevatedSection(container = MaterialTheme.colorScheme.errorContainer) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(Icons.Rounded.Warning, null, tint = MaterialTheme.colorScheme.onErrorContainer)
@@ -198,7 +206,7 @@ private fun SetupBanner(onFix: () -> Unit) {
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
         Button(
-            onClick = onFix,
+            onClick = haptics.onClick(action = onFix),
             shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
             modifier = Modifier.heightIn(min = 48.dp),
@@ -209,6 +217,7 @@ private fun SetupBanner(onFix: () -> Unit) {
 /** Peers, gateway state and GPS at a glance. The badge morphs between shapes when the role changes. */
 @Composable
 private fun MeshSummary(mesh: MeshSnapshot, system: SystemStatus, onOpenMesh: () -> Unit) {
+    val haptics = LocalHaptics.current
     val reduce = LocalReduceMotion.current
     val morph = remember { Morph(MaterialShapes.Circle, MaterialShapes.SoftBurst) }
     val target = if (mesh.isGateway) 1f else 0f
@@ -246,7 +255,7 @@ private fun MeshSummary(mesh: MeshSnapshot, system: SystemStatus, onOpenMesh: ()
             }
         }
         GpsLine(mesh.gps, system.locationPermission && system.locationOn)
-        TextButton(onClick = onOpenMesh, modifier = Modifier.heightIn(min = 48.dp)) {
+        TextButton(onClick = haptics.onClick(HapticEvent.Navigate, onOpenMesh), modifier = Modifier.heightIn(min = 48.dp)) {
             Text(stringResource(R.string.home_open_mesh))
         }
     }

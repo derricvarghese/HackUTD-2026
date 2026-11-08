@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,9 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -72,7 +71,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.window.core.layout.WindowSizeClass
 import com.beacon.mesh.R
+import com.beacon.mesh.SendError
 import com.beacon.mesh.ui.components.NoInsets
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
+import com.beacon.mesh.ui.haptics.rememberHaptics
 import com.beacon.mesh.ui.logic.MessageItem
 import com.beacon.mesh.ui.logic.MessageUi
 import com.beacon.mesh.ui.screens.DebugScreen
@@ -109,6 +112,8 @@ fun BeaconApp(vm: MeshViewModel = viewModel()) {
     val reduceMotion = remember {
         Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     }
+    val appHaptics = rememberHaptics(settings.hapticsEnabled)
+    CompositionLocalProvider(LocalHaptics provides appHaptics) {
     BeaconTheme(settings.themeMode, settings.dynamicColor, reduceMotion) {
         val dark = isDark(settings.themeMode)
         val activity = LocalActivity.current as? ComponentActivity
@@ -148,6 +153,7 @@ fun BeaconApp(vm: MeshViewModel = viewModel()) {
             }
         }
     }
+    }
 }
 
 @Composable
@@ -180,21 +186,32 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
 
     // ---- feedback for sent alerts ----
     val snackbar = remember { SnackbarHostState() }
-    val haptics = LocalHapticFeedback.current
+    val haptics = LocalHaptics.current
     val sentText = stringResource(R.string.snack_sent)
     val failedText = stringResource(R.string.snack_failed)
+    val noKeyText = stringResource(R.string.snack_failed_no_key)
+    val noLocationText = stringResource(R.string.snack_failed_no_location)
     val viewText = stringResource(R.string.action_view)
     LaunchedEffect(Unit) {
         vm.events.collect { e ->
             when (e) {
                 is UiEvent.SosSent -> {
-                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    // The hold-to-send button already played the "pop"; no second buzz here.
                     val r = snackbar.showSnackbar(sentText, viewText, duration = SnackbarDuration.Long)
-                    if (r == SnackbarResult.ActionPerformed) openMessage(e.messageId)
+                    if (r == SnackbarResult.ActionPerformed) {
+                        haptics.perform(HapticEvent.LightTap)
+                        openMessage(e.messageId)
+                    }
                 }
-                UiEvent.SosFailed -> {
-                    haptics.performHapticFeedback(HapticFeedbackType.Reject)
-                    snackbar.showSnackbar(failedText)
+                is UiEvent.SosFailed -> {
+                    haptics.perform(HapticEvent.Error)
+                    snackbar.showSnackbar(
+                        when (e.error) {
+                            SendError.NO_BACKEND_KEY -> noKeyText
+                            SendError.NO_LOCATION -> noLocationText
+                            else -> failedText
+                        }
+                    )
                 }
             }
         }
@@ -222,7 +239,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
                 TopLevels.forEach { t ->
                     NavigationRailItem(
                         selected = selected(t.route),
-                        onClick = { goTop(t.route) },
+                        onClick = haptics.onClick(HapticEvent.Navigate) { goTop(t.route) },
                         icon = { Icon(t.icon, contentDescription = if (showLabels) null else stringResource(t.label)) },
                         label = { Text(stringResource(t.label)) },
                         alwaysShowLabel = showLabels,
@@ -244,7 +261,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
                         TopLevels.forEach { t ->
                             NavigationBarItem(
                                 selected = selected(t.route),
-                                onClick = { goTop(t.route) },
+                                onClick = haptics.onClick(HapticEvent.Navigate) { goTop(t.route) },
                                 icon = { Icon(t.icon, contentDescription = if (showLabels) null else stringResource(t.label)) },
                                 label = { Text(stringResource(t.label), maxLines = 1) },
                                 alwaysShowLabel = showLabels,
@@ -317,6 +334,7 @@ private fun ShellNavHost(
                 onOpenMessage = onOpenMessage,
                 onFixSetup = { vm.setOnboardingDone(false) },
                 onOpenMesh = { onGoTop(Routes.MESH) },
+                onCheckinReply = vm::answerCheckin,
             )
         }
         composable(Routes.MESSAGES) {
@@ -334,7 +352,7 @@ private fun ShellNavHost(
                 system = system,
                 onTheme = vm::setThemeMode,
                 onDynamic = vm::setDynamicColor,
-                onSaveUrl = vm::saveBackendUrl,
+                onHaptics = vm::setHapticsEnabled,
                 onOpenDebug = { nav.navigate(Routes.DEBUG) },
             )
         }
@@ -350,7 +368,6 @@ private fun ShellNavHost(
                 onBack = { nav.popBackStack() },
                 onHopCap = vm::setHopCap,
                 onForceOffline = vm::setForceOffline,
-                onSaveUrl = vm::saveBackendUrl,
             )
         }
     }

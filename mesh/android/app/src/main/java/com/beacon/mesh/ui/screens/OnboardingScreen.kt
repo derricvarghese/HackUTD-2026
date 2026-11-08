@@ -38,6 +38,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.SystemIntents
 import com.beacon.mesh.ui.SystemStatus
 import com.beacon.mesh.ui.SystemStatusHolder
@@ -62,14 +64,20 @@ fun OnboardingScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHaptics.current
     val status = holder.status
     val sdk = status.sdk
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         onAsked(result.keys)
         holder.refresh()
+        // Result of the system permission dialog: granted or refused.
+        haptics.perform(if (result.isNotEmpty() && result.values.all { it }) HapticEvent.Success else HapticEvent.Error)
     }
-    val enableBt = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { holder.refresh() }
+    val enableBt = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        holder.refresh()
+        haptics.perform(if (it.resultCode == android.app.Activity.RESULT_OK) HapticEvent.Success else HapticEvent.Error)
+    }
 
     fun groupStatus(g: PermGroup) =
         PermissionPlan.status(g, sdk, status.granted, askedPermissions, status.rationale)
@@ -147,7 +155,7 @@ fun OnboardingScreen(
 
         Column(Modifier.padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                onClick = onFinish,
+                onClick = haptics.onClick(HapticEvent.Success, onFinish),
                 enabled = ready,
                 shapes = ButtonDefaults.shapes(),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
@@ -159,7 +167,7 @@ fun OnboardingScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = onFinish, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            TextButton(onClick = haptics.onClick(action = onFinish), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(R.string.onboarding_skip))
             }
         }
@@ -177,6 +185,7 @@ private fun PermissionCard(
     onOpenSettings: () -> Unit,
 ) {
     if (status == GroupStatus.NOT_NEEDED) return
+    val haptics = LocalHaptics.current
     val granted = status == GroupStatus.GRANTED
     ElevatedSection(
         container = if (granted) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -185,18 +194,18 @@ private fun PermissionCard(
         Text(why, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (status) {
             GroupStatus.GRANTED, GroupStatus.NOT_NEEDED -> Unit
-            GroupStatus.NOT_ASKED -> FilledTonalButton(onClick = onRequest, shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
+            GroupStatus.NOT_ASKED -> FilledTonalButton(onClick = haptics.onClick(action = onRequest), shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
                 Text(stringResource(R.string.action_allow))
             }
             GroupStatus.DENIED -> {
                 Text(stringResource(R.string.perm_denied_rationale), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                FilledTonalButton(onClick = onRequest, shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
+                FilledTonalButton(onClick = haptics.onClick(action = onRequest), shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
                     Text(stringResource(R.string.action_try_again))
                 }
             }
             GroupStatus.DENIED_PERMANENTLY -> {
                 Text(stringResource(R.string.perm_denied_permanent), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                FilledTonalButton(onClick = onOpenSettings, shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
+                FilledTonalButton(onClick = haptics.onClick(HapticEvent.Navigate, onOpenSettings), shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
                     Text(stringResource(R.string.action_open_settings))
                 }
             }
@@ -214,13 +223,14 @@ private fun ToggleCard(
     enabled: Boolean,
     onAction: () -> Unit,
 ) {
+    val haptics = LocalHaptics.current
     ElevatedSection(
         container = if (on) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         CardHeader(icon, title, on, required = false)
         Text(why, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (!on) {
-            FilledTonalButton(onClick = onAction, enabled = enabled, shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
+            FilledTonalButton(onClick = haptics.onClick(HapticEvent.Navigate, onAction), enabled = enabled, shapes = ButtonDefaults.shapes(), modifier = actionModifier()) {
                 Text(actionLabel)
             }
         }

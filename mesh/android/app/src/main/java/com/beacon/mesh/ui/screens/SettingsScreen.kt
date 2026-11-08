@@ -1,6 +1,8 @@
 package com.beacon.mesh.ui.screens
 
+import android.net.Uri
 import android.os.Build
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.clickable
@@ -52,8 +54,9 @@ import com.beacon.mesh.ui.components.ElevatedSection
 import com.beacon.mesh.ui.components.ScreenScaffold
 import com.beacon.mesh.ui.components.ScrollColumn
 import com.beacon.mesh.ui.components.SectionTitle
-import com.beacon.mesh.ui.logic.BackendUrl
-import com.beacon.mesh.ui.logic.BackendUrlResult
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
+import com.beacon.mesh.ui.haptics.hapticClickable
 import com.beacon.mesh.ui.logic.GroupStatus
 import com.beacon.mesh.ui.logic.PermGroup
 import com.beacon.mesh.ui.logic.PermissionPlan
@@ -67,10 +70,11 @@ fun SettingsScreen(
     system: SystemStatus,
     onTheme: (ThemeMode) -> Unit,
     onDynamic: (Boolean) -> Unit,
-    onSaveUrl: (String) -> BackendUrlResult,
     onOpenDebug: () -> Unit,
+    onHaptics: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val haptics = LocalHaptics.current
     ScreenScaffold(title = stringResource(R.string.nav_settings)) { pad ->
         ScrollColumn(pad) {
             ElevatedSection {
@@ -93,13 +97,13 @@ fun SettingsScreen(
                     }
                     Switch(
                         checked = settings.dynamicColor && dynamicSupported,
-                        onCheckedChange = onDynamic,
+                        onCheckedChange = haptics.onToggle(onDynamic),
                         enabled = dynamicSupported,
                     )
                 }
                 SystemIntents.appLanguage(context)?.let { intent ->
                     FilledTonalButton(
-                        onClick = { context.safeStart(intent) },
+                        onClick = haptics.onClick { context.safeStart(intent) },
                         shapes = ButtonDefaults.shapes(),
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(stringResource(R.string.settings_language)) }
@@ -107,13 +111,30 @@ fun SettingsScreen(
             }
 
             ElevatedSection {
-                SectionTitle(stringResource(R.string.settings_gateway))
-                Text(
-                    stringResource(R.string.settings_gateway_body),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                BackendUrlField(saved = mesh.backendUrl, onSave = onSaveUrl)
+                SectionTitle(stringResource(R.string.settings_feedback))
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_haptics), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            stringResource(R.string.settings_haptics_body),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.hapticsEnabled,
+                        // Play the cue before the switch takes effect, so turning it off is still felt once.
+                        onCheckedChange = { on ->
+                            if (!on) haptics.toggle(false)
+                            onHaptics(on)
+                            if (on) haptics.toggle(true)
+                        },
+                    )
+                }
             }
 
             ElevatedSection {
@@ -125,7 +146,7 @@ fun SettingsScreen(
                 PermRow(R.string.service_location_title, system.locationOn)
                 if (sdk >= 33) PermRow(R.string.perm_notifications_title, system.notificationsPermission)
                 FilledTonalButton(
-                    onClick = { context.safeStart(SystemIntents.appSettings(context)) },
+                    onClick = haptics.onClick { context.safeStart(SystemIntents.appSettings(context)) },
                     shapes = ButtonDefaults.shapes(),
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text(stringResource(R.string.action_open_settings)) }
@@ -135,7 +156,7 @@ fun SettingsScreen(
                 SectionTitle(stringResource(R.string.settings_advanced))
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                        .clickable(role = Role.Button, onClick = onOpenDebug),
+                        .hapticClickable(HapticEvent.Navigate, role = Role.Button, onClick = onOpenDebug),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -152,6 +173,7 @@ fun SettingsScreen(
                 SectionTitle(stringResource(R.string.settings_about))
                 Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME), style = MaterialTheme.typography.bodyMedium)
                 Text(stringResource(R.string.mesh_relay_id, mesh.relayId), style = MaterialTheme.typography.bodyMedium)
+                ServerLine(mesh.backendUrl)
                 Text(stringResource(R.string.about_body), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -179,6 +201,7 @@ private fun PermRow(label: Int, ok: Boolean) {
 /** System / Light / Dark as a connected button group (expressive connected toggle buttons). */
 @Composable
 fun ThemeModeGroup(mode: ThemeMode, onChange: (ThemeMode) -> Unit) {
+    val haptics = LocalHaptics.current
     val options = ThemeMode.entries
     Row(
         Modifier.fillMaxWidth(),
@@ -187,7 +210,7 @@ fun ThemeModeGroup(mode: ThemeMode, onChange: (ThemeMode) -> Unit) {
         options.forEachIndexed { i, option ->
             ToggleButton(
                 checked = option == mode,
-                onCheckedChange = { onChange(option) },
+                onCheckedChange = { if (option != mode) { haptics.perform(HapticEvent.Select); onChange(option) } },
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { role = Role.RadioButton },
                 shapes = when (i) {
                     0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
@@ -210,42 +233,9 @@ fun ThemeModeGroup(mode: ThemeMode, onChange: (ThemeMode) -> Unit) {
     }
 }
 
-/** Backend URL with live validation; Save is disabled while the text is invalid. */
+/** Read-only: which server this build uploads to (fixed at build time). */
 @Composable
-fun BackendUrlField(saved: String, onSave: (String) -> BackendUrlResult, modifier: Modifier = Modifier) {
-    var text by rememberSaveable(saved) { mutableStateOf(saved) }
-    var justSaved by rememberSaveable { mutableStateOf(false) }
-    val result = BackendUrl.validate(text)
-    val invalid = result as? BackendUrlResult.Invalid
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = { text = it; justSaved = false },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.url_label)) },
-            placeholder = { Text(stringResource(R.string.url_hint)) },
-            singleLine = true,
-            isError = invalid != null,
-            supportingText = {
-                Text(
-                    when (invalid?.reason) {
-                        BackendUrlResult.Reason.MISSING_SCHEME -> stringResource(R.string.url_err_scheme)
-                        BackendUrlResult.Reason.MISSING_HOST -> stringResource(R.string.url_err_host)
-                        BackendUrlResult.Reason.HAS_QUERY -> stringResource(R.string.url_err_query)
-                        BackendUrlResult.Reason.BAD_FORMAT -> stringResource(R.string.url_err_format)
-                        null -> if (justSaved) stringResource(R.string.url_saved)
-                        else if (result is BackendUrlResult.Empty) stringResource(R.string.url_empty_note)
-                        else stringResource(R.string.url_ok_note)
-                    }
-                )
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        )
-        Button(
-            onClick = { justSaved = onSave(text) !is BackendUrlResult.Invalid },
-            enabled = invalid == null && text.trim().trimEnd('/') != saved,
-            shapes = ButtonDefaults.shapes(),
-            modifier = Modifier.heightIn(min = 48.dp),
-        ) { Text(stringResource(R.string.action_save)) }
-    }
+fun ServerLine(url: String, modifier: Modifier = Modifier) {
+    val host = remember(url) { runCatching { Uri.parse(url).host }.getOrNull() ?: url }
+    Text(stringResource(R.string.server_line, host), style = MaterialTheme.typography.bodyMedium, modifier = modifier)
 }

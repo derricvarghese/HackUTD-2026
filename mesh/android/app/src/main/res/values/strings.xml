@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Beacon Mesh</string>
+    <string name="app_name">Beacon</string>
 
     <!-- Navigation -->
     <string name="nav_home">Home</string>
@@ -71,6 +71,8 @@
     </plurals>
     <string name="snack_sent">Alert created and sent to the mesh</string>
     <string name="snack_failed">Could not create the alert</string>
+    <string name="snack_failed_no_key">Not sent: no security key for responders yet. Connect to the internet once, then try again.</string>
+    <string name="snack_failed_no_location">Not sent: waiting for a location fix. Check that location is on.</string>
 
     <!-- SOS sheet -->
     <string name="sos_sheet_title">Confirm alert</string>
@@ -108,7 +110,6 @@
     <string name="mesh_gw_online">Online, acting as gateway</string>
     <string name="mesh_gw_uploading">Uploading</string>
     <string name="mesh_gw_forced">Internet found, but forced offline</string>
-    <string name="mesh_gw_no_url">Internet found, no backend URL set</string>
     <string name="mesh_gw_offline">Offline relay</string>
     <plurals name="mesh_gw_uploading_n">
         <item quantity="one">%d message in flight</item>
@@ -118,6 +119,33 @@
     <string name="mesh_gw_last_ok">Last upload succeeded, %s</string>
     <string name="mesh_gw_last_failed">Last upload failed, %1$s: %2$s</string>
     <string name="mesh_gps_title">GPS</string>
+    <string name="backend_title">Server</string>
+    <string name="backend_enc_key">Responder key (encryption)</string>
+    <string name="backend_sign_key">Server key (signatures)</string>
+    <string name="key_status_none">Missing</string>
+    <string name="key_status_built_in">Built into app</string>
+    <string name="key_status_cached">Loaded from server</string>
+    <string name="backend_no_key_hint">No key yet, so alerts cannot be created. Connect to the internet once.</string>
+    <string name="backend_device">This phone</string>
+    <string name="backend_device_registered">Registered (%s)</string>
+    <string name="backend_device_unregistered">Not registered yet</string>
+    <string name="backend_server">Server</string>
+    <string name="backend_server_ok">Reachable</string>
+    <string name="backend_server_down">Not reachable</string>
+    <string name="backend_server_unknown">Not checked yet</string>
+    <string name="backend_upload_none">No upload yet.</string>
+    <string name="backend_upload_counts">Last upload %1$s: %2$d new, %3$d known, %4$d rejected, %5$d waiting, %6$d direct</string>
+    <string name="heartbeat_title">Heartbeat</string>
+    <string name="heartbeat_active">Heartbeat active</string>
+    <string name="heartbeat_inactive">Heartbeat idle</string>
+    <string name="heartbeat_inactive_body">Heartbeats start when the server reports an active event.</string>
+    <string name="heartbeat_never">Waiting for the first heartbeat.</string>
+    <string name="heartbeat_last_direct">Last sent %s, directly to the server</string>
+    <string name="heartbeat_last_mesh">Last sent %s, over the mesh</string>
+    <string name="checkin_title">Are you OK?</string>
+    <string name="checkin_default_body">Responders ask you to confirm your status.</string>
+    <string name="checkin_ok">I\'m OK</string>
+    <string name="checkin_need_help">I need help</string>
 
     <!-- Messages -->
     <string name="filter_all">All</string>
@@ -160,6 +188,20 @@
     <string name="status_delivered">Reached responders</string>
     <string name="status_relaying">Relaying</string>
     <string name="status_held">Hop limit reached</string>
+    <string name="status_rejected">Rejected by server</string>
+    <string name="status_assigned">Responder assigned</string>
+    <string name="status_en_route">Help is on the way</string>
+    <string name="status_en_route_eta">Help is on the way, ETA %d min</string>
+    <string name="status_on_scene">Responders on scene</string>
+    <string name="status_resolved">Resolved</string>
+    <string name="detail_explain_rejected">The server refused this message and it will not be retried.</string>
+    <string name="detail_explain_assigned">A responder has taken your case.</string>
+    <string name="detail_explain_en_route">A responder is on the way.</string>
+    <string name="detail_explain_on_scene">Responders are at your location.</string>
+    <string name="detail_explain_resolved">Responders closed this case.</string>
+    <string name="detail_backend_status">From responders</string>
+    <string name="detail_eta">ETA about %d min</string>
+    <string name="detail_rejected_reason">Reason: %s</string>
     <string name="age_now">just now</string>
     <string name="age_minutes">%d min ago</string>
     <string name="age_hours">%d h ago</string>
@@ -175,24 +217,41 @@
     <string name="settings_dynamic_body">Use colors from your wallpaper. Alert colors always stay red, orange and green.</string>
     <string name="settings_dynamic_unsupported">Needs Android 12 or newer.</string>
     <string name="settings_language">App language</string>
-    <string name="settings_gateway">Backend (gateway)</string>
-    <string name="settings_gateway_body">When this phone has internet it uploads held messages here. Leave empty to only relay.</string>
+    <string name="settings_gateway">Server</string>
+    <string name="settings_gateway_body">When this phone has internet it uploads held messages to this server.</string>
+    <string name="settings_feedback">Feedback</string>
+    <string name="settings_haptics">Haptic feedback</string>
+    <string name="settings_haptics_body">Vibration on taps, switches, sheets and results, including the hold-to-send buzz. Your phone\'s touch feedback setting also applies.</string>
+    <string name="debug_haptics_title">Haptics lab</string>
+    <string name="debug_haptics_body">Tap each button to feel the effect it plays.</string>
+    <string name="debug_haptics_off_note">Haptic feedback is off in Settings, so these stay silent.</string>
+    <string name="haptic_tap">Tap</string>
+    <string name="haptic_light_tap">Light tap</string>
+    <string name="haptic_toggle_on">Toggle on</string>
+    <string name="haptic_toggle_off">Toggle off</string>
+    <string name="haptic_select">Select</string>
+    <string name="haptic_tick">Tick</string>
+    <string name="haptic_frequent_tick">Frequent tick</string>
+    <string name="haptic_success">Success</string>
+    <string name="haptic_error">Error</string>
+    <string name="haptic_warning">Warning</string>
+    <string name="haptic_long_press">Long press</string>
+    <string name="haptic_context_click">Context click</string>
+    <string name="haptic_sheet_open">Sheet open</string>
+    <string name="haptic_sheet_dismiss">Sheet dismiss</string>
+    <string name="haptic_gesture_commit">Gesture commit</string>
+    <string name="haptic_gesture_threshold">Gesture threshold</string>
+    <string name="haptic_expand">Expand</string>
+    <string name="haptic_collapse">Collapse</string>
+    <string name="haptic_navigate">Navigate</string>
+    <string name="server_line">Server: %1$s</string>
     <string name="settings_permissions">Permissions and services</string>
     <string name="settings_advanced">Advanced</string>
     <string name="settings_debug">Debug and demo</string>
-    <string name="settings_debug_body">Hop limit, force offline, backend URL, raw log</string>
+    <string name="settings_debug_body">Haptics lab, hop limit, force offline, raw log</string>
     <string name="settings_about">About</string>
     <string name="about_version">Version %s</string>
     <string name="about_body">Signed messages hop between phones over Bluetooth Low Energy and are uploaded by any phone that finds internet.</string>
-    <string name="url_label">Backend URL</string>
-    <string name="url_hint">http://192.168.1.20:3000</string>
-    <string name="url_err_scheme">Start with http:// or https://</string>
-    <string name="url_err_host">Add a host name or IP address</string>
-    <string name="url_err_query">Remove the query or fragment, give the base address only</string>
-    <string name="url_err_format">Not a valid address</string>
-    <string name="url_saved">Saved</string>
-    <string name="url_empty_note">Empty: this phone only relays.</string>
-    <string name="url_ok_note">Looks good. Uploads go to /api/mesh/ingest.</string>
 
     <!-- Debug -->
     <string name="debug_hopcap_title">Hop cap</string>

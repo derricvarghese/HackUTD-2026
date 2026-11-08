@@ -12,8 +12,17 @@ android {
         applicationId = "com.beacon.mesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
+        // Server this build uploads to. Override for local dev: ./gradlew -Pbeacon.backendUrl=https://host
+        val backendUrl = (project.findProperty("beacon.backendUrl") as String?) ?: "https://hackutd.alecj.com"
+        buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
+        // Build-time fallback backend public keys (base64 SPKI) so a phone that has NEVER been online can still
+        // encrypt SOS payloads. Public halves only: ./gradlew -Pbeacon.encPublicKey=... -Pbeacon.signPublicKey=...
+        val encPub = (project.findProperty("beacon.encPublicKey") as String?)?.trim() ?: ""
+        val signPub = (project.findProperty("beacon.signPublicKey") as String?)?.trim() ?: ""
+        buildConfigField("String", "BACKEND_ENC_PUBLIC_KEY", "\"$encPub\"")
+        buildConfigField("String", "BACKEND_SIGN_PUBLIC_KEY", "\"$signPub\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

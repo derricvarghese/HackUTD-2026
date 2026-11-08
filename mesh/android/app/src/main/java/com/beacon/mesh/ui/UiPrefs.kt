@@ -8,6 +8,8 @@ data class UiSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val onboardingDone: Boolean = false,
+    /** Master switch for every haptic in the app, including hold-to-send. */
+    val hapticsEnabled: Boolean = true,
     /** Permissions we have already requested once; needed to tell "denied" from "never asked". */
     val askedPermissions: Set<String> = emptySet(),
 )
@@ -20,6 +22,7 @@ class UiPrefs(context: Context) {
             .getOrDefault(ThemeMode.SYSTEM),
         dynamicColor = prefs.getBoolean("dynamic", true),
         onboardingDone = prefs.getBoolean("onboarded", false),
+        hapticsEnabled = prefs.getBoolean("haptics", true),
         askedPermissions = prefs.getStringSet("asked", emptySet()).orEmpty().toSet(),
     )
 
@@ -28,6 +31,7 @@ class UiPrefs(context: Context) {
             .putString("theme", s.themeMode.name)
             .putBoolean("dynamic", s.dynamicColor)
             .putBoolean("onboarded", s.onboardingDone)
+            .putBoolean("haptics", s.hapticsEnabled)
             .putStringSet("asked", s.askedPermissions)
             .apply()
     }

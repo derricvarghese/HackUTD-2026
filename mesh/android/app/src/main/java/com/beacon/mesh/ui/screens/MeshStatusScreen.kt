@@ -56,6 +56,8 @@ fun MeshStatusScreen(mesh: MeshSnapshot, items: List<MessageItem>, system: Syste
                 PeersCard(mesh, system, Modifier.weight(1f))
                 HeldCard(held, items.size, Modifier.weight(1f))
                 GatewayCard(mesh, now, Modifier.weight(1f))
+                BackendCard(mesh, now, Modifier.weight(1f))
+                HeartbeatCard(mesh, now, Modifier.weight(1f))
                 GpsCard(mesh, system, Modifier.weight(1f))
             }
             Text(
@@ -127,7 +129,6 @@ private fun GatewayCard(mesh: MeshSnapshot, now: Long, modifier: Modifier) {
                     uploading -> R.string.mesh_gw_uploading
                     mesh.isGateway -> R.string.mesh_gw_online
                     mesh.forceOffline && mesh.hasInternet -> R.string.mesh_gw_forced
-                    mesh.hasInternet && mesh.backendUrl.isBlank() -> R.string.mesh_gw_no_url
                     else -> R.string.mesh_gw_offline
                 }
             ),

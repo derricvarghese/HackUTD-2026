@@ -1,0 +1,143 @@
+{
+  "backend_encryption_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUnspY5hfmg0AlacyttQRYHERNAzyGIRWQmMcZ6fgPfGfdZ1OuyOaBVUUT6FdQGjW0HCPd+BgzB/DMNBF2MU83Q==",
+  "expected": [
+    {
+      "payload": {
+        "accuracy_m": 8.5,
+        "lng": -96.7501,
+        "trapped": true,
+        "text": "Trapped on roof, 2 people é中 \"quoted\" \\ slash",
+        "category": "trapped",
+        "people_count": 2,
+        "lat": 32.9857
+      },
+      "id": "01a1b6bc-f800-791d-b33f-1f2e9e81ecd5"
+    },
+    {
+      "payload": {
+        "lng": -96.7501,
+        "category": "safe",
+        "lat": 32.9857
+      },
+      "id": "01a1b6bc-f800-797e-8729-00d6d00daac6"
+    },
+    {
+      "payload": {
+        "lng": -96.9,
+        "text": "need insulin",
+        "category": "need_water_meds",
+        "people_count": 1,
+        "lat": 33.1
+      },
+      "id": "01a1b6bc-f800-7c0f-a298-58cd1b3349c7"
+    },
+    {
+      "payload": {"heartbeat": {
+        "sent_at": "2026-11-07T16:00:00.000Z",
+        "battery_pct": 41,
+        "charging": false,
+        "moving": false,
+        "seq": 17,
+        "approx": {
+          "lng": -96.755,
+          "radius_m": 1000,
+          "lat": 32.985
+        }
+      }},
+      "id": "01a1b6bc-f800-73e5-9b25-a1c40a91e7b2"
+    }
+  ],
+  "now_for_validation": "2026-11-07T16:01:00.000Z",
+  "description": "Envelopes created by the Android MeshRouter (software key) for the server interop test. Encrypted to the fixture backend key in server_envelope.json.",
+  "device_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA==",
+  "envelopes": [
+    {
+      "hop_path": [
+        "E45B",
+        "B7C2"
+      ],
+      "signature": "MEQCIEY2t0CKvR1BInszbzkcnT04QQNT+SqZAdGq4uUTJHukAiAJEWUlsYv18/YEYOaZqcA+G6ShFHDqcN0WnVpu3pnhJQ==",
+      "kind": "sos",
+      "max_hops": 10,
+      "sender_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA==",
+      "created_at": "2026-11-07T16:00:00.000Z",
+      "routing": {
+        "category": "trapped",
+        "approx": {
+          "lng": -96.755,
+          "radius_m": 1000,
+          "lat": 32.985
+        }
+      },
+      "expires_at": "2026-11-08T16:00:00.000Z",
+      "tier": "critical",
+      "hop_count": 2,
+      "payload": "AQS2ympV/aR6t8L56dy4tOvN4JvFhdvasDsE9OqORHpIz7gwIFeNly9RzrltiPFlR/2u9pZwk/AP4UajnETB0A6bJvGUbpnborp748TV9nr74FiwzqqYqkGfOidvXSKS78/q8DLBLviIrRVdHMB7uAaZ8e5rA/OwIUrX9q0r2wrZ6isbVgdP7CNvJUZLcNqDMQnDWJb0vepLPLGqgfhWgb8BKmxwm2Ijc9gh89zhpqAS7qVxaeFva/Mk7qH9cYdu3HXJkPq0eN4qcdSO8sJOr5IvR3wT8IfsHoEz+804x0y7cMQ9iZzEl3jYdP/KYalT2zAHem4uQ+9jUHEc6LMk",
+      "id": "01a1b6bc-f800-791d-b33f-1f2e9e81ecd5",
+      "sender_key_id": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA=="
+    },
+    {
+      "hop_path": [],
+      "signature": "MEUCIC5lHTxsbAM08SK8usCsDR68BCVeFsDqHDezajMoHeX4AiEAlgWsaK5NciTmW3uyZqEAff+PFjQV6AQYpcNIaO15rLo=",
+      "kind": "safe",
+      "max_hops": 3,
+      "sender_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA==",
+      "created_at": "2026-11-07T16:00:00.000Z",
+      "routing": {
+        "category": "safe",
+        "approx": {
+          "lng": -96.755,
+          "radius_m": 1000,
+          "lat": 32.985
+        }
+      },
+      "expires_at": "2026-11-07T19:00:00.000Z",
+      "tier": "safe",
+      "hop_count": 0,
+      "payload": "AQRyI3TeTajhI+BnpDQZ7SglV0COLUOB861p4xAbbr4HBN1/Yg5TsC7nyx24s9mGXiGMJtTKEd/eQqTj5y4kKWnFcRVOMZPf43ab/45c0d8JHSJ7TK34K9L22we/YTNrI+dqLLmyzovrUB6Gj90TediJCu/glTVsRjDrnFiNG7E0alG+Jtz34zdXsMRdFg==",
+      "id": "01a1b6bc-f800-797e-8729-00d6d00daac6",
+      "sender_key_id": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA=="
+    },
+    {
+      "hop_path": [],
+      "signature": "MEYCIQCBwyFn4mUC6GDGOkA1jEj05QnJV5GTOWt2MslPuBn2vgIhAKf4e0nVZlgHEemFIVuHMsj7kFBlqHwhwzm00epXH4Qn",
+      "kind": "sos",
+      "max_hops": 7,
+      "sender_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA==",
+      "created_at": "2026-11-07T16:00:00.000Z",
+      "routing": {
+        "category": "need_water_meds",
+        "approx": {
+          "lng": -96.895,
+          "radius_m": 1000,
+          "lat": 33.105
+        }
+      },
+      "expires_at": "2026-11-08T04:00:00.000Z",
+      "tier": "high",
+      "hop_count": 0,
+      "payload": "AQRxDiv7jv0OiXTGGtJrh4RullQdS6k6p1qDzLNg9EqOTzd6KA2BVjgIMTdfx3mMy4NUvalICuR62g1Mmw3ktabkps5xDPhJfyij51utWObGiKy4kUAkgeKo88vHmGFhS27sj5IByDzLEawfHgb8iDZJ4mLHmuAcv0BQX3zcqbnP7fQKoyoNdsqzOFu46k5PkSX9YuOWczzuJaPgj12DyEr2VFAszrd/Wa1qvGEiJQ0WqdhM+4IOY/Jh",
+      "id": "01a1b6bc-f800-7c0f-a298-58cd1b3349c7",
+      "sender_key_id": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA=="
+    },
+    {
+      "hop_path": [],
+      "signature": "MEUCIQDkWij6eNOterhH6W+T94owhj8g73BzShbsQAqoYqe7WgIgZsytm5Nx8mjOXCr60jPvjQrKxuYQzm+icRsNJS4A+8o=",
+      "kind": "heartbeat",
+      "max_hops": 2,
+      "sender_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA==",
+      "created_at": "2026-11-07T16:00:00.000Z",
+      "routing": {"approx": {
+        "lng": -96.755,
+        "radius_m": 1000,
+        "lat": 32.985
+      }},
+      "expires_at": "2026-11-07T16:30:00.000Z",
+      "tier": "heartbeat",
+      "hop_count": 0,
+      "payload": "AQTz8Rx8HSH1qhZQVZ6CRTNyKGhN+peVxy6lbF1zqiFZAZwxvet/FYL0E/VlwpUyaOKHSSrtwhvobY87estb8L8m0NZKXr1ogLAXZPdUi3BqwuErfCoSeVVB55BxLmTI+uSHQjJTO2mfcQmeqRfWmDRdXfaPU5rx7InEBkUngKUSb9XmpROZ83I5sQ8ic3yRiWNBzek5ruJgWA31xBI+dIYIgBFyz5wCl6IBztYGRwo9XJw2vkmSxuc24YzV/Tru3jNFSm3CosKq0V9JKQF2FOLgYQf8NqCwJKx/Riz+U/+ZXe0XksipyE75IIwmq6oRdfnh/3wvoiQnj8gmsbKSBjsQ",
+      "id": "01a1b6bc-f800-73e5-9b25-a1c40a91e7b2",
+      "sender_key_id": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQ+pNPBYN98szPoWJ4hYeapoBGZ9ZpViHIijn4+g84iv+owP8B0rdr1yf9puHgGOsFJ0Lyz/Mk/TuGGphyFfCEA=="
+    }
+  ]
+}

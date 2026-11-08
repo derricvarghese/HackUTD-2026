@@ -1,29 +1,12 @@
 package com.beacon.mesh.ui
 
 import com.beacon.mesh.protocol.Category
-import com.beacon.mesh.protocol.Envelope
-import com.beacon.mesh.protocol.SignedHeader
-import com.beacon.mesh.protocol.SosBody
+import com.beacon.mesh.protocol.MeshEnvelope
+import org.json.JSONObject
 import com.beacon.mesh.store.StoredMessage
 import com.beacon.mesh.ui.logic.*
 import org.junit.Assert.*
 import org.junit.Test
-
-class BackendUrlTest {
-    @Test fun blankIsEmpty() = assertEquals(BackendUrlResult.Empty, BackendUrl.validate("   "))
-    @Test fun trimsAndStripsTrailingSlash() =
-        assertEquals(BackendUrlResult.Valid("http://192.168.1.5:3000"), BackendUrl.validate(" http://192.168.1.5:3000/ "))
-    @Test fun httpsOk() = assertTrue(BackendUrl.validate("https://api.example.com") is BackendUrlResult.Valid)
-    @Test fun missingScheme() =
-        assertEquals(BackendUrlResult.Invalid(BackendUrlResult.Reason.MISSING_SCHEME), BackendUrl.validate("192.168.1.5:3000"))
-    @Test fun missingHost() =
-        assertEquals(BackendUrlResult.Invalid(BackendUrlResult.Reason.MISSING_HOST), BackendUrl.validate("http://"))
-    @Test fun spacesRejected() =
-        assertTrue(BackendUrl.validate("http://a b.com") is BackendUrlResult.Invalid)
-    @Test fun queryRejected() =
-        assertEquals(BackendUrlResult.Invalid(BackendUrlResult.Reason.HAS_QUERY), BackendUrl.validate("http://a.com/?x=1"))
-    @Test fun badPort() = assertTrue(BackendUrl.validate("http://a.com:99999") is BackendUrlResult.Invalid)
-}
 
 class SosDraftTest {
     @Test fun criticalAndHighNeedHold() {
@@ -81,9 +64,12 @@ class PermissionPlanTest {
 
 class MessageUiTest {
     private fun msg(id: String, hop: Int, max: Int, own: Boolean, uploaded: Boolean = false, path: List<String> = emptyList()): StoredMessage {
-        val header = SignedHeader(1, id, "pub", "sos", "critical", max, 1_000, 99_000_000,
-            SosBody("trapped", "help", 1.0, 2.0, 5.0, 2))
-        return StoredMessage(id, Envelope(signed = "s", sig = "g", hop = hop, path = path), header, 2_000, uploaded, own, null)
+        val env = MeshEnvelope(
+            id, "pub", null, "sos", "critical", max, hop, path, "2099-01-01T00:00:00.000Z", "2026-11-07T16:00:00.000Z",
+            JSONObject().put("category", "trapped"), "cipher", "sig",
+        )
+        val payload = if (own) """{"lat":1.0,"lng":2.0,"accuracy_m":5.0,"category":"trapped","text":"help","people_count":2}""" else null
+        return StoredMessage(id, env, 2_000, uploaded, own, null, ownPayload = payload)
     }
 
     @Test fun statuses() {
@@ -100,8 +86,27 @@ class MessageUiTest {
         assertEquals(listOf("A1B7", "C3D4"), MessageUi.route(item))
         assertEquals("abcdefgh", item.shortId)
         assertEquals(Category.TRAPPED, item.category)
-        assertEquals(2, item.people)
+        assertNull("relays cannot read the encrypted payload", item.people)
         assertTrue(item.critical)
+        val own = MessageUi.map(msg("abcdefghij", 0, 10, true))
+        assertEquals(2, own.people)
+        assertEquals("help", own.text)
+    }
+
+    @Test fun contractStatusesFromTheBackend() {
+        fun withRemote(status: String?, reached: Boolean = true, eta: Int? = null) =
+            msg("a", 0, 10, true).copy(remote = com.beacon.mesh.store.RemoteStatus(status, reached, eta, "Help is on the way, ETA 40 min", 5))
+        assertEquals(MessageStatus.DELIVERED, MessageUi.map(withRemote("reported")).status)
+        assertEquals(MessageStatus.ASSIGNED, MessageUi.map(withRemote("assigned")).status)
+        val en = MessageUi.map(withRemote("en_route", eta = 40))
+        assertEquals(MessageStatus.EN_ROUTE, en.status)
+        assertEquals(40, en.etaMinutes)
+        assertEquals("Help is on the way, ETA 40 min", en.statusMessage)
+        assertEquals(MessageStatus.ON_SCENE, MessageUi.map(withRemote("on_scene")).status)
+        assertEquals(MessageStatus.RESOLVED, MessageUi.map(withRemote("resolved")).status)
+        val rej = MessageUi.map(msg("a", 0, 10, true).copy(rejectReason = "bad_signature"))
+        assertEquals(MessageStatus.REJECTED, rej.status)
+        assertEquals(0, MessageUi.heldOffline(listOf(rej)))
     }
 
     @Test fun ageBuckets() {

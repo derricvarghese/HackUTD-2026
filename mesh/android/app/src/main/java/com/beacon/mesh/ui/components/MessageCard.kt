@@ -30,6 +30,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.beacon.mesh.R
+import com.beacon.mesh.ui.haptics.HapticEvent
+import com.beacon.mesh.ui.haptics.LocalHaptics
 import com.beacon.mesh.ui.logic.AgeUnit
 import com.beacon.mesh.ui.logic.MessageItem
 import com.beacon.mesh.ui.logic.MessageStatus
@@ -55,6 +57,11 @@ fun statusText(item: MessageItem): String = when (item.status) {
     MessageStatus.DELIVERED -> stringResource(R.string.status_delivered)
     MessageStatus.RELAYING -> stringResource(R.string.status_relaying)
     MessageStatus.HELD -> stringResource(R.string.status_held)
+    MessageStatus.REJECTED -> stringResource(R.string.status_rejected)
+    MessageStatus.ASSIGNED -> stringResource(R.string.status_assigned)
+    MessageStatus.EN_ROUTE -> item.etaMinutes?.let { stringResource(R.string.status_en_route_eta, it) } ?: stringResource(R.string.status_en_route)
+    MessageStatus.ON_SCENE -> stringResource(R.string.status_on_scene)
+    MessageStatus.RESOLVED -> stringResource(R.string.status_resolved)
 }
 
 /** (icon, container, content) for a status pill. */
@@ -69,6 +76,9 @@ fun statusStyle(status: MessageStatus): Triple<ImageVector, Color, Color> {
         MessageStatus.DELIVERED -> Triple(Icons.Rounded.CloudDone, c.safeContainer, c.onSafeContainer)
         MessageStatus.RELAYING -> Triple(Icons.Rounded.Sync, s.secondaryContainer, s.onSecondaryContainer)
         MessageStatus.HELD -> Triple(Icons.Rounded.PauseCircle, s.surfaceVariant, s.onSurfaceVariant)
+        MessageStatus.REJECTED -> Triple(Icons.Rounded.PauseCircle, s.errorContainer, s.onErrorContainer)
+        MessageStatus.ASSIGNED, MessageStatus.EN_ROUTE, MessageStatus.ON_SCENE, MessageStatus.RESOLVED ->
+            Triple(Icons.Rounded.CloudDone, c.safeContainer, c.onSafeContainer)
     }
 }
 
@@ -94,6 +104,7 @@ fun MessageCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val haptics = LocalHaptics.current
     val style = categoryStyle(item.categoryWire)
     val label = stringResource(style.label)
     val age = ageText(item.createdAt, nowMs)
@@ -101,7 +112,7 @@ fun MessageCard(
     val status = statusText(item)
     val mine = if (item.isOwn) stringResource(R.string.label_mine) else ""
     Card(
-        onClick = onClick,
+        onClick = haptics.onClick(HapticEvent.LightTap, onClick),
         modifier = modifier.fillMaxWidth().semantics(mergeDescendants = true) {
             contentDescription = listOf(label, mine, age, hop, status, item.text.orEmpty()).filter { it.isNotBlank() }.joinToString(", ")
         },

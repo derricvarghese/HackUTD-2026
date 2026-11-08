@@ -84,6 +84,19 @@ object MeshCrypto {
         false
     }
 
+    fun verifyB64(publicKeySpkiB64: String, data: String, signatureB64: String): Boolean = try {
+        verify(
+            java.util.Base64.getDecoder().decode(publicKeySpkiB64),
+            data.toByteArray(Charsets.UTF_8),
+            java.util.Base64.getDecoder().decode(signatureB64),
+        )
+    } catch (e: IllegalArgumentException) {
+        false
+    }
+
+    fun sha256Hex(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
+
     /** First 2 bytes of SHA-256(SPKI DER) as 4 uppercase hex chars. */
     fun relayId(publicKeyDer: ByteArray): String {
         val d = MessageDigest.getInstance("SHA-256").digest(publicKeyDer)
