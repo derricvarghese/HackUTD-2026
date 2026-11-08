@@ -224,4 +224,6 @@
     <string name="responder_share_revoked">Location permission was removed, so sharing stopped and your position was cleared.</string>
     <string name="responder_share_no_provider">No location source is available. Turn on location in system settings.</string>
     <string name="responder_share_stop">Stop</string>
+    <string name="responder_photo_load_failed">Couldn\'t load photo</string>
+    <string name="responder_photo_retry">Tap to retry</string>
 </resources>

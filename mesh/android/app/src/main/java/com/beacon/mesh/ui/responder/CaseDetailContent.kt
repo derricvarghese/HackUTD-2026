@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -445,15 +446,25 @@ private fun PhotosSection(c: ResponderCase, d: CaseDetail, canAct: Boolean, acti
     var captionText by remember { mutableStateOf("") }
     var showCaptionDialog by remember { mutableStateOf(false) }
 
+    // Image ids whose last load failed; the tile shows a tap-to-retry state for these.
+    val failed = remember { mutableStateMapOf<String, Boolean>() }
+
+    suspend fun loadBitmap(imageId: String) {
+        val loader = actions.onGetImageBytes ?: return
+        val bytes = loader(imageId)
+        val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        if (bmp != null) {
+            bitmaps[imageId] = bmp
+            failed.remove(imageId)
+        } else {
+            failed[imageId] = true
+        }
+    }
+
     // Fetch bitmaps for any images that don't have them yet
     LaunchedEffect(d.images) {
         d.images.forEach { img ->
-            if (bitmaps[img.id] == null && actions.onGetImageBytes != null) {
-                val bytes = actions.onGetImageBytes.invoke(img.id)
-                if (bytes != null) {
-                    bitmaps[img.id] = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                }
-            }
+            if (bitmaps[img.id] == null && failed[img.id] != true) loadBitmap(img.id)
         }
     }
 
@@ -520,6 +531,27 @@ private fun PhotosSection(c: ResponderCase, d: CaseDetail, canAct: Boolean, acti
                                     modifier = Modifier.fillMaxWidth().height(120.dp).clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
                                     contentScale = ContentScale.Crop,
                                 )
+                            } else if (failed[img.id] == true) {
+                                Column(
+                                    Modifier.fillMaxWidth().height(120.dp)
+                                        .clickable(role = Role.Button, onClick = haptics.onClick {
+                                            failed.remove(img.id)
+                                            scope.launch { loadBitmap(img.id) }
+                                        }),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Text(
+                                        stringResource(R.string.responder_photo_load_failed),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        stringResource(R.string.responder_photo_retry),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                             } else {
                                 Box(
                                     Modifier.fillMaxWidth().height(120.dp),

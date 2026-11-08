@@ -138,6 +138,8 @@ class ResponderControllerTest {
         c.setActive(false); runCurrent()
         assertTrue(sockets.opened[0].closed)
         assertEquals(Connection.IDLE, c.state.value.connection)
+        // Let the best-effort offline cleanup finish (presence then location, up to ~7 s of retries), then nothing else goes out.
+        advanceTimeBy(10_000); runCurrent()
         http.calls.clear()
         advanceTimeBy(300_000); runCurrent()
         assertTrue(http.calls.isEmpty()); assertEquals(1, sockets.opened.size)
@@ -233,6 +235,43 @@ class ResponderControllerTest {
         val patchCalls = http.callsTo("PATCH", "/v1/responders/r-1")
         assertEquals(1, patchCalls.size)
         assertEquals("app", patchCalls.single().headers["X-Beacon-Client"])
+    }
+
+    @Test fun offlinePresenceRetriesUpToThreeAttemptsOneThenTwoSecondsApart() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        val offlineReplies = ArrayDeque(listOf(500, 500, 200))
+        http.on("PUT", "/v1/auth/me/presence") { call ->
+            if (JSONObject(call.body).getString("state") == "online") http.json(200, """{"id":"r-1","available":true}""")
+            else http.json(offlineReplies.removeFirst(), "{}")
+        }
+        http.on("PATCH", "/v1/responders/r-1") { http.json(200, """{"id":"r-1"}""") }
+        val c = controller(); c.login("ana", "pw"); c.setActive(true); runCurrent()
+        http.calls.clear()
+        fun offlineCalls() = http.callsTo("PUT", "/v1/auth/me/presence").count { JSONObject(it.body).getString("state") == "offline" }
+
+        c.setActive(false); runCurrent()
+        assertEquals(1, offlineCalls())
+        advanceTimeBy(999); runCurrent(); assertEquals(1, offlineCalls())
+        advanceTimeBy(1); runCurrent(); assertEquals(2, offlineCalls())
+        advanceTimeBy(1_999); runCurrent(); assertEquals(2, offlineCalls())
+        advanceTimeBy(1); runCurrent(); assertEquals(3, offlineCalls())
+        advanceTimeBy(60_000); runCurrent(); assertEquals("no attempts beyond the third", 3, offlineCalls())
+        assertEquals(1, http.callsTo("PATCH", "/v1/responders/r-1").size)
+    }
+
+    @Test fun offlinePresenceDoesNotRetryOnceSignedOut() = runTest {
+        http.loginOk(); http.on("GET", "/v1/sos", listing(RF.sos("a")))
+        var offlineAttempts = 0
+        http.on("PUT", "/v1/auth/me/presence") { call ->
+            if (JSONObject(call.body).getString("state") == "online") http.json(200, """{"id":"r-1","available":true}""")
+            else { offlineAttempts++; http.json(401, "{}") }
+        }
+        http.on("POST", "/v1/auth/refresh") { http.json(401, "{}") }
+        val c = controller(); c.login("ana", "pw"); c.setActive(true); runCurrent()
+        // Presence goes online fine; the offline cleanup then hits a dead session and must not be retried.
+        c.setActive(false); runCurrent()
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(1, offlineAttempts)
     }
 
     @Test fun explicitAvailabilityOffPatchesAvailableFalse() = runTest {

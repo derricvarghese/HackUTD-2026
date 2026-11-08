@@ -71,10 +71,7 @@ class ResponderController(
     suspend fun logout() {
         stopLive()
         stopPresence(sendOffline = false)
-        if (_state.value.account != null) {
-            runCatching { client.setPresence(false) }
-            runCatching { client.clearLocation() }
-        }
+        if (_state.value.account != null) offlineCleanup()
         client.logout()
         held = LinkedHashMap(); cursorMs = null
         _state.value = ResponderState()
@@ -233,9 +230,31 @@ class ResponderController(
         presenceJob = null
         if (sendOffline && _state.value.account != null) {
             offlineJob?.cancel()
-            offlineJob = scope.launch {
-                runCatching { client.setPresence(false) }
-                runCatching { client.clearLocation() }
+            offlineJob = scope.launch { offlineCleanup() }
+        }
+    }
+
+    /** Tells the server we went offline and drops the shared position. Both are best-effort. */
+    private suspend fun offlineCleanup() {
+        bestEffort { client.setPresence(false) }
+        bestEffort { client.clearLocation() }
+    }
+
+    /**
+     * Runs [op] up to [OFFLINE_ATTEMPTS] times, waiting [RETRY_DELAYS_MS] between attempts. Transient
+     * ResponderExceptions are retried; SIGNED_OUT and other failures stop at once. The final failure is swallowed.
+     */
+    private suspend fun bestEffort(op: suspend () -> Unit) {
+        for (attempt in 0 until OFFLINE_ATTEMPTS) {
+            try {
+                op()
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val retryable = e is ResponderException && e.kind != ResponderException.Kind.SIGNED_OUT
+                if (!retryable || attempt == OFFLINE_ATTEMPTS - 1) return
+                delay(RETRY_DELAYS_MS[attempt])
             }
         }
     }
@@ -310,5 +329,7 @@ class ResponderController(
         const val DEBOUNCE_MS = 300L
         const val OVERLAP_MS = 1_000L
         const val PRESENCE_INTERVAL_MS = 60_000L
+        const val OFFLINE_ATTEMPTS = 3
+        val RETRY_DELAYS_MS = longArrayOf(1_000L, 2_000L)
     }
 }
