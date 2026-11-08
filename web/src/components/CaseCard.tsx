@@ -6,6 +6,8 @@ import { shortLocation } from '../lib/privacy';
 import { CATEGORY_LABEL, TIER_LABEL, TIER_TEXT, TIER_VAR, caseKind, caseTitle, deviceShortId, shortId, whyText } from '../lib/tier';
 import { formatAge, formatDuration, silentForMinutes } from '../lib/time';
 import { useAuth, useCanAct } from '../state/auth';
+import { nameLine } from '../lib/profile';
+import { PersonLine } from './Person';
 import { StatusTrail } from './ui';
 
 /** Sum of score added by silence/heartbeat detectors, shown as the "+20" under a silent badge. */
@@ -46,7 +48,7 @@ export function ClaimButton({ c }: { c: Sos }) {
         e.stopPropagation();
         claim.mutate({ sos: c });
       }}
-      aria-label={`Claim ${shortId(c.id)}`}
+      aria-label={`Claim ${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)}`}
     >
       {claim.isPending ? 'Claiming…' : 'Claim'}
     </button>
@@ -63,7 +65,7 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
     <div
       tabIndex={0}
       aria-current={selected ? 'true' : undefined}
-      aria-label={`${shortId(c.id)}, ${CATEGORY_LABEL[c.category]}, score ${c.score}${c.silent ? ', went silent' : ''}`}
+      aria-label={`${nameLine(c.profile)}, ${shortId(c.id)}, ${CATEGORY_LABEL[c.category]}, score ${c.score}${c.silent ? ', went silent' : ''}`}
       className={`case ${CARD_CLASS[kind]}${selected ? ' sel' : ''}`}
       onClick={onSelect}
       onKeyDown={keyActivate(onSelect)}
@@ -77,12 +79,13 @@ export function CaseCard({ c, selected, onSelect, now, onOpen }: { c: Sos; selec
       </div>
       <div className="cbody">
         <div className="ctop">
-          <b title={c.text ?? undefined}>
-            {shortId(c.id)} · {caseTitle(c)}
-          </b>
+          <PersonLine profile={c.profile} />
           <span className="tagx" style={{ background: kind === 'silent' ? 'var(--red)' : TIER_VAR[kind], color: kind === 'silent' ? '#fff' : TIER_TEXT[kind] }}>
             {TIER_LABEL[kind]}
           </span>
+        </div>
+        <div className="csub" title={c.text ?? undefined}>
+          {shortId(c.id)} · {caseTitle(c)}
         </div>
         <div className="meta">
           <span>{shortLocation(c)}</span>

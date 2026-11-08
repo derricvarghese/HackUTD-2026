@@ -18,7 +18,7 @@ export interface SosRow {
   score: number; score_override: number | null; confidence: 'low' | 'medium' | 'high';
   silent: boolean; silent_since: TS | null; merged_into: string | null; duplicate_count: number; version: number;
   last_heard_at: TS; hop_count: number; max_hops: number; hop_path: string[]; gateway_device_id: string | null;
-  original_created_at: TS; received_at: TS; has_voice_note: boolean; synthetic: boolean; silence_boost: number; heartbeat_boost: number; created_at: TS; updated_at: TS;
+  original_created_at: TS; received_at: TS; has_voice_note: boolean; synthetic: boolean; silence_boost: number; heartbeat_boost: number; profile_summary: unknown | null; created_at: TS; updated_at: TS;
 }
 export interface SosReportRow { id: string; sos_id: string; channel: string; envelope: unknown | null; text: string | null; hop_count: number; max_hops: number; hop_path: string[]; gateway_device_id: string | null; original_created_at: TS | null; received_at: TS; created_at: TS; updated_at: TS }
 export interface TriageResultRow { id: string; sos_id: string; score: number; confidence: string; summary: string | null; tier: string | null; reasons: unknown; extracted: unknown; llm_used: boolean; model: string | null; scored_at: TS; created_at: TS; updated_at: TS }
@@ -26,6 +26,7 @@ export interface SosEventRow { id: string; sos_id: string; type: string; actor_k
 export interface CheckinRow { id: string; sos_id: string; channel: string; message: string | null; sent_at: TS; deadline_at: TS; responded_at: TS | null; response: string | null; response_text: string | null; attempt: number; missed: boolean; cancelled: boolean; created_at: TS; updated_at: TS }
 export interface AssignmentRow { id: string; sos_id: string; responder_id: string; status: 'assigned' | 'en_route' | 'on_scene' | 'resolved' | 'released' | 'cancelled'; eta_minutes: number | null; eta_at: TS | null; outcome: string | null; resolved_at: TS | null; created_at: TS; updated_at: TS }
 export interface HeartbeatRow { id: string; device_id: string; event_id: string | null; sent_at: TS; received_at: TS; approx_lat: number; approx_lng: number; radius_m: number; battery_pct: number | null; charging: boolean | null; moving: boolean | null; seq: number | null; hop_count: number; hop_path: string[]; created_at: TS; updated_at: TS }
+export interface ProfileRow { device_id: string; full_name: string; name_norm: string; preferred_name: string | null; birth_year: number | null; vuln_flags: string[]; enc: Buffer; enc_version: number; consent_version: string; consent_accepted_at: TS; profile_version: number; synthetic: boolean; created_at: TS; updated_at: TS }
 export interface RejectionRow { id: string; reason: string; device_id: string | null; envelope_id: string | null; created_at: TS; updated_at: TS }
 
 export interface OfferRow { id: string; event_id: string | null; device_id: string | null; sender_hash: string; kind: string; description: string | null; capacity: number | null; status: 'open' | 'matched' | 'completed' | 'withdrawn'; lat: number; lng: number; approx_lat: number; approx_lng: number; radius_km: number; expires_at: TS | null; created_at: TS; updated_at: TS }
@@ -54,4 +55,5 @@ export interface Database {
   deadzones: Table<DeadzoneRow, 'center_lat' | 'center_lng'>;
   mesh_outbox: Table<MeshOutboxRow, 'kind' | 'envelope' | 'expires_at'>;
   voice_notes: Table<VoiceNoteRow, 'sos_id' | 'mime' | 'size_bytes'>;
+  profiles: Table<ProfileRow, 'device_id' | 'full_name' | 'name_norm' | 'enc' | 'consent_version' | 'consent_accepted_at'>;
 }

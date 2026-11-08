@@ -3,17 +3,19 @@ import type { Ctx } from '../ctx';
 import type { SosRow } from '../db/types';
 import { toSosView, type Sos, type SosViewInput, type TriageReason, type Viewer } from '../domain/privacy';
 import { notFound } from '../errors';
+import { publicSourcesFor } from './profileStore';
 
 /** Batch-loads the latest triage reasons and active assignment for each case. */
 export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput[]> {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [triage, assigns] = await Promise.all([
+  const [triage, assigns, profiles] = await Promise.all([
     ctx.db.selectFrom('triage_results').select(['sos_id', 'reasons'])
       .distinctOn('sos_id').where('sos_id', 'in', ids).orderBy('sos_id').orderBy('scored_at', 'desc').orderBy('created_at', 'desc').execute(),
     ctx.db.selectFrom('assignments').innerJoin('responders', 'responders.id', 'assignments.responder_id')
       .select(['assignments.id', 'assignments.sos_id', 'assignments.responder_id', 'assignments.status', 'assignments.eta_minutes', 'responders.name as responder_name'])
       .where('assignments.sos_id', 'in', ids).where('assignments.status', 'in', ['assigned', 'en_route', 'on_scene']).execute(),
+    publicSourcesFor(ctx, rows),
   ]);
   const reasonsBy = new Map(triage.map((t) => [t.sos_id, (t.reasons as TriageReason[]) ?? []]));
   const assignBy = new Map(assigns.map((a) => [a.sos_id, a]));
@@ -23,7 +25,7 @@ export async function loadInputs(ctx: Ctx, rows: SosRow[]): Promise<SosViewInput
     if (row.heartbeat_boost > 0) reasons.push({ source: 'heartbeat', text: 'Device stopped heartbeating while neighbours still report: priority raised', weight: row.heartbeat_boost });
     if (row.score_override != null) reasons.push({ source: 'manual', text: `Score manually set to ${row.score_override}`, weight: row.score_override });
     const a = assignBy.get(row.id);
-    return { row, reasons, assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
+    return { row, reasons, profile: profiles.get(row.id) ?? null, assignment: a ? { id: a.id, responder_id: a.responder_id, responder_name: a.responder_name, status: a.status, eta_minutes: a.eta_minutes } : null };
   });
 }
 

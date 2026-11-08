@@ -5,10 +5,11 @@ import { DEDUPE, scoreDuplicate, type DedupeCandidate } from '../domain/dedupe';
 import { bboxAround } from '../domain/geo';
 import { conflict, invalid, notFound } from '../errors';
 import { addEvent, broadcastSos, getRowOrThrow } from './sosView';
+import { nameNormsFor } from './profileStore';
 
-const cand = (r: SosRow): DedupeCandidate => ({
+const cand = (r: SosRow, names?: Map<string, string>): DedupeCandidate => ({
   id: r.id, lat: r.lat, lng: r.lng, approx_lat: r.approx_lat, approx_lng: r.approx_lng, text: r.text,
-  category: r.category, sender_hash: r.sender_hash, created_at: r.created_at,
+  category: r.category, sender_hash: r.sender_hash, created_at: r.created_at, name_norm: names?.get(r.id) ?? null,
 });
 
 type Actor = { kind: 'system' | 'responder'; id?: string };
@@ -52,14 +53,15 @@ export function dedupeNew(ctx: Ctx, sosId: string): Promise<boolean> {
       .where('created_at', '>=', since).where('created_at', '<=', until);
     q = row.event_id ? q.where('event_id', '=', row.event_id) : q.where('event_id', 'is', null);
     const others = await q.execute();
-    const me = cand(row);
-    const matches = others.filter((o) => scoreDuplicate(me, cand(o)).decision === 'merge');
+    const names = await nameNormsFor(ctx, [row, ...others]);
+    const me = cand(row, names);
+    const matches = others.filter((o) => scoreDuplicate(me, cand(o, names)).decision === 'merge');
     if (!matches.length) return false;
     const claimed = new Set(
       (await ctx.db.selectFrom('assignments').select('sos_id').where('sos_id', 'in', matches.map((m) => m.id)).where('status', 'in', ['assigned', 'en_route', 'on_scene']).execute()).map((a) => a.sos_id),
     );
     // oldest report is primary; a case that already has a responder claim is never merged away (and wins primary)
-    const group = [me, ...matches.map(cand)].sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id.localeCompare(b.id));
+    const group = [me, ...matches.map((m) => cand(m, names))].sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id.localeCompare(b.id));
     const primary = group.find((c) => claimed.has(c.id)) ?? group[0];
     const dups = group.filter((c) => c.id !== primary.id && !claimed.has(c.id)).map((c) => c.id);
     if (!dups.length) return false;

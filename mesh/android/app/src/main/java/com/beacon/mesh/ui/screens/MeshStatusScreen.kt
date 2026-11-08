@@ -37,6 +37,7 @@ import com.beacon.mesh.ui.components.ageText
 import com.beacon.mesh.ui.components.rememberNow
 import com.beacon.mesh.ui.logic.MessageItem
 import com.beacon.mesh.ui.logic.MessageUi
+import androidx.compose.material.icons.rounded.Person
 import com.beacon.mesh.ui.theme.LocalReduceMotion
 
 /** Live view of the mesh: peers, held messages, gateway and GPS. */
@@ -58,6 +59,7 @@ fun MeshStatusScreen(mesh: MeshSnapshot, items: List<MessageItem>, system: Syste
                 GatewayCard(mesh, now, Modifier.weight(1f))
                 BackendCard(mesh, now, Modifier.weight(1f))
                 HeartbeatCard(mesh, now, Modifier.weight(1f))
+                ProfileSyncCard(mesh, Modifier.weight(1f))
                 GpsCard(mesh, system, Modifier.weight(1f))
             }
             Text(
@@ -160,5 +162,17 @@ private fun GpsCard(mesh: MeshSnapshot, system: SystemStatus, modifier: Modifier
     ElevatedSection(modifier) {
         CardTitle(Icons.Rounded.GpsFixed, stringResource(R.string.mesh_gps_title))
         GpsLine(mesh.gps, system.locationPermission && system.locationOn)
+    }
+}
+
+@Composable
+private fun ProfileSyncCard(mesh: MeshSnapshot, modifier: Modifier) {
+    val kind = com.beacon.mesh.ui.logic.ProfileStatusLogic.chip(mesh.profile)
+    ElevatedSection(modifier) {
+        CardTitle(Icons.Rounded.Person, stringResource(R.string.profile_title))
+        Text(stringResource(profileChipLabel(kind)), style = MaterialTheme.typography.titleLargeEmphasized)
+        profileErrorText(mesh.profile.lastError)?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

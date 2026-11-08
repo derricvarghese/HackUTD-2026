@@ -9,12 +9,14 @@ import { NotFoundDemo } from './demoGuard';
 import { uuidv7 } from '../testing/uuid';
 import { createEvent } from './events';
 import { activeEventRow } from './events';
+import { bboxOfRing, geofenceRing, pointInRing, type Ring } from '../domain/geofence';
 import { ingestHeartbeat } from './heartbeats';
 import { ingestSos, startPostIngest } from './ingest';
 import { broadcastSos } from './sosView';
 import { senderHash } from './devices';
 import { viewsFor, getRowOrThrow } from './sosView';
 import type { Viewer } from '../domain/privacy';
+import { fakeProfile, insertSyntheticProfile, summaryOf } from './profileSeed';
 
 export type MeshStats = components['schemas']['MeshStats'];
 
@@ -78,12 +80,29 @@ export async function cachedMeshStats(ctx: Ctx, windowMinutes: number): Promise<
 
 export function requireDemo(ctx: Ctx) { if (!ctx.cfg.DEMO_MODE) throw new NotFoundDemo(); }
 
+/** Random point inside the active event's geofence (rejection sampling in its bbox), or null when it has none. */
+async function geofencePicker(ctx: Ctx): Promise<{ ring: Ring; pick: () => { lat: number; lng: number }; inside: (lat: number, lng: number) => boolean } | null> {
+  const ring = geofenceRing((await activeEventRow(ctx))?.region);
+  if (!ring) return null;
+  const b = bboxOfRing(ring);
+  const pick = () => {
+    for (let i = 0; i < 500; i++) {
+      const lat = b.min_lat + Math.random() * (b.max_lat - b.min_lat), lng = b.min_lng + Math.random() * (b.max_lng - b.min_lng);
+      if (pointInRing(lat, lng, ring)) return { lat, lng };
+    }
+    return { lat: ring[0][1], lng: ring[0][0] }; // sliver polygons: a vertex is on the boundary, which counts as inside
+  };
+  return { ring, pick, inside: (lat, lng) => pointInRing(lat, lng, ring) };
+}
+
 const RELAYS = ['A1', 'B7', 'C3', 'D4', 'E9', 'F2', 'G6', 'H8', 'J5', 'K1'];
 const hopPath = (n: number, rnd = Math.random) => Array.from({ length: n }, () => RELAYS[Math.floor(rnd() * RELAYS.length)]);
 
 /** POST /mesh/simulate: one synthetic case with a fabricated hop path. */
 export async function simulate(ctx: Ctx, b: { lat: number; lng: number; category: 'injured' | 'trapped' | 'need_water_meds' | 'safe' | 'other'; text?: string; people_count?: number; hops?: number }, viewer: Viewer) {
   requireDemo(ctx);
+  const fence = await geofencePicker(ctx);
+  if (fence && !fence.inside(b.lat, b.lng)) b = { ...b, ...fence.pick() }; // demo cases belong inside the event's geofence
   const tier: Tier = tierFor(b.category);
   const max = HOP_TABLE[tier].max_hops;
   const hops = Math.min(b.hops ?? 3, max);
@@ -91,7 +110,7 @@ export async function simulate(ctx: Ctx, b: { lat: number; lng: number; category
   await ingestSos(ctx, {
     id, deviceId: null, senderHash: senderHash(ctx, `sim:${id}`), channel: 'mesh', category: b.category, lat: b.lat, lng: b.lng, text: b.text, people_count: b.people_count,
     trapped: b.category === 'trapped', injured: b.category === 'injured', created_at: new Date(Date.now() - hops * 20_000), hop: { hop_count: hops, max_hops: max, hop_path: hopPath(hops) },
-    gatewayDeviceId: null, synthetic: true,
+    gatewayDeviceId: null, synthetic: true, profileSummary: summaryOf(fakeProfile()),
   });
   await startPostIngest(ctx, id);
   return (await viewsFor(ctx, [await getRowOrThrow(ctx, id)], viewer))[0];
@@ -107,6 +126,7 @@ const SEED_TEXTS: [string, 'trapped' | 'injured' | 'need_water_meds' | 'other' |
 export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number; radius_km?: number; count?: number }) {
   requireDemo(ctx);
   if (!(await activeEventRow(ctx))) await createEvent(ctx, { name: 'Synthetic demo event', synthetic: true, region: undefined, retention_days: 1 } as never);
+  const fence = await geofencePicker(ctx);
   const count = Math.min(500, b.count ?? 40);
   const radius = b.radius_km ?? 5;
   const now = new Date();
@@ -114,8 +134,10 @@ export async function seed(ctx: Ctx, b: { center_lat: number; center_lng: number
   for (let n = 0; n < count; n++) {
     const kp = generateKeyPair();
     const dev = await ctx.db.insertInto('devices').values({ public_key: kp.publicKey, sender_hash: senderHash(ctx, kp.publicKey), synthetic: true, display_name: 'synthetic' }).returning(['id', 'sender_hash']).executeTakeFirstOrThrow();
+    const fake = fakeProfile();
+    await insertSyntheticProfile(ctx, dev.id, fake);
     const r = radius * Math.sqrt(Math.random()) / 111.32, th = Math.random() * 2 * Math.PI;
-    const lat = b.center_lat + r * Math.sin(th), lng = b.center_lng + (r * Math.cos(th)) / Math.max(Math.cos((b.center_lat * Math.PI) / 180), 0.01);
+    const { lat, lng } = fence ? fence.pick() : { lat: b.center_lat + r * Math.sin(th), lng: b.center_lng + (r * Math.cos(th)) / Math.max(Math.cos((b.center_lat * Math.PI) / 180), 0.01) };
     const [text, category] = SEED_TEXTS[Math.floor(Math.random() * SEED_TEXTS.length)];
     const hops = Math.floor(Math.random() * 7);
     const id = uuidv7(now.getTime() - Math.floor(Math.random() * 3600_000));

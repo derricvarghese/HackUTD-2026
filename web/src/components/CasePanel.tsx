@@ -9,7 +9,9 @@ import { CATEGORY_LABEL, STATUS_LABEL, caseTitle, shortId } from '../lib/tier';
 import { formatAge, formatClock, formatDateTime } from '../lib/time';
 import { useAuth, useCanAct, useIsAdmin } from '../state/auth';
 import { useUi } from '../state/ui';
+import { matchesSearch } from '../lib/query';
 import { ClaimButton } from './CaseCard';
+import { PersonSection } from './Person';
 import { ConfirmDialog, ErrorBox, HopChips, Modal, ScoreSq } from './ui';
 
 const OUTCOMES = [
@@ -86,7 +88,7 @@ function MergeDialog({ primary, onClose }: { primary: Sos; onClose: () => void }
     success: 'Cases merged',
     invalidate: (qc2) => { invalidateCase(qc2, primary.id); void qc2.invalidateQueries({ queryKey: qk.open }); },
   });
-  const options = (open.data ?? []).filter((c) => c.id !== primary.id && (!q || `${shortId(c.id)} ${c.text ?? ''}`.toLowerCase().includes(q.toLowerCase())));
+  const options = (open.data ?? []).filter((c) => c.id !== primary.id && matchesSearch(c, q, `${shortId(c.id)} ${caseTitle(c, 80)}`));
   return (
     <Modal
       title={`Merge into ${shortId(primary.id)}`}
@@ -103,7 +105,7 @@ function MergeDialog({ primary, onClose }: { primary: Sos; onClose: () => void }
       <p className="note" style={{ marginBottom: 10 }}>Pick the duplicate reports to fold into this case. They disappear from the queue and stay attached to it (you can split them out again).</p>
       <label className="field">
         <span className="sr-only">Filter cases</span>
-        <input className="input" placeholder="Filter by id or text" value={q} onChange={(e) => setQ(e.target.value)} data-autofocus />
+        <input className="input" placeholder="Filter by name, id or text" value={q} onChange={(e) => setQ(e.target.value)} data-autofocus />
       </label>
       <div style={{ maxHeight: 260, overflow: 'auto', marginTop: 10 }}>
         {options.length === 0 && <div className="empty">No other open cases.</div>}
@@ -111,7 +113,7 @@ function MergeDialog({ primary, onClose }: { primary: Sos; onClose: () => void }
           <label key={c.id} className="matchli" style={{ cursor: 'pointer' }}>
             <input type="checkbox" checked={picked.includes(c.id)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, c.id] : p.filter((x) => x !== c.id)))} />
             <ScoreSq c={c} />
-            <span><b>{shortId(c.id)}</b> {caseTitle(c, 40)}</span>
+            <span><b>{c.profile?.full_name ?? shortId(c.id)}</b> {c.profile?.full_name ? `${shortId(c.id)} · ` : ''}{caseTitle(c, 40)}</span>
           </label>
         ))}
       </div>
@@ -167,7 +169,7 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
   if (c.people_count) tags.push(`${c.people_count} ${c.people_count === 1 ? 'person' : 'people'}`);
 
   return (
-    <aside className="card side-detail" aria-label={`Case ${shortId(c.id)} details`}>
+    <aside className="card side-detail" aria-label={`Case ${shortId(c.id)} details${c.profile?.full_name ? ` for ${c.profile.full_name}` : ''}`}>
       <div className="sd-head">
         <ScoreSq c={c} big />
         <div>
@@ -177,6 +179,7 @@ export function CasePanel({ id, onClose }: { id: string; onClose?: () => void })
         </div>
         {onClose && <button className="x" onClick={onClose} aria-label="Close details">×</button>}
       </div>
+      <PersonSection c={c} />
       <blockquote className="said">
         {c.text ? `"${c.text}"` : <span className="muted">No message text (it may have been purged or was a tap-to-send SOS).</span>}
         <small>

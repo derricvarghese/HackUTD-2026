@@ -20,12 +20,14 @@ export async function toDevice(ctx: Ctx, rows: DeviceRow[]): Promise<Device[]> {
   const counts = await ctx.db.selectFrom('sos').select(['device_id', (eb) => eb.fn.countAll<number>().as('n')])
     .where('device_id', 'in', rows.map((r) => r.id)).groupBy('device_id').execute();
   const m = new Map(counts.map((c) => [c.device_id, Number(c.n)]));
+  const pv = new Map((await ctx.db.selectFrom('profiles').select(['device_id', 'profile_version']).where('device_id', 'in', rows.map((r) => r.id)).execute()).map((p) => [p.device_id, p.profile_version]));
   return rows.map((r) => ({
     id: r.id, sender_hash: r.sender_hash, platform: r.platform, app_version: r.app_version ?? undefined,
     display_name: r.display_name, flagged: r.flagged, flag_reason: r.flag_reason, sos_count: m.get(r.id) ?? 0,
     heartbeat_status: r.heartbeat_status as Device['heartbeat_status'],
     last_heartbeat_at: r.last_heartbeat_at ? r.last_heartbeat_at.toISOString() : null,
     last_seen_at: r.last_seen_at ? r.last_seen_at.toISOString() : null,
+    profile_version: pv.get(r.id) ?? null,
     created_at: r.created_at.toISOString(),
   }));
 }
@@ -96,7 +98,7 @@ export async function updateDevice(ctx: Ctx, id: string, b: Update, actor: Actor
 export async function deleteDevice(ctx: Ctx, id: string, actor: Actor) {
   const admin = actor.kind === 'responder' && actor.role === 'admin';
   if (!admin && !(actor.kind === 'device' && actor.id === id)) throw forbidden('Only the device itself or an admin can delete a device');
-  await ctx.db.updateTable('sos').set({ sender_hash: 'erased' }).where('device_id', '=', id).execute();
+  await ctx.db.updateTable('sos').set({ sender_hash: 'erased', profile_summary: null }).where('device_id', '=', id).execute(); // the profile row itself cascades with the device
   const r = await ctx.db.deleteFrom('devices').where('id', '=', id).returning('id').executeTakeFirst();
   if (!r) throw notFound('Device not found');
   ctx.deviceCache.delete(id);

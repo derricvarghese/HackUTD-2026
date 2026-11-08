@@ -88,6 +88,17 @@ Exactly the contract schema, JSON, UTF-8:
 `checkin_reply`: `{checkin_id, response: ok|need_help|other, text?}`; `heartbeat`: `{heartbeat: {sent_at, approx{lat,lng,radius_m}, battery_pct?, charging?, moving?, seq?}}`.
 `lat`/`lng` are required for `sos`, so a phone with no location fix refuses to create an SOS (clear error) instead of sending a bogus place.
 
+### Profile summary in payload
+
+For own `sos` and `safe` envelopes, when the user has an identity profile, the payload may carry `profile_summary`:
+`{full_name, age_range?, vulnerability_flags?, profile_version}`. `full_name` is the user's name (the Android app truncates it to 80 characters to keep
+envelopes small; the contract allows 120), `age_range` is one of `0-12 13-17 18-34 35-49 50-64 65-79 80+`, `vulnerability_flags` are the coarse
+flags `oxygen mobility medical sensory cognitive elderly child`, and `profile_version` is the version the server last acknowledged for this device
+(`0` = never synced). The phone derives the bucket and flags with the same rules as the server (`openapi.yaml` `AgeRange`, `VulnerabilityFlag`). Nothing else from the
+profile (medical details, phone, address, contacts, appearance) ever travels over the mesh; those sync directly with `PUT /v1/devices/{id}/profile`.
+`heartbeat` and `checkin_reply` payloads never carry it. The server ignores an invalid summary or one for a device that already has a synced profile.
+Test vector: `test-vectors/contract_v1/android_profile_envelope.json` (ingested by `server/test/e2e/android-profile-interop.test.ts`).
+
 ## Signing
 
 Signed string = canonical JSON (below) of exactly `{id, sender_key_id, kind, tier, max_hops, expires_at, created_at, routing, payload}`.

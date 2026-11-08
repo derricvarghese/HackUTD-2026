@@ -61,6 +61,7 @@ Tables (all with `created_at`, `updated_at`; ids are uuid):
 - `deadzones` (center, radius, status, detected_at)
 - `mesh_outbox` (backend messages: kind, sos_id, body, signed envelope, expires_at)
 - `rejections` (reason counters for mesh stats), `voice_notes` (path/blob ref, size, mime)
+- `profiles` (device_id PK/FK cascade, full_name, name_norm, preferred_name, birth_year, vuln_flags[], `enc` bytea, consent_version/accepted_at, profile_version, synthetic); `sos.profile_summary jsonb` (mesh identity hint). See 6.10.
 Indexes: `sos(event_id, status, score desc)`, `sos(geohash7)`, `sos(last_heard_at)`, `devices(heartbeat_status)`, `heartbeats(device_id, received_at desc)`, GIN on `sos` text search (`tsvector`).
 Keep an in-memory ring of recent heartbeats if DB load matters; otherwise Postgres is fine at demo scale.
 
@@ -104,8 +105,18 @@ On create/move of offers or new SOS in range: match by kind-to-need mapping (boa
 ### 6.9 Events and purge
 One active event at a time. `close` stops detectors and sets `purge_at = closed_at + retention_days`. `purgeTick` (hourly) and `/purge` null out lat/lng/text/voice, delete heartbeats and device links, keep aggregates (counts, hop stats) for the post-mortem. Demo events are `synthetic=true`.
 
+### 6.10 Profiles (victim identity)
+- **What:** at install the app syncs name and identifying characteristics (`PUT /devices/{id}/profile`, device signature, full replace, `If-Match` on `profile_version`, mandatory consent whose version must equal `PROFILE_CONSENT_VERSION`). No photo.
+- **Storage:** `full_name`, `name_norm`, `preferred_name`, `birth_year` and the derived non-age `vuln_flags` are plain columns on purpose (display, age bucket, exact-name dedupe, coarse flags without decrypting). Everything else is one JSON blob sealed with AES-256-GCM (`crypto/profileCrypto.ts`; key = HKDF-SHA256 of `PROFILE_ENC_KEY` or, when unset, `JWT_SECRET`; device id as AAD). A database dump therefore exposes names and birth years but not medical data, addresses, contacts, phones.
+- **Visibility (one choke point, `privacy.ts`):** `toProfileView(profile, viewer, activeAssignee)` returns `ProfileFull` only for the owning device, admins and the ACTIVE assignee of a non-closed case of that device (or of a case merged with one of its cases); everyone else gets `ProfilePublic` (name, preferred name, age bucket, coarse flags). `Sos.profile` is always public-only (built from clear columns, never from `enc`); `SosDetail.profile_full` is added only for admin/assignee. WS `profile.updated` frames are public-only.
+- **Mesh:** an offline SOS may carry `profile_summary` in the encrypted payload. Ingest stores it on the case unless a synced profile exists; `PUT` clears it (reconcile). An invalid summary never rejects the SOS.
+- **Triage:** `profileScore` adds a modest capped contribution with coarse `Vulnerability: ...` reasons (visible to all). Nemotron gets a sanitised `profile_context` (no identity). Profile writes/erasure re-triage open cases and broadcast `sos.updated` + `profile.updated`.
+- **Dedupe:** +0.15 for identical normalised multi-word names across devices (same device is already always merged).
+- **Lifecycle:** device delete (cascade); `DELETE /sos/{id}`, event purge and event delete remove profiles whose device has no case left; `purgeTick` deletes profiles with no case, not updated and whose device was not seen for `PROFILE_RETENTION_DAYS` (default 90); purge also clears mesh summaries. Demo seed/simulate create synthetic profiles.
+- **Logging:** never. Pino redacts profile keys and no code path logs bodies; a test captures logs and asserts absence.
+
 ## 7. Privacy enforcement (single choke point)
-`privacy.ts` exposes `toSosView(sos, viewer)`. It returns `approx_location` always, and `location` only if the viewer is admin or the active assignee. All routes, WebSocket frames and exports go through it. WebSocket broadcasts are built per connection (not one shared payload) so a frame never leaks exact GPS. Logs never contain text, coordinates or keys. Voice notes: assignee/admin only.
+`privacy.ts` exposes `toSosView(sos, viewer)`. It returns `approx_location` always, and `location` only if the viewer is admin or the active assignee. All routes, WebSocket frames and exports go through it. WebSocket broadcasts are built per connection (not one shared payload) so a frame never leaks exact GPS. Logs never contain text, coordinates or keys. Voice notes: assignee/admin only. Profiles: name + coarse flags for all dashboard users, details only for assignee/admin (6.10).
 
 ## 8. WebSocket hub
 `ws/hub.ts` keeps connections with `{responder, channels}`. Services publish domain events to the hub; the hub redacts per viewer and fans out. Server ping every 30 s, drop dead sockets. `mesh.stats` pushed every 10 s from a cached aggregate. No replay; clients refetch with `updated_since`.

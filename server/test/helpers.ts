@@ -26,7 +26,7 @@ export interface WsClient {
   close(): void;
 }
 
-export async function startTestApp(overrides: { llm?: TriageLlm; env?: Record<string, string> } = {}): Promise<TestEnv> {
+export async function startTestApp(overrides: { llm?: TriageLlm; env?: Record<string, string>; logger?: import('../src/logger').Logger } = {}): Promise<TestEnv> {
   const enc = generateKeyPair();
   const sign = generateKeyPair();
   const cfg = loadConfig({
@@ -34,7 +34,7 @@ export async function startTestApp(overrides: { llm?: TriageLlm; env?: Record<st
     BACKEND_ENC_PRIVATE_KEY: enc.privateKey, BACKEND_SIGN_PRIVATE_KEY: sign.privateKey, VALIDATE_RESPONSES: 'true',
     SENDER_RATE_PER_HOUR: '1000', IP_RATE_PER_MIN: '100000', HEARTBEAT_RATE_PER_MIN: '1000', LOGIN_RATE_PER_MIN: '1000', DEVICE_REGISTER_RATE_PER_MIN: '1000', ...overrides.env,
   } as NodeJS.ProcessEnv);
-  const app = await createApp(cfg, { llm: overrides.llm });
+  const app = await createApp(cfg, { llm: overrides.llm, logger: overrides.logger });
   await app.ctx.pool.query(
     'truncate sos, sos_reports, triage_results, sos_events, checkins, assignments, heartbeats, silent_devices, deadzones, offers, offer_matches, mesh_outbox, voice_notes, rejections, devices, refresh_tokens, events restart identity cascade',
   );

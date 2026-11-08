@@ -86,6 +86,9 @@ fun HomeScreen(
     onFixSetup: () -> Unit,
     onOpenMesh: () -> Unit,
     onCheckinReply: (com.beacon.mesh.store.CheckinPrompt, String) -> Unit = { _, _ -> },
+    onOpenProfile: () -> Unit = {},
+    onRetryProfile: () -> Unit = {},
+    onDismissProfileBanner: () -> Unit = {},
 ) {
     val haptics = LocalHaptics.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
@@ -129,6 +132,16 @@ fun HomeScreen(
                 SetupBanner(onFixSetup)
             } else {
                 MeshSummary(mesh, system, onOpenMesh)
+            }
+            ProfileStatusChip(mesh.profile, onOpen = onOpenProfile, onRetry = onRetryProfile)
+            val nudge = com.beacon.mesh.ui.logic.ProfileOnboardingLogic.nudge(
+                mesh.profile.hasProfile, mesh.profile.optionalSectionsEmpty, mesh.profile.bannerDismissed, mesh.profile.serverRequired, mesh.profile.pendingErase,
+            )
+            if (nudge != com.beacon.mesh.ui.logic.ProfileOnboardingLogic.Nudge.NONE) {
+                ProfileBanner(
+                    mesh.profile.hasProfile, onOpen = onOpenProfile, onDismiss = onDismissProfileBanner,
+                    prominent = nudge == com.beacon.mesh.ui.logic.ProfileOnboardingLogic.Nudge.PROMINENT,
+                )
             }
             mesh.checkins.forEach { c -> CheckinCard(c, onReply = { onCheckinReply(c, it) }) }
 

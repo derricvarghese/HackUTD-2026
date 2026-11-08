@@ -3,6 +3,7 @@ import type { components } from '../generated/api';
 import type { Ctx } from '../ctx';
 import type { DeadzoneRow } from '../db/types';
 import { detectDeadzones, type Activity } from '../domain/deadzone';
+import { geofenceRing, pointInRing } from '../domain/geofence';
 import { forbidden, invalid, notFound } from '../errors';
 import { activeEventRow } from './events';
 
@@ -66,13 +67,14 @@ export async function deadzoneTick(ctx: Ctx, now = new Date()): Promise<{ detect
     ctx.db.selectFrom('checkins').innerJoin('sos', 'sos.id', 'checkins.sos_id').select(['sos.approx_lat as lat', 'sos.approx_lng as lng', 'checkins.responded_at as at']).where('sos.event_id', '=', ev.id).where('checkins.responded_at', 'is not', null).execute(),
   ]);
   const region = ev.region as { min_lat?: number; min_lng?: number; max_lat?: number; max_lng?: number } | null;
+  const ring = geofenceRing(region);
   const inside = (a: { lat: number; lng: number }) => !region || region.min_lat == null || (a.lat >= region.min_lat && a.lat <= region.max_lat! && a.lng >= region.min_lng! && a.lng <= region.max_lng!);
   const acts: Activity[] = [
     ...cases.map((c) => ({ lat: c.lat, lng: c.lng, at: c.at, cases: 1 })),
     ...hbs.map((h) => ({ lat: h.lat, lng: h.lng, at: h.at, cases: 0 })),
     ...replies.map((r) => ({ lat: r.lat, lng: r.lng, at: r.at as Date, cases: 0 })),
   ].filter(inside);
-  const found = detectDeadzones(acts, { cellKm: ctx.cfg.DEADZONE_CELL_KM, quietMs: ctx.cfg.DEADZONE_QUIET_S * 1000, minActiveNeighbors: ctx.cfg.DEADZONE_MIN_ACTIVE_NEIGHBORS, now, refLat: region?.min_lat != null ? (region.min_lat + region.max_lat!) / 2 : undefined });
+  const found = detectDeadzones(acts, { cellKm: ctx.cfg.DEADZONE_CELL_KM, quietMs: ctx.cfg.DEADZONE_QUIET_S * 1000, minActiveNeighbors: ctx.cfg.DEADZONE_MIN_ACTIVE_NEIGHBORS, now, refLat: region?.min_lat != null ? (region.min_lat + region.max_lat!) / 2 : undefined, keepCell: ring ? (c) => pointInRing(c.lat, c.lng, ring) : undefined });
   let changed = false;
   const existing = await ctx.db.selectFrom('deadzones').selectAll().where('event_id', '=', ev.id).execute();
   const keys = new Set(found.map((f) => f.key));

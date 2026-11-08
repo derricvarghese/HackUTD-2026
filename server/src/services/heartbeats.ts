@@ -175,7 +175,8 @@ export async function promoteSilent(ctx: Ctx, deviceId: string, actor: { id: str
     id, deviceId, senderHash: dev.sender_hash, channel: 'app', category: 'other', lat: hb.approx_lat, lng: hb.approx_lng, created_at: now,
     hop: { hop_count: 0, max_hops: 0, hop_path: [] }, gatewayDeviceId: null,
   });
-  const base = rulesOutcome(r.row as SosRow);
+  const { triageCtxFor } = await import('./profileStore');
+  const base = rulesOutcome(r.row as SosRow, await triageCtxFor(ctx, r.row as SosRow));
   const boost = Math.max(10, sd.priority_score - base.score);
   await ctx.db.updateTable('sos').set({ silent: true, silent_since: sd.flagged_at, heartbeat_boost: boost }).where('id', '=', id).execute();
   await persistTriage(ctx, id, base, { kind: 'system' });

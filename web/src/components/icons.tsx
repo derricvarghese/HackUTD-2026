@@ -138,3 +138,11 @@ export const IcPlus = (p: P) => (
   </svg>
 );
 export const IcMenu = (p: P) => wrap(<path d="M4 6h16M4 12h16M4 18h16" />, p);
+export const IcLock = (p: P) =>
+  wrap(
+    <>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V8a4 4 0 018 0v3" />
+    </>,
+    p,
+  );

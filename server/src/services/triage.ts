@@ -2,18 +2,21 @@ import type { Ctx } from '../ctx';
 import type { SosRow } from '../db/types';
 import { applyLlm, downgrade, rulesTriage, summarize, type Confidence, type Reason, type RulesResult } from '../domain/triage/rules';
 import { withBoosts } from '../domain/checkinSchedule';
+import { hasSignal, llmProfileContext, type ProfileTriageCtx } from '../domain/profile';
 import { addEvent, broadcastSos } from './sosView';
+import { triageCtxFor } from './profileStore';
 
 export interface TriageOutcome {
   score: number; confidence: Confidence; summary: string; tier: string;
   reasons: Reason[]; extracted: RulesResult['extracted']; llm_used: boolean; model: string | null;
 }
 
-export const rulesFor = (r: SosRow) =>
-  rulesTriage({ category: r.category, text: r.text, people_count: r.people_count, trapped: r.trapped, water_rising: r.water_rising, injured: r.injured });
+export const rulesFor = (r: SosRow, profile?: ProfileTriageCtx | null) =>
+  rulesTriage({ category: r.category, text: r.text, people_count: r.people_count, trapped: r.trapped, water_rising: r.water_rising, injured: r.injured, profile });
 
-export function rulesOutcome(r: SosRow): TriageOutcome {
-  const rules = rulesFor(r);
+/** `profile` = vulnerability signals of the caller (see `triageCtxFor`); omit for none. */
+export function rulesOutcome(r: SosRow, profile?: ProfileTriageCtx | null): TriageOutcome {
+  const rules = rulesFor(r, profile);
   return {
     score: rules.score, confidence: rules.confidence, tier: rules.tier, reasons: rules.reasons, extracted: rules.extracted,
     llm_used: false, model: null, summary: summarize(r.category, r.people_count, rules.tier, rules.confidence, rules.reasons),
@@ -22,11 +25,12 @@ export function rulesOutcome(r: SosRow): TriageOutcome {
 
 /** Rules first (always), then Nemotron within its timeout; the LLM can never push the score below the rule floor. */
 export async function fullTriage(ctx: Ctx, r: SosRow): Promise<TriageOutcome> {
-  const rules = rulesFor(r);
-  const base = rulesOutcome(r);
+  const profile = await triageCtxFor(ctx, r);
+  const rules = rulesFor(r, profile);
+  const base = rulesOutcome(r, profile);
   const text = (r.text ?? '').trim();
   if (!text) return base;
-  const res = await ctx.llm.extract({ text, category: r.category, people_count: r.people_count, trapped: r.trapped, water_rising: r.water_rising, injured: r.injured }).catch(() => null);
+  const res = await ctx.llm.extract({ text, category: r.category, people_count: r.people_count, trapped: r.trapped, water_rising: r.water_rising, injured: r.injured, ...(hasSignal(profile) ? { profile_context: llmProfileContext(profile) } : {}) }).catch(() => null);
   if (!res) {
     // LLM unavailable: rules-only, honest about it (confidence downgraded because free text went unanalysed)
     const confidence = downgrade(rules.confidence);

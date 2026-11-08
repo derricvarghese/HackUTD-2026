@@ -130,9 +130,11 @@ export function Seg<T extends string>({ value, options, onChange, label }: { val
 }
 
 /** Modal with focus trap, Escape to close and focus restore. */
-export function Modal({ title, onClose, children, actions }: { title: string; onClose: () => void; children: ReactNode; actions?: ReactNode }) {
+export function Modal({ title, onClose, children, actions, wide, escapeGuard }: { title: string; onClose: () => void; children: ReactNode; actions?: ReactNode; wide?: boolean; escapeGuard?: () => boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const id = useId();
+  const guard = useRef(escapeGuard);
+  guard.current = escapeGuard;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const el = ref.current;
@@ -141,6 +143,7 @@ export function Modal({ title, onClose, children, actions }: { title: string; on
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
+        if (guard.current?.()) return; // e.g. the geofence editor cancels an unfinished drawing first
         onClose();
       } else if (e.key === 'Tab') {
         const f = focusables();
@@ -164,7 +167,7 @@ export function Modal({ title, onClose, children, actions }: { title: string; on
   }, [onClose]);
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby={id} ref={ref} tabIndex={-1}>
+      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={id} ref={ref} tabIndex={-1}>
         <h3 id={id}>{title}</h3>
         <div className="body">{children}</div>
         {actions && <div className="acts">{actions}</div>}

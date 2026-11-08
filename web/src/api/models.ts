@@ -25,6 +25,10 @@ export type ServerInfo = Schemas['ServerInfo'];
 export type AppEvent = Schemas['Event'];
 export type WsFrame = Schemas['WsFrame'];
 export type HopInfo = Schemas['HopInfo'];
+export type ProfilePublic = Schemas['ProfilePublic'];
+export type ProfileFull = Schemas['ProfileFull'];
+export type AgeRange = Schemas['AgeRange'];
+export type VulnerabilityFlag = Schemas['VulnerabilityFlag'];
 export type ApproxLocation = Schemas['ApproxLocation'];
 export type LatLng = Schemas['LatLng'];
 

@@ -31,7 +31,7 @@ interface UiState {
   mapBounds: { min_lat: number; min_lng: number; max_lat: number; max_lng: number } | null;
 }
 
-export type LayerKey = 'sos' | 'approx' | 'responders' | 'offers' | 'deadzones' | 'heat';
+export type LayerKey = 'sos' | 'approx' | 'responders' | 'offers' | 'deadzones' | 'heat' | 'geofence';
 
 let toastSeq = 1;
 
@@ -53,7 +53,7 @@ export const useUi = create<UiState>((set) => ({
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   demo: null,
   setDemo: (demo) => set({ demo }),
-  layers: { sos: true, approx: true, responders: true, offers: true, deadzones: true, heat: true },
+  layers: { sos: true, approx: true, responders: true, offers: true, deadzones: true, heat: true, geofence: true },
   toggleLayer: (k) => set((s) => ({ layers: { ...s.layers, [k]: !s.layers[k] } })),
   navOpen: false,
   mapBounds: null,

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
@@ -72,11 +73,30 @@ fun SettingsScreen(
     onDynamic: (Boolean) -> Unit,
     onOpenDebug: () -> Unit,
     onHaptics: (Boolean) -> Unit = {},
+    onOpenProfile: () -> Unit = {},
+    onRetryProfile: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val haptics = LocalHaptics.current
     ScreenScaffold(title = stringResource(R.string.nav_settings)) { pad ->
         ScrollColumn(pad) {
+            ElevatedSection {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .hapticClickable(HapticEvent.Navigate, role = Role.Button, onClick = onOpenProfile),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Rounded.Person, null)
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.profile_title), style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(R.string.profile_settings_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
+                }
+                ProfileStatusChip(mesh.profile, onOpen = onOpenProfile, onRetry = onRetryProfile)
+            }
+
             ElevatedSection {
                 SectionTitle(stringResource(R.string.settings_appearance))
                 Text(stringResource(R.string.settings_theme), style = MaterialTheme.typography.titleMedium)

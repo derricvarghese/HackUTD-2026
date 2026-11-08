@@ -1,5 +1,6 @@
 import type { Query } from '../api/client';
 import type { Sos } from '../api/models';
+import { searchableNames } from './profile';
 import { CRITICAL_MIN, HIGH_MIN } from './tier';
 
 export type QueueTab = 'all' | 'critical' | 'high' | 'silent' | 'assigned';
@@ -51,11 +52,11 @@ export function matchesTab(c: Sos, tab: QueueTab): boolean {
   }
 }
 
-/** Case-insensitive match over the visible text of a case (used for instant client-side search). */
+/** Case-insensitive match over the visible text of a case, including the person's name (used for client-side search; the API's `q` only searches notes). */
 export function matchesSearch(c: Sos, q: string, display: string): boolean {
   const s = q.trim().toLowerCase();
   if (!s) return true;
-  return [display, c.text ?? '', c.id, c.category, c.assignment?.responder_name ?? ''].some((x) => x.toLowerCase().includes(s));
+  return [display, c.text ?? '', c.id, c.category, c.assignment?.responder_name ?? '', ...searchableNames(c)].some((x) => x.toLowerCase().includes(s));
 }
 
 /** bbox string for the API: min_lng,min_lat,max_lng,max_lat. */

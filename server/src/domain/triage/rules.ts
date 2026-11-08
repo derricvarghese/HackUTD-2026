@@ -1,4 +1,5 @@
 import type { Tier } from '../hops';
+import { profileScore, type ProfileTriageCtx } from '../profile';
 
 export type Category = 'injured' | 'trapped' | 'need_water_meds' | 'safe' | 'other';
 export type Confidence = 'low' | 'medium' | 'high';
@@ -11,6 +12,8 @@ export interface TriageInput {
   trapped?: boolean;
   water_rising?: boolean;
   injured?: boolean;
+  /** Vulnerability signals from the caller's profile (synced or mesh summary); raises the score modestly, never below floors, never above 100. */
+  profile?: ProfileTriageCtx | null;
 }
 export interface RulesResult {
   score: number;
@@ -60,6 +63,12 @@ export function rulesTriage(i: TriageInput): RulesResult {
 
   const people = i.people_count ?? 1;
   if (people > 1) { const w = Math.min((people - 1) * 3, 15); score += w; reasons.push({ source: 'rule', text: `${people} people affected`, weight: w }); }
+
+  // profile vulnerability (not for a plain "safe" report: that stays capped below)
+  if (!(i.category === 'safe' && !trapped && !injured && !severe.length)) {
+    const pr = profileScore(i.profile);
+    if (pr.points > 0) { score += pr.points; for (const r of pr.reasons) reasons.push({ source: 'rule', text: r.text, weight: r.weight }); }
+  }
 
   score = Math.max(score, floor);
   // "safe" with no danger flags is low priority and capped

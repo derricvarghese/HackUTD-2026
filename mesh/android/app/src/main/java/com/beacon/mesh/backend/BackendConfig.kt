@@ -52,6 +52,10 @@ data class ServerInfo(
     val heartbeatIntervalSeconds: Int?,
     val silenceThresholdSeconds: Int?,
     val gatewayUploadMaxBatch: Int?,
+    /** `profile_required`; null when the server did not say. */
+    val profileRequired: Boolean? = null,
+    /** `profile_consent_version`: id of the consent text the app must have shown. */
+    val profileConsentVersion: String? = null,
 ) {
     companion object {
         fun fromJson(o: JSONObject): ServerInfo = ServerInfo(
@@ -65,6 +69,8 @@ data class ServerInfo(
             heartbeatIntervalSeconds = o.optInt("heartbeat_interval_seconds", 0).takeIf { it > 0 },
             silenceThresholdSeconds = o.optInt("silence_threshold_seconds", 0).takeIf { it > 0 },
             gatewayUploadMaxBatch = o.optInt("gateway_upload_max_batch", 0).takeIf { it > 0 },
+            profileRequired = if (o.has("profile_required") && !o.isNull("profile_required")) o.optBoolean("profile_required") else null,
+            profileConsentVersion = o.optString("profile_consent_version", "").ifBlank { null },
         )
     }
 }
@@ -118,6 +124,11 @@ class BackendConfig(
         get() = kv.getString(K_CURSOR)
         set(v) = kv.putString(K_CURSOR, v)
 
+    /** Whether onboarding may skip the profile. Unknown (never reached the server) counts as required. */
+    val profileRequired: Boolean get() = kv.getLong(K_PROFILE_REQUIRED, 1) != 0L
+    /** Consent text version the server currently wants; null until a /server-info said so. */
+    val profileConsentVersion: String? get() = kv.getString(K_PROFILE_CONSENT)
+
     fun setEventActive(active: Boolean) = kv.putLong(K_EVENT, if (active) 1 else 0)
 
     /** Stores a fresh /server-info. Garbage keys are ignored so a bad response cannot lock the phone out. */
@@ -129,6 +140,8 @@ class BackendConfig(
         info.silenceThresholdSeconds?.let { kv.putLong(K_SILENCE, it.toLong()) }
         info.gatewayUploadMaxBatch?.let { kv.putLong(K_BATCH, it.toLong()) }
         setEventActive(info.eventActive)
+        info.profileRequired?.let { kv.putLong(K_PROFILE_REQUIRED, if (it) 1 else 0) }
+        info.profileConsentVersion?.let { kv.putString(K_PROFILE_CONSENT, it) }
         kv.putLong(K_INFO_AT, nowMs)
     }
 
@@ -143,6 +156,8 @@ class BackendConfig(
         private const val K_BATCH = "be_batch"
         private const val K_EVENT = "be_event_active"
         private const val K_INFO_AT = "be_info_at"
+        private const val K_PROFILE_REQUIRED = "be_profile_required"
+        private const val K_PROFILE_CONSENT = "be_profile_consent"
         private const val K_DEVICE_ID = "be_device_id"
         private const val K_CURSOR = "be_outbox_cursor"
     }

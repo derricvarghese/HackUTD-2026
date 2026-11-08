@@ -63,6 +63,7 @@ export async function createApp(cfg: Config, o: AppOverrides = {}): Promise<Beac
       register: new TokenBuckets(cfg.DEVICE_REGISTER_RATE_PER_MIN, cfg.DEVICE_REGISTER_RATE_PER_MIN / 60),
       sender: new TokenBuckets(cfg.SENDER_RATE_PER_HOUR, cfg.SENDER_RATE_PER_HOUR / 3600),
       heartbeat: new TokenBuckets(cfg.HEARTBEAT_RATE_PER_MIN, cfg.HEARTBEAT_RATE_PER_MIN / 60),
+      profile: new TokenBuckets(cfg.PROFILE_WRITE_RATE_PER_MIN, cfg.PROFILE_WRITE_RATE_PER_MIN / 60),
       ip: new TokenBuckets(cfg.IP_RATE_PER_MIN, cfg.IP_RATE_PER_MIN / 60),
     },
     cache: new Map(),

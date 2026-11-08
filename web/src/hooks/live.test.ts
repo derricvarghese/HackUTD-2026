@@ -29,6 +29,14 @@ describe('applyFrame', () => {
     applyFrame(qc, frame('mesh.stats', { avg_hops: 3 }));
     expect(qc.getQueryData(qk.mesh)).toEqual({ avg_hops: 3 });
   });
+  it('profile.updated refreshes the affected cases without touching sensitive data', () => {
+    const qc = new QueryClient();
+    qc.setQueryData(qk.detail('s1'), { id: 's1' });
+    qc.setQueryData(qk.open, [makeSos({ id: 's1' })]);
+    applyFrame(qc, frame('profile.updated', { device_id: 'd', sos_ids: ['s1'], view: 'public', full_name: 'A B', vulnerability_flags: [], has_profile: true }));
+    expect(qc.getQueryState(qk.detail('s1'))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(qk.open)?.isInvalidated).toBe(true);
+  });
   it('does nothing to caches that were never loaded', () => {
     const qc = new QueryClient();
     applyFrame(qc, frame('sos.created', makeSos()));

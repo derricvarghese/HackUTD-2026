@@ -17,6 +17,7 @@ import * as outbox from '../services/outbox';
 import * as mesh from '../services/mesh';
 import * as map from '../services/map';
 import * as voice from '../services/voice';
+import * as profiles from '../services/profiles';
 import { triageHealth, VERSION } from '../services/health';
 import { activeEventRow, eventTimers, toEvent } from '../services/events';
 import { processBatch } from '../services/ingest';
@@ -46,6 +47,8 @@ export function buildRoutes(ctx: Ctx): Router {
       heartbeat_interval_seconds: eventTimers(ctx.cfg, ev).heartbeatS,
       silence_threshold_seconds: eventTimers(ctx.cfg, ev).silenceS,
       gateway_upload_max_batch: 500,
+      profile_required: ctx.cfg.PROFILE_REQUIRED,
+      profile_consent_version: ctx.cfg.PROFILE_CONSENT_VERSION,
     });
   });
 
@@ -76,6 +79,19 @@ export function buildRoutes(ctx: Ctx): Router {
   });
   r.patch('/devices/:deviceId', async (req, res) => res.json(await devices.updateDevice(ctx, req.params.deviceId, req.body, deviceActor(req))));
   r.delete('/devices/:deviceId', async (req, res) => { await devices.deleteDevice(ctx, req.params.deviceId, deviceActor(req)); res.status(204).end(); });
+
+  // ---------------------------------------------------------------- Profiles (personal data: nothing here is ever logged)
+  r.put('/devices/:deviceId/profile', async (req, res) => {
+    const out = await profiles.putProfile(ctx, req.params.deviceId, requireDevice(req).id, req.body, req.header('if-match'));
+    res.status(out.created ? 201 : 200).setHeader('ETag', profiles.etag(out.profile.profile_version));
+    res.json(out.profile);
+  });
+  r.get('/devices/:deviceId/profile', async (req, res) => {
+    const p = await profiles.getProfile(ctx, req.params.deviceId, viewerOf(req));
+    if (p.view === 'full') res.setHeader('ETag', profiles.etag(p.profile_version));
+    res.json(p);
+  });
+  r.delete('/devices/:deviceId/profile', async (req, res) => { await profiles.deleteProfile(ctx, req.params.deviceId, viewerOf(req)); res.status(204).end(); });
 
   // ---------------------------------------------------------------- SOS
   r.post('/sos', async (req, res) => {

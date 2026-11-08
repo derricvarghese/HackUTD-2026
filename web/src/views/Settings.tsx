@@ -1,67 +1,25 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState } from 'react';
 import * as api from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { AppEvent } from '../api/models';
-import { ConfirmDialog, Empty, ErrorBox, Modal, Pill } from '../components/ui';
-import { errorMessage, qk, useAction, useEvents, useServerInfo } from '../hooks/data';
+import { ConfirmDialog, Empty, ErrorBox, Pill } from '../components/ui';
+import { qk, useAction, useEvents, useServerInfo } from '../hooks/data';
 import { formatDateTime } from '../lib/time';
 import { regionBox, regionCenter } from '../lib/region';
+import { describeRegion } from '../lib/geofenceShape';
+import { EventDialog } from '../components/EventDialog';
+import { GeofenceMini } from '../components/GeofenceMini';
 import { useAuth, useCanAct, useIsAdmin } from '../state/auth';
 import { useUi } from '../state/ui';
 
 const STATUS_PILL: Record<AppEvent['status'], [string, string]> = { active: ['var(--green-soft)', 'var(--green)'], closed: ['var(--amber-soft)', '#B45309'], purged: ['#EEF2F7', '#475569'] };
-
-function NewEvent({ onClose }: { onClose: () => void }) {
-  const [name, setName] = useState('');
-  const [retention, setRetention] = useState('7');
-  const [region, setRegion] = useState({ min_lat: '', min_lng: '', max_lat: '', max_lng: '' });
-  const [err, setErr] = useState<string | null>(null);
-  const create = useAction(
-    () => {
-      const vals = Object.values(region);
-      const any = vals.some((v) => v.trim());
-      if (any && vals.some((v) => v.trim() === '' || Number.isNaN(Number(v)))) throw new Error('Fill all four region corners with numbers, or leave them all empty.');
-      return api.createEvent({
-        name: name.trim(),
-        retention_days: Number(retention) || 7,
-        ...(any ? { region: { min_lat: Number(region.min_lat), min_lng: Number(region.min_lng), max_lat: Number(region.max_lat), max_lng: Number(region.max_lng) } } : {}),
-      });
-    },
-    {
-      success: 'Event created',
-      invalidate: (qc) => { void qc.invalidateQueries({ queryKey: qk.events }); void qc.invalidateQueries({ queryKey: qk.serverInfo }); },
-      onError: (e) => { setErr(e instanceof ApiError && e.status === 409 ? 'Another event is already active. Close it first.' : errorMessage(e)); return true; },
-    },
-  );
-  const submit = (e: FormEvent) => { e.preventDefault(); setErr(null); create.mutate(undefined, { onSuccess: onClose }); };
-  const f = (k: keyof typeof region, label: string) => (
-    <div className="field"><label htmlFor={`rg-${k}`}>{label}</label><input id={`rg-${k}`} inputMode="decimal" value={region[k]} onChange={(e) => setRegion({ ...region, [k]: e.target.value })} /></div>
-  );
-  return (
-    <Modal title="Create a disaster event" onClose={onClose}>
-      <form onSubmit={submit}>
-        <div className="form-grid" style={{ padding: 0 }}>
-          <div className="field full"><label htmlFor="ev-name">Name</label><input id="ev-name" value={name} onChange={(e) => setName(e.target.value)} required data-autofocus placeholder="Flood Event - Riverside Region" /></div>
-          <div className="field full"><label htmlFor="ev-ret">Keep personal data for (days after closing)</label><input id="ev-ret" type="number" min={1} max={365} value={retention} onChange={(e) => setRetention(e.target.value)} /></div>
-          {f('min_lat', 'South latitude')}{f('min_lng', 'West longitude')}{f('max_lat', 'North latitude')}{f('max_lng', 'East longitude')}
-          <span className="hint full" style={{ fontSize: 12, color: 'var(--muted)' }}>Optional region box. The map fits to it. Only one event can be active at a time.</span>
-        </div>
-        {err && <div className="form-err" role="alert" style={{ padding: '8px 0 0' }}>{err}</div>}
-        <div className="acts" style={{ padding: '14px 0 0' }}>
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" type="submit" disabled={!name.trim() || create.isPending}>{create.isPending ? 'Creating…' : 'Create event'}</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
 
 type Pending = { kind: 'close' | 'purge' | 'delete'; ev: AppEvent };
 
 function EventsCard() {
   const isAdmin = useIsAdmin();
   const events = useEvents();
-  const [creating, setCreating] = useState(false);
+  const [dialog, setDialog] = useState<{ event?: AppEvent } | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const inv = (qc: import('@tanstack/react-query').QueryClient) => { void qc.invalidateQueries({ queryKey: qk.events }); void qc.invalidateQueries({ queryKey: qk.serverInfo }); void qc.invalidateQueries({ queryKey: ['cases'] }); };
   const close = useAction((id: string) => api.closeEvent(id), { success: 'Event closed. Detectors stopped; retention clock started.', invalidate: inv });
@@ -82,17 +40,24 @@ function EventsCard() {
     <div className="card">
       <div className="card-h">
         <h2>Disaster events</h2>
-        <span style={{ marginLeft: 'auto' }}>{isAdmin && <button className="btn primary" onClick={() => setCreating(true)}>New event</button>}</span>
+        <span style={{ marginLeft: 'auto' }}>{isAdmin && <button className="btn primary" onClick={() => setDialog({})}>New event</button>}</span>
       </div>
       {events.isError && <ErrorBox error={events.error} onRetry={() => void events.refetch()} />}
       <div className="tbl-wrap">
         <table className="tbl" aria-label="Events">
-          <thead><tr><th>Event</th><th>Status</th><th>Cases</th><th>Created</th><th>Data purge</th>{isAdmin && <th><span className="sr-only">Actions</span></th>}</tr></thead>
+          <thead><tr><th>Event</th><th>Area</th><th>Status</th><th>Cases</th><th>Created</th><th>Data purge</th>{isAdmin && <th><span className="sr-only">Actions</span></th>}</tr></thead>
           <tbody>
-            {events.isLoading && <tr><td colSpan={6}><div className="skel" style={{ height: 34 }} /></td></tr>}
+            {events.isLoading && <tr><td colSpan={7}><div className="skel" style={{ height: 34 }} /></td></tr>}
             {(events.data ?? []).map((e) => (
               <tr key={e.id}>
                 <td><b>{e.name}</b>{e.synthetic && <p>Synthetic demo data</p>}</td>
+                <td className="gf-cell">
+                  <GeofenceMini region={e.region} />
+                  <div>
+                    {(() => { const d = describeRegion(e.region); return d ? <><b>{d.area}</b><p title="south-west to north-east corner of the bounding box">{d.bounds}</p></> : <p>No area set</p>; })()}
+                    <button className="btn sm" onClick={() => setDialog({ event: e })}>{isAdmin && e.status === 'active' ? 'Edit area' : 'View area'}</button>
+                  </div>
+                </td>
                 <td><Pill bg={STATUS_PILL[e.status][0]} color={STATUS_PILL[e.status][1]}>{e.status}</Pill></td>
                 <td>{e.open_case_count ?? 0} open<p>{e.case_count ?? 0} total</p></td>
                 <td>{formatDateTime(e.created_at)}{e.closed_at && <p>Closed {formatDateTime(e.closed_at)}</p>}</td>
@@ -110,7 +75,7 @@ function EventsCard() {
         </table>
       </div>
       {!events.isLoading && !events.data?.length && <Empty>No events yet. {isAdmin ? 'Create one to start receiving cases.' : 'An admin has to create one.'}</Empty>}
-      {creating && <NewEvent onClose={() => setCreating(false)} />}
+      {dialog && <EventDialog event={dialog.event} onClose={() => setDialog(null)} />}
       {pending && <ConfirmDialog title={text[pending.kind].title} danger={text[pending.kind].danger} confirmLabel={text[pending.kind].label} busy={busy} onClose={() => setPending(null)} onConfirm={run}
         body={<><p><b>{pending.ev.name}</b></p><p style={{ marginTop: 6 }}>{text[pending.kind].body}</p></>} />}
     </div>
@@ -190,8 +155,10 @@ export function Settings() {
             <div><span>Heartbeat interval</span><b>{info.data?.heartbeat_interval_seconds ? `${info.data.heartbeat_interval_seconds} s` : '-'}</b></div>
             <div><span>Silence threshold</span><b>{info.data?.silence_threshold_seconds ? `${info.data.silence_threshold_seconds} s` : '-'}</b></div>
             <div><span>Gateway batch size</span><b>{info.data?.gateway_upload_max_batch ?? '-'}</b></div>
+            <div><span>Profile required at onboarding</span><b>{info.data?.profile_required === undefined ? '-' : info.data.profile_required ? 'Yes (user may skip explicitly)' : 'No'}</b></div>
+            <div><span>Profile consent version</span><b>{info.data?.profile_consent_version ?? '-'}</b></div>
           </div>
-          <p className="note" style={{ padding: '0 18px 16px' }}>Exact victim locations are only shown to the assigned responder and admins. Everyone else sees an approximate area.</p>
+          <p className="note" style={{ padding: '0 18px 16px' }}>Exact victim locations are only shown to the assigned responder and admins. Everyone else sees an approximate area. Names, age ranges and coarse flags are visible to every dashboard user; medical and contact details only to the assigned responder and admins. Profile settings here are read-only and come from the server configuration.</p>
         </div>
       </div>
     </div>

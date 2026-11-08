@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Deadzone, HeatCell, Offer, Responder, Sos } from '../api/models';
+import { FLAG_META, displayName, sortFlags } from '../lib/profile';
 import { hopChips, hopSummary } from '../lib/hops';
 import { formatRadius, resolveLocation } from '../lib/privacy';
 import { regionBox } from '../lib/region';
+import { geofenceRing } from '../lib/geofence';
 import { CATEGORY_LABEL, TIER_HEX, TIER_LABEL, TIER_TEXT, caseKind, scoreTier, shortId } from '../lib/tier';
 import { formatAge } from '../lib/time';
 import { useUi, type LayerKey } from '../state/ui';
@@ -34,11 +36,20 @@ export function buildCasePopup(c: Sos, onOpen: () => void): HTMLElement {
   const root = el('div', 'pop', undefined, { borderTop: `4px solid ${TIER_HEX[kind]}` });
   root.style.padding = '12px 14px';
   const hd = el('div', 'hd');
-  hd.append(el('span', undefined, `${shortId(c.id)} · ${CATEGORY_LABEL[c.category]}`));
+  const who = displayName(c.profile);
+  hd.append(el('span', undefined, who.known ? who.primary : `${shortId(c.id)} · ${CATEGORY_LABEL[c.category]}`));
   const sc = el('span', 'score', String(c.score), { background: TIER_HEX[kind], color: TIER_TEXT[kind] });
   sc.title = TIER_LABEL[kind];
   hd.append(sc);
   root.append(hd);
+  const meta: string[] = [];
+  if (who.known) meta.push(`${shortId(c.id)} · ${CATEGORY_LABEL[c.category]}`);
+  else meta.push(who.primary, who.hint ?? '');
+  if (c.profile?.age_range) meta.push(`age ${c.profile.age_range}`);
+  const fl = sortFlags(c.profile?.vulnerability_flags).map((f) => FLAG_META[f].label);
+  root.append(el('div', 'pop-person', [...meta.filter(Boolean)].join(' · '), { color: '#475569', fontSize: '11.5px', marginTop: '2px' }));
+  if (fl.length) root.append(el('div', 'pop-flags', fl.join(', '), { color: '#B42318', fontWeight: '600', fontSize: '11.5px', marginTop: '2px' }));
+  if (who.known && who.hint) root.append(el('div', undefined, who.hint, { color: '#64748B', fontSize: '11px', fontStyle: 'italic' }));
   root.append(el('div', undefined, (c.text ?? 'No message text').slice(0, 110), { color: '#475569', marginTop: '4px' }));
   root.append(el('div', undefined, c.channel === 'app' ? 'Sent directly from an online phone' : hopSummary(c.hop), { marginTop: '8px', fontWeight: '600' }));
   if (c.channel === 'mesh') {
@@ -100,6 +111,7 @@ const LAYER_LABELS: [LayerKey, string][] = [
   ['responders', 'Responders'],
   ['offers', 'Neighbor offers'],
   ['deadzones', 'Dead Zones'],
+  ['geofence', 'Event geofence'],
 ];
 
 export interface MapViewProps {
@@ -145,6 +157,7 @@ export function MapView(p: MapViewProps) {
     });
     tiles.addTo(map);
     groups.current = {
+      geofence: L.layerGroup().addTo(map),
       heat: L.layerGroup().addTo(map),
       deadzones: L.layerGroup().addTo(map),
       approx: L.layerGroup().addTo(map),
@@ -204,6 +217,20 @@ export function MapView(p: MapViewProps) {
     fittedFor.current = key;
   }, [regionKey, caseCount, p.region]);
 
+  // event geofence outline with a subtle fill (a legacy bbox-only region is drawn as its rectangle)
+  useEffect(() => {
+    const g = groups.current;
+    if (!g) return;
+    g.geofence.clearLayers();
+    const ring = geofenceRing(p.region);
+    const box = regionBox(p.region);
+    const latlngs: L.LatLngTuple[] | null = ring ? ring.map(([x, y]) => [y, x]) : box ? [[box.min_lat, box.min_lng], [box.min_lat, box.max_lng], [box.max_lat, box.max_lng], [box.max_lat, box.min_lng]] : null;
+    if (!latlngs) return;
+    const poly = L.polygon(latlngs, { color: '#0E7490', weight: 2.5, dashArray: ring ? undefined : '8 6', fillColor: '#0E7490', fillOpacity: 0.07, interactive: true, bubblingMouseEvents: false });
+    poly.bindTooltip('Event geofence', { sticky: true, className: 'dz-label' });
+    poly.addTo(g.geofence);
+  }, [regionKey, p.region]);
+
   // cases: pins + approx circles
   useEffect(() => {
     const g = groups.current;
@@ -218,7 +245,7 @@ export function MapView(p: MapViewProps) {
       if (loc.precision === 'approx') {
         L.circle([loc.lat, loc.lng], { radius: loc.radius_m, color: TIER_HEX[kind], weight: selected ? 2.5 : 1.5, dashArray: '4 4', fillColor: TIER_HEX[kind], fillOpacity: selected ? 0.18 : 0.07, interactive: false }).addTo(g.approx);
       }
-      const m = L.marker([loc.lat, loc.lng], { icon: pinIcon(c, selected), keyboard: true, title: `${shortId(c.id)} score ${c.score}`, zIndexOffset: Math.round(c.score) + (selected ? 1000 : 0) });
+      const m = L.marker([loc.lat, loc.lng], { icon: pinIcon(c, selected), keyboard: true, title: `${c.profile?.full_name ? `${c.profile.full_name}, ` : ''}${shortId(c.id)} score ${c.score}`, zIndexOffset: Math.round(c.score) + (selected ? 1000 : 0) });
       m.bindPopup(() => buildCasePopup(c, () => cb.current.onOpenCase?.(c.id)), { closeButton: false, maxWidth: 270, minWidth: 250, autoPanPadding: [30, 80] });
       m.on('click', () => cb.current.onSelect(c.id));
       m.addTo(g.sos);
@@ -355,6 +382,7 @@ export function MapView(p: MapViewProps) {
         <div><span className="sw" style={{ background: '#16A34A', borderRadius: '50%', width: 12, opacity: 0.7 }} />Neighbor offer</div>
         <div><span className="sw" style={{ border: '1.5px dashed #334155', background: 'rgba(51,65,85,.15)' }} />Dead zone (no check-ins)</div>
         <div><span className="sw" style={{ border: '1.5px dashed #D32F2F', borderRadius: '50%', width: 12 }} />Approximate area</div>
+        <div><span className="sw" style={{ border: '2px solid #0E7490', background: 'rgba(14,116,144,.12)' }} />Event geofence</div>
       </div>
     </div>
   );

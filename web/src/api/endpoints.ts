@@ -1,7 +1,7 @@
 // One function per endpoint the dashboard uses. Paths and shapes follow ../../openapi.yaml.
 import { ApiError, http, requestRaw, type Body, type Query, type Res, type Schemas } from './client';
 import type {
-  AppEvent, Assignment, Checkin, Deadzone, HeatCell, MeshStats, Offer, OfferMatch, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
+  AppEvent, Assignment, ProfileFull, ProfilePublic, Checkin, Deadzone, HeatCell, MeshStats, Offer, OfferMatch, Responder, ServerInfo, SilentDevice, Sos, SosDetail, SosEvent,
 } from './models';
 
 export interface Page<T> {
@@ -48,6 +48,13 @@ export async function fetchVoiceNote(id: string): Promise<string> {
   return URL.createObjectURL(await res.blob());
 }
 
+/**
+ * GET /devices/{id}/profile answers ProfileFull or ProfilePublic depending on the caller; branch on `view`.
+ * The dashboard reads case details from `SosDetail.profile_full` instead, this is here for completeness.
+ */
+export const getDeviceProfile = (deviceId: string) => http.get<ProfileFull | ProfilePublic>(`/devices/${deviceId}/profile`);
+export const isProfileFull = (p: ProfileFull | ProfilePublic): p is ProfileFull => p.view === 'full';
+
 // ---- check-ins
 export const listCheckins = (sosId: string) => http.get<{ data: Checkin[] }>(`/sos/${sosId}/checkins`);
 export const sendCheckin = (sosId: string, message?: string) =>
@@ -92,6 +99,7 @@ export const getMeshStats = (window_minutes = 60) => http.get<MeshStats>('/mesh/
 // ---- events
 export const listEvents = () => http.get<Page<AppEvent>>('/events', { limit: 100 });
 export const createEvent = (b: Body<'/events', 'post'>) => http.post<AppEvent>('/events', b);
+export const updateEvent = (id: string, b: Body<'/events/{eventId}', 'patch'>) => http.patch<AppEvent>(`/events/${id}`, b);
 export const closeEvent = (id: string) => http.post<AppEvent>(`/events/${id}/close`);
 export const purgeEvent = (id: string) => http.post<Res<'/events/{eventId}/purge', 'post'>>(`/events/${id}/purge`);
 export const deleteEvent = (id: string) => http.del(`/events/${id}`);

@@ -50,9 +50,21 @@ Libraries: TanStack Query (cache, retries, invalidation), zustand (tiny state), 
 | Mesh Network | stats, longest relay chain diagram, hop limits, hop histogram, rejections, busiest gateways | `/mesh/stats`, `/server-info`, `/sos` |
 | Responders | table, active case timeline and quick actions, admin add/edit/delete | `/responders` (CRUD, admin), `/assignments` |
 | Neighbor Assist | offers, suggested matches, send/decline/deliver, manual match, withdraw, needs by category | `/offers`, `/offers/{id}/matches` (+ PATCH/DELETE) |
-| Events & Settings | events (create, close, purge, delete with confirmations, admin), demo tools, server info | `/events`, `/events/{id}/close`, `/purge`, `/mesh/seed`, `/mesh/simulate` |
+| Events & Settings | events (create with a drawn geofence, edit area, close, purge, delete with confirmations, admin), area thumbnails, demo tools, server info | `/events` (POST, PATCH), `/events/{id}/close`, `/purge`, `/mesh/seed`, `/mesh/simulate` |
 
 Role awareness: admin-only controls (responder CRUD, events, delete case) are hidden for other roles; volunteers get a read-only queue (no claim/advance). The server remains the authority and answers 403/409 which are shown as toasts.
+
+## Event geofence
+
+Creating an event opens a full dialog: name, retention, heartbeat interval and silence threshold (with help text) and a map on which the admin draws exactly one geofence. The same dialog edits the geofence of an active event (`PATCH /events/{id}`); closed and purged events open it read-only.
+
+- **Tools**: polygon (click vertices, close by clicking the green first vertex, Enter or "Finish shape"), rectangle (two clicks or press-and-drag), circle (centre, then radius). Afterwards drag the square handles to reshape (rectangle corners resize, circle has a centre and a radius handle), click a round midpoint to add a vertex, select a vertex and press Delete (or double-click it) to remove it, drag the body to move the shape, Undo/Redo (Ctrl+Z, Ctrl+Shift+Z, a drag is one step) and Clear. Drawing a new shape replaces the old one on completion; Escape cancels an unfinished drawing before it closes the dialog.
+- **Helpers**: place search (OpenStreetMap Nominatim: debounced 700 ms, at least 1.1 s between requests, cached per query, aborted when superseded, says so when offline), "Use current view" (visible bounds become a rectangle), "Locate me" (browser geolocation), and "Type the numbers instead" (rectangle bounds, circle centre + radius) as the keyboard path. "Add vertex at centre" lets keyboard users build a polygon by panning with the arrow keys.
+- **Feedback**: live area (km2), rough perimeter, vertex count, warnings under 0.05 km2 or over 25,000 km2, and blocking errors (fewer than 3 vertices, self-intersection, out-of-range coordinates, more than 500 vertices). Save stays disabled with the reasons listed. The editor works on a blank background when tiles cannot load.
+- **Data**: `region` keeps the legacy box (`min_lat..max_lng`, always computed by the client from the polygon, recomputed by the server) and adds `geofence` (GeoJSON Polygon) plus an optional `circle` hint (circles are saved as 64-segment polygons). A legacy box-only region is shown as a rectangle and can be edited.
+- **Display**: the Overview and Incident Map draw the outline with a subtle fill, fit to it on load, and have an "Event geofence" layer toggle; the event list shows a tile-free SVG outline, the area and the bounds.
+
+Why our own editor instead of `@geoman-io/leaflet-geoman-free`: Geoman is good, but it brings a toolbar we would have to restyle and hide, its own text/undo model, and about 200 kB for three shape types. We needed rectangle/circle/polygon with typed fallbacks, one-shape-only semantics, a shared undo stack with the numeric form, vertex deletion rules and keyboard affordances, all of which sit on top of Geoman rather than inside it. The editor is about 450 lines on plain Leaflet (`components/GeofenceEditor.tsx`), the geometry is a pure module (`lib/geofence.ts`, byte-identical to `server/src/domain/geofence.ts` and tested with the same cases on both sides) and shape logic is unit tested (`lib/geofenceShape.ts`, `lib/shapeHistory.ts`).
 
 ## Behaviour worth knowing
 

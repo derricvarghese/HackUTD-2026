@@ -2,6 +2,7 @@ import type { Sos } from '../api/models';
 import { EMPTY } from '../lib/empty';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PersonLine } from '../components/Person';
 import { MapView, type MapBounds } from '../components/MapView';
 import { Empty, Pill, ScoreSq, Seg } from '../components/ui';
 import { useDeadzones, useHeat, useOffers, useOpenCases, useResponders, useServerInfo } from '../hooks/data';
@@ -83,7 +84,8 @@ export function MapPage() {
                 <button key={c.id} className="mi click" aria-pressed={c.id === selectedId} onClick={() => select(c.id)} style={c.id === selectedId ? { background: 'var(--blue-soft)' } : undefined}>
                   <ScoreSq c={c} />
                   <div className="grow">
-                    <b>{shortId(c.id)} {caseTitle(c, 36).split(' · ').slice(0, 2).join(' · ')}</b>
+                    <PersonLine profile={c.profile} maxFlags={3} />
+                    <span className="csub">{shortId(c.id)} {caseTitle(c, 36).split(' · ').slice(0, 2).join(' · ')}</span>
                     <p>{shortLocation(c)}. {c.silent ? `Silent, last heard ${formatAge(c.last_heard_at, now)}` : c.channel === 'mesh' ? hopSummary(c.hop) : 'App'}{c.assignment ? `. ${c.assignment.responder_name ?? 'Team'} ${c.assignment.status.replace('_', ' ')}` : ''}</p>
                   </div>
                 </button>

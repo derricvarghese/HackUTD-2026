@@ -53,6 +53,11 @@ class MeshRouter(
     var transport: MeshTransport? = null
     /** True when this phone can reach the backend (gateway mode). */
     var isOnline: () -> Boolean = { false }
+    /**
+     * `MeshPayload.profile_summary` for own sos/safe messages (name, age range, coarse flags, last acked profile_version), or null
+     * when the user has no profile. This is the ONLY profile data that may enter a mesh message.
+     */
+    var profileSummary: () -> JSONObject? = { null }
     /** Called with each own/received message that should go to the backend (the gateway decides how). */
     var upload: (StoredMessage) -> Unit = {}
     var onChange: () -> Unit = {}
@@ -91,6 +96,7 @@ class MeshRouter(
             people?.let { if (it >= 1) put("people_count", it) }
             if (category == Category.TRAPPED) put("trapped", true)
             if (category == Category.INJURED || category == Category.MEDICAL) put("injured", true)
+            if (category.kind == "sos" || category.kind == "safe") profileSummary()?.let { put("profile_summary", it) }
         }
         val msg = create(
             kind = category.kind, tier = category.priority, apiCategory = category.apiCategory,

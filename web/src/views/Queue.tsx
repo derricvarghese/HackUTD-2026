@@ -9,7 +9,8 @@ import { qk, useAction, useCaseList, useOpenCases, useSilent } from '../hooks/da
 import { useDebounced } from '../hooks/useDebounced';
 import { useNow } from '../hooks/useNow';
 import { channelLabel } from '../lib/hops';
-import { matchesTab, type QueueTab } from '../lib/query';
+import { matchesSearch, matchesTab, type QueueTab } from '../lib/query';
+import { PersonLine } from '../components/Person';
 import { shortLocation } from '../lib/privacy';
 import { caseTitle, deviceShortId, shortId } from '../lib/tier';
 import { formatAge, formatDuration } from '../lib/time';
@@ -38,12 +39,15 @@ export function Queue() {
   });
 
   const rows = useMemo<Row[]>(() => {
-    const cs: Row[] = (list.data ?? []).filter((c) => matchesTab(c, tab)).map((c) => ({ kind: 'case', c }));
+    // The API's `q` only searches notes, so names are matched here over the open set and merged in.
+    const byName = q ? (open.data ?? []).filter((c) => matchesSearch(c, q, `${shortId(c.id)} ${caseTitle(c, 80)}`)) : [];
+    const seen = new Set((list.data ?? []).map((c) => c.id));
+    const cs: Row[] = [...(list.data ?? []), ...byName.filter((c) => !seen.has(c.id))].filter((c) => matchesTab(c, tab)).map((c) => ({ kind: 'case', c }));
     const showDevs = !q && !resolved && (tab === 'all' || tab === 'silent');
     const ds: Row[] = showDevs ? devices.map((d) => ({ kind: 'device', d })) : [];
     const score = (r: Row) => (r.kind === 'case' ? r.c.score : (r.d.priority_score ?? 0));
     return [...cs, ...ds].sort((a, b) => score(b) - score(a));
-  }, [list.data, devices, tab, q, resolved]);
+  }, [list.data, open.data, devices, tab, q, resolved]);
 
   const all = open.data ?? [];
   const n = (t: QueueTab) => all.filter((c) => matchesTab(c, t)).length + (t === 'all' || t === 'silent' ? devices.length : 0);
@@ -68,7 +72,7 @@ export function Queue() {
             <label className="search">
               <IcSearch width={16} height={16} />
               <span className="sr-only">Search cases</span>
-              <input type="search" placeholder="Search cases, notes, text" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input type="search" placeholder="Search names, notes, text" value={search} onChange={(e) => setSearch(e.target.value)} />
             </label>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 600, color: '#334155' }}>
               <input type="checkbox" checked={resolved} onChange={(e) => setResolved(e.target.checked)} /> Include resolved
@@ -94,7 +98,7 @@ export function Queue() {
                       onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); select(r.c.id); } }}
                     >
                       <td><ScoreSq c={r.c} /></td>
-                      <td><b>{shortId(r.c.id)}</b><p>{caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)}</p></td>
+                      <td className="c-person"><PersonLine profile={r.c.profile} maxFlags={3} /><p>{shortId(r.c.id)} · {caseTitle(r.c, 34).split(' · ').slice(1).join(' · ') || caseTitle(r.c)}</p></td>
                       <td>{shortLocation(r.c)}</td>
                       <td className="c-hide">{r.c.people_count ?? "?"}</td>
                       <td>{channelLabel(r.c.channel, r.c.hop)}</td>

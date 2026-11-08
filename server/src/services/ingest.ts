@@ -17,6 +17,8 @@ import { replyFromMesh } from './checkins';
 import { createOffer, matchSosToOffers } from './offers';
 import { enqueue, listOutbox } from './outbox';
 import { addEvent, broadcastSos } from './sosView';
+import { getProfileRow, parseSummary, summarySchema, triageCtxFor } from './profileStore';
+import type { ProfileSummary } from '../domain/profile';
 
 export type Envelope = components['schemas']['MeshEnvelope'];
 export type BatchResult = { id: string; status: 'created' | 'duplicate' | 'rejected'; reason?: Reject; sos_id?: string };
@@ -36,6 +38,8 @@ export interface IngestInput {
   gatewayDeviceId: string | null;
   envelope?: unknown;
   synthetic?: boolean;
+  /** identity hint from an offline SOS (`MeshPayload.profile_summary`); dropped when a synced profile already exists */
+  profileSummary?: ProfileSummary | null;
 }
 
 const clampCreated = (d: Date, now: Date) => (d.getTime() > now.getTime() + CLOCK_SKEW_MS ? now : d);
@@ -46,6 +50,9 @@ export async function ingestSos(ctx: Ctx, i: IngestInput): Promise<{ created: bo
   const ev = await activeEventRow(ctx);
   const created = clampCreated(i.created_at, now);
   const approx = approxCell(i.lat, i.lng);
+  // an identity hint only matters until the full profile is synced
+  let summary = i.profileSummary ? parseSummary(i.profileSummary) : null;
+  if (summary && i.deviceId && (await getProfileRow(ctx, i.deviceId))) summary = null;
   const draft = {
     id: i.id, event_id: ev?.id ?? null, device_id: i.deviceId, sender_hash: i.senderHash, channel: i.channel, category: i.category,
     lat: i.lat, lng: i.lng, geohash7: geohashEncode(i.lat, i.lng, 7), approx_lat: approx.lat, approx_lng: approx.lng,
@@ -53,9 +60,10 @@ export async function ingestSos(ctx: Ctx, i: IngestInput): Promise<{ created: bo
     accuracy_m: i.accuracy_m ?? null, last_heard_at: now, hop_count: i.hop.hop_count, max_hops: i.hop.max_hops, hop_path: i.hop.hop_path,
     gateway_device_id: i.gatewayDeviceId, original_created_at: created, received_at: now, has_voice_note: !!i.has_voice_note,
     synthetic: !!i.synthetic, created_at: created, updated_at: now,
+    profile_summary: summary ? (JSON.stringify(summary) as unknown) : null,
   };
-  const tmp = { ...draft, status: 'reported', score: 0, score_override: null, confidence: 'low', silent: false, silent_since: null, merged_into: null, duplicate_count: 0, version: 1 } as SosRow;
-  const rules = rulesOutcome(tmp);
+  const tmp = { ...draft, status: 'reported', score: 0, score_override: null, confidence: 'low', silent: false, silent_since: null, merged_into: null, duplicate_count: 0, version: 1 } as unknown as SosRow;
+  const rules = rulesOutcome(tmp, await triageCtxFor(ctx, { device_id: i.deviceId, profile_summary: summary }));
 
   const result = await ctx.db.transaction().execute(async (trx) => {
     const ins = await trx.insertInto('sos').values({ ...draft, score: rules.score, confidence: rules.confidence })
@@ -126,6 +134,7 @@ const payloadSchema = z.object({
   people_count: z.number().int().min(1).optional(),
   trapped: z.boolean().optional(), water_rising: z.boolean().optional(), injured: z.boolean().optional(),
   checkin_id: z.string().uuid().optional(), response: z.enum(['ok', 'need_help', 'other']).optional(),
+  profile_summary: summarySchema.optional().catch(undefined),
   offer: z.object({
     kind: z.enum(['boat', 'water', 'food', 'medical', 'shelter', 'transport', 'other']), description: z.string().max(500).optional(), capacity: z.number().int().min(1).optional(),
     lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), radius_km: z.number().positive().optional(), expires_at: z.string().datetime({ offset: true }).optional(),
@@ -219,7 +228,7 @@ export async function processEnvelope(ctx: Ctx, env: Envelope, gatewayDeviceId: 
     id: env.id, deviceId: sender.id, senderHash: sender.sender_hash, channel: 'mesh', category: kind === 'safe' ? 'safe' : p.category,
     lat: p.lat, lng: p.lng, accuracy_m: p.accuracy_m, text: p.text, people_count: p.people_count, trapped: p.trapped,
     water_rising: p.water_rising, injured: p.injured, has_voice_note: !!p.voice_note_ref, created_at: new Date(env.created_at),
-    hop, gatewayDeviceId, envelope: env,
+    hop, gatewayDeviceId, envelope: env, profileSummary: p.profile_summary as ProfileSummary | undefined,
   });
   if (r.created) {
     await enqueue(ctx, { kind: 'delivered', sosId: env.id, body: { status: 'reported', message: 'Your SOS reached responders' } });

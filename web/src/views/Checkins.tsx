@@ -12,6 +12,8 @@ import { useCanAct } from '../state/auth';
 import { useUi } from '../state/ui';
 import { useNavigate } from 'react-router-dom';
 import { silenceBoost } from '../components/CaseCard';
+import { PersonLine } from '../components/Person';
+import { nameLine } from '../lib/profile';
 
 const MAX_CASES = 60;
 
@@ -64,6 +66,7 @@ export function Checkins() {
 
   const si = info.data;
   const dev = silent.data ?? [];
+  const caseById = useMemo(() => new Map((cases.data ?? []).map((c) => [c.id, c])), [cases.data]);
   return (
     <div className="view on">
       <section className="stats" aria-label="Check-in numbers">
@@ -82,7 +85,7 @@ export function Checkins() {
               <tbody>
                 {waiting.map(({ c, k }) => (
                   <tr key={k.id} className={k.missed ? 'silent row-click' : 'row-click'} onClick={() => { select(c.id); nav('/queue'); }}>
-                    <td><b>{shortId(c.id)}</b><p>{c.category.replace(/_/g, ' ')}</p></td>
+                    <td className="c-person"><PersonLine profile={c.profile} maxFlags={3} /><p>{shortId(c.id)} · {c.category.replace(/_/g, ' ')}</p></td>
                     <td>{k.channel === 'mesh' ? 'Mesh' : 'App push'}</td>
                     <td><Dots attempt={k.attempt ?? 1} missed={!!k.missed} ok={false} />{k.attempt ?? 1}</td>
                     <td>{formatClock(k.sent_at)}</td>
@@ -111,7 +114,7 @@ export function Checkins() {
                     <b>{deviceShortId(d.device_id)}, ~{d.last_approx.lat.toFixed(2)}, {d.last_approx.lng.toFixed(2)}</b>
                     <p>
                       Quiet {formatDuration(d.silent_for_seconds)}. {d.neighbors_active !== undefined ? `${d.neighbors_active} neighbours active. ` : ''}
-                      {typeof d.last_battery_pct === 'number' ? `Battery was ${d.last_battery_pct}%. ` : ''}{d.open_sos_id ? `Had an open SOS (${shortId(d.open_sos_id)}). ` : ''}Last beat {formatAge(d.last_heartbeat_at, now)}.
+                      {typeof d.last_battery_pct === 'number' ? `Battery was ${d.last_battery_pct}%. ` : ''}{d.open_sos_id ? `Had an open SOS (${(() => { const oc = caseById.get(d.open_sos_id); return oc?.profile?.full_name ? `${nameLine(oc.profile)}, ${shortId(d.open_sos_id)}` : shortId(d.open_sos_id); })()}). ` : ''}Last beat {formatAge(d.last_heartbeat_at, now)}.
                     </p>
                     {canAct && (
                       <div className="dz">

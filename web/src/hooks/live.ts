@@ -28,6 +28,14 @@ export function applyFrame(qc: QueryClient, f: WsFrame) {
       void qc.invalidateQueries({ queryKey: qk.detail(m.primary_id) });
       break;
     }
+    case 'profile.updated': {
+      // Public fields only. The affected cases are refetched (list + detail, which also re-evaluates profile_full access); sos.updated follows from the server.
+      const ids = (f.data as { sos_ids?: string[] } | undefined)?.sos_ids ?? [];
+      void qc.invalidateQueries({ queryKey: qk.open });
+      void qc.invalidateQueries({ queryKey: ['cases', 'list'] });
+      for (const id of ids) void qc.invalidateQueries({ queryKey: qk.detail(id) });
+      break;
+    }
     case 'checkin.sent':
     case 'checkin.responded': {
       const c = f.data as Checkin;
@@ -97,6 +105,10 @@ export function useLiveUpdates() {
         useUi.getState().touch();
         if (f.event === 'pong') return;
         applyFrame(qc, f);
+        if (f.event === 'profile.updated') {
+          const sel = useUi.getState().selectedId;
+          if (sel && ((f.data as { sos_ids?: string[] } | undefined)?.sos_ids ?? []).includes(sel)) useUi.getState().toast('info', 'Profile updated');
+        }
         const item = describeFrame(f);
         if (item) useUi.getState().addFeed(item);
       },

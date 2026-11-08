@@ -1,7 +1,8 @@
 /** Grid-cell dead zone detection (design 6.5). Pure. */
 export interface Activity { lat: number; lng: number; at: Date; cases?: number }
 /** `refLat` fixes the longitude cell width so cell keys stay stable between runs; by default the mean latitude rounded to 0.5 degrees. */
-export interface DeadzoneParams { cellKm: number; quietMs: number; minActiveNeighbors: number; now: Date; refLat?: number }
+export interface DeadzoneParams { cellKm: number; quietMs: number; minActiveNeighbors: number; now: Date; refLat?: number;
+  /** optional filter on candidate cell centres, e.g. inside the event geofence */ keepCell?: (center: { lat: number; lng: number }) => boolean }
 export interface DeadzoneCandidate {
   key: string; center: { lat: number; lng: number }; radius_m: number;
   last_activity_at: Date | null; neighbor_case_count: number; active_neighbors: number; reason: string;
@@ -57,6 +58,7 @@ export function detectDeadzones(acts: Activity[], p: DeadzoneParams): DeadzoneCa
     if (!(activeN >= p.minActiveNeighbors || (history && activeN >= 1))) continue;
     const dLng = p.cellKm / (KM_PER_DEG * Math.max(Math.cos((ref * Math.PI) / 180), 0.01));
     const center = cell?.center ?? { lat: +((row + 0.5) * dLat).toFixed(5), lng: +((col + 0.5) * dLng).toFixed(5) };
+    if (p.keepCell && !p.keepCell(center)) continue;
     const quietMin = Math.round(p.quietMs / 60000);
     out.push({
       key, center, radius_m: Math.round(p.cellKm * 1000 * 0.7071), last_activity_at: cell?.last ?? null, neighbor_case_count: caseN, active_neighbors: activeN,

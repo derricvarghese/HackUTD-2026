@@ -28,6 +28,19 @@ info:
     Rules score first; free text is then sent to a Nemotron model (NVIDIA NIM, OpenAI-compatible endpoint hosted on Brev) which extracts
     entities and adds reasons. The LLM endpoint is internal to the server and not part of this API.
 
+    ## Profiles (who is the person behind the phone)
+    At install the app asks for the user's name and identifying characteristics and syncs them with `PUT /devices/{deviceId}/profile` (device signature
+    auth). Sync strategy for apps: (1) fetch `GET /server-info`, show the consent text identified by `profile_consent_version`, (2) when online `PUT` the
+    profile with `consent.accepted=true` and `consent.version=<that value>` (the server answers 422 on a missing/false/stale consent and stores nothing),
+    (3) remember the returned `profile_version` and send it as `If-Match` on later edits (409 means another copy won: `GET` it, merge, retry),
+    (4) compare `Device.profile_version` (from `GET /devices/{id}`) with the local one after reinstall or on regaining signal; a `404` on
+    `GET /devices/{id}/profile` or a lower server version means re-`PUT`. Writes are rate limited per device.
+    While offline the SOS envelope carries a small `MeshPayload.profile_summary` (name, age range, coarse flags) so responders still see who is calling; the
+    server attaches it to the case until a synced profile exists and drops it when the full profile arrives (linked by the signed sender device id).
+    Profiles are personal data: stored with the sensitive part AES-256-GCM encrypted, never logged, deleted with the device, with its last case
+    (when the event is purged or the case is erased) or after prolonged inactivity (`PROFILE_RETENTION_DAYS`). Profile changes re-triage the device's open cases
+    (vulnerability flags raise the score modestly) and emit a `profile.updated` WebSocket frame carrying public fields only.
+
     ## Conventions
     - Base URL: `/v1`. JSON only (`application/json`), UTF-8. All timestamps are RFC 3339 UTC.
     - IDs: `sos.id` is a client-generated UUIDv7 (mesh message id, enables idempotent upload). All other ids are server-generated UUIDs.
@@ -46,6 +59,10 @@ info:
     ## Privacy rules enforced by the server
     - Exact `lat/lng` is returned only to the **assigned responder** (or `admin`). Everyone else gets `approx_location` (~1 km grid cell centre).
     - `sender_hash` is a salted hash of the device key / phone number; raw identifiers are never returned.
+    - **Profile (identity) privacy:** the user's `full_name` (plus `preferred_name`, coarse `age_range` and coarse `vulnerability_flags`) is visible to every
+      dashboard user (responder, volunteer, admin) on queue cards and case panels (`Sos.profile`). Every other profile field (medical, address, emergency contact,
+      phone, appearance, household, notes, exact `birth_year`) is returned only to the device that owns it, to `admin`, and to the responder holding the
+      ACTIVE assignment on one of that device's cases (same rule as exact location). See the Profiles section below.
     - Hop limits by priority (clients set `max_hops`/`expires_at`; server validates them against this table):
       | Tier | max_hops | TTL |
       |---|---|---|
@@ -59,7 +76,7 @@ info:
     Connect to `wss://{host}/v1/ws?token=<JWT>` (responders only). Server pushes JSON frames `{ "event": <name>, "data": <payload>, "ts": <rfc3339> }`.
     Client may send `{ "action": "subscribe", "channels": ["sos","assignments","mesh","deadzones","offers"] }` (default: all) and `{ "action": "ping" }` (server replies `{ "event": "pong" }`). Server sends a ping frame every 30 s.
     Events (payload schemas under `components/schemas/WsEvent*`):
-    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (silence detector flagged), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `heartbeat.silent` (a phone that was heartbeating went quiet), `heartbeat.resumed`, `deadzones.updated`, `mesh.stats`.
+    `sos.created`, `sos.updated` (score/status/dedupe changes), `sos.merged`, `sos.silent` (silence detector flagged), `checkin.sent`, `checkin.responded`, `assignment.created`, `assignment.updated`, `offer.created`, `offer.matched`, `heartbeat.silent` (a phone that was heartbeating went quiet), `heartbeat.resumed`, `profile.updated` (a device with open cases changed its profile; public fields only), `deadzones.updated`, `mesh.stats`.
     After reconnect, clients should refetch via REST (`GET /sos?updated_since=`) to close gaps; events are not replayed.
   license:
     name: MIT
@@ -73,6 +90,8 @@ servers:
 tags:
   - name: Auth
   - name: Devices
+  - name: Profiles
+    description: Victim identity profile (name + identifying characteristics) synced from the app at install; privacy-tiered, encrypted at rest.
   - name: SOS
   - name: Check-ins
   - name: Assignments
@@ -306,6 +325,123 @@ paths:
         - deviceSignature: []
       responses:
         "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ---------------------------------------------------------------- Profiles
+  /devices/{deviceId}/profile:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    put:
+      tags: [Profiles]
+      summary: Create or replace the calling device's identity profile (idempotent)
+      description: |
+        Device signature auth; the calling device must equal `deviceId` (otherwise `403`). Full replace (PUT semantics): fields omitted from the body are
+        removed. Sending the same body twice yields the same stored profile (the second call still bumps `profile_version` and `updated_at`).
+
+        - `consent.accepted` must be `true` and `consent.version` must equal `ServerInfo.profile_consent_version`, otherwise `422` and nothing is stored.
+        - Optimistic concurrency: send `If-Match: <profile_version>` (bare integer or quoted, as returned in the body and the `ETag` header). A stale value
+          answers `409` with `details.profile_version` = the current version. `If-Match: 0` means "only create": `409` if a profile already exists.
+          Without `If-Match` the write is unconditional (last write wins).
+        - `profile_version` starts at 1 and is incremented by the server on every successful write.
+        - Rate limited per device (`429` + `Retry-After`).
+        - Changing the profile re-triages the device's open cases and emits `profile.updated` (public fields only).
+        - Never put profile content in logs or crash reports on the client either.
+      operationId: putProfile
+      security:
+        - deviceSignature: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: Expected current `profile_version` (integer, optionally quoted); `0` = must not exist yet.
+          schema: { type: string, pattern: '^"?[0-9]{1,9}"?$', example: "3" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileInput" }
+            example:
+              full_name: Maria Elena Gonzalez
+              preferred_name: Elena
+              birth_year: 1951
+              languages: [es, en]
+              phone: "+19725550142"
+              appearance: { height_cm: 160, hair: "short grey", clothing: "blue cardigan", distinguishing_marks: "scar on left wrist" }
+              medical: { conditions: [type 2 diabetes, hypertension], medications: [insulin glargine, lisinopril], allergies: [penicillin], blood_type: "O+" }
+              mobility: { needs: [walks_with_aid, oxygen_dependent], notes: "uses a cane; portable oxygen concentrator, 6 h battery" }
+              household: { people_count: 3, children: 1, elderly: 1, pets: [{ kind: dog, count: 1 }] }
+              home_address: "412 Cedar Ln, Richardson, TX 75080"
+              emergency_contact: { name: Daniel Gonzalez, phone: "+19725550177", relationship: son }
+              notes: "Second floor apartment, key under the green pot."
+              consent: { accepted: true, version: "2026-11-v1", accepted_at: "2026-11-07T15:58:00Z" }
+      responses:
+        "201":
+          description: Profile created (`profile_version` = 1)
+          headers:
+            ETag: { description: "Quoted `profile_version`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileFull" }
+        "200":
+          description: Profile replaced (`profile_version` incremented)
+          headers:
+            ETag: { description: "Quoted `profile_version`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileFull" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      tags: [Profiles]
+      summary: Read a device's profile (view depends on who asks)
+      description: |
+        The response `view` field tells which shape you got.
+
+        | Caller | Result |
+        |---|---|
+        | The device itself | `ProfileFull` (`view=full`) |
+        | `admin` | `ProfileFull` |
+        | Responder who holds an ACTIVE assignment (`assigned`, `en_route`, `on_scene`) on a non-closed case of this device (or of a case merged with it) | `ProfileFull` |
+        | Any other responder / volunteer (including a responder whose assignment was released) | `ProfilePublic` (`view=public`): name, preferred name, age range, coarse flags only |
+        | Another device | `403` |
+
+        `404` when the device has no profile (a mesh `profile_summary` alone does not count). Response carries `ETag` (full view only).
+      operationId: getProfile
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "200":
+          description: Profile
+          headers:
+            ETag: { description: "Quoted `profile_version` (full view only)", schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProfileFull"
+                  - $ref: "#/components/schemas/ProfilePublic"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [Profiles]
+      summary: Erase the profile (device itself or admin)
+      description: Right to erasure. Also drops any mesh `profile_summary` still attached to the device's cases and re-triages them without profile signals. Other responders get `403`.
+      operationId: deleteProfile
+      security:
+        - responderJwt: []
+        - deviceSignature: []
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -1574,6 +1710,7 @@ paths:
     post:
       tags: [Events]
       summary: Purge personal data now (admin, closed events only)
+      description: Nulls location/text/voice/device links of the event's cases (see design doc) and deletes the identity profiles (and mesh `profile_summary` hints) of devices that have no case left anywhere.
       operationId: purgeEvent
       parameters:
         - $ref: "#/components/parameters/EventId"
@@ -1587,6 +1724,7 @@ paths:
                 properties:
                   purged_cases: { type: integer }
                   purged_voice_notes: { type: integer }
+                  purged_profiles: { type: integer, description: "Identity profiles deleted because their device has no case left (see Profiles lifecycle)" }
                   purged_at: { type: string, format: date-time }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1871,6 +2009,14 @@ components:
         heartbeat_interval_seconds: { type: integer, example: 300, description: Phones send a heartbeat this often while an event is active }
         silence_threshold_seconds: { type: integer, example: 1200, description: Missed-heartbeat window before a device is considered quiet }
         gateway_upload_max_batch: { type: integer, example: 500 }
+        profile_required:
+          type: boolean
+          example: true
+          description: Onboarding must collect at least `full_name` + consent and `PUT /devices/{id}/profile` it (the user may skip explicitly; SOS is never blocked by a missing profile).
+        profile_consent_version:
+          type: string
+          example: "2026-11-v1"
+          description: Version id of the profile consent text the app must show; echo it in `ProfileInput.consent.version`. A change means users must re-consent.
 
     AuthTokens:
       type: object
@@ -1915,7 +2061,175 @@ components:
         heartbeat_status: { $ref: "#/components/schemas/HeartbeatStatus" }
         last_heartbeat_at: { type: [string, "null"], format: date-time }
         last_seen_at: { type: [string, "null"], format: date-time }
+        profile_version: { type: [integer, "null"], description: "Server copy's `profile_version`, null when the server holds no profile for this device" }
         created_at: { type: string, format: date-time }
+
+    # ---- profiles
+    AgeRange:
+      type: string
+      enum: ["0-12", "13-17", "18-34", "35-49", "50-64", "65-79", "80+"]
+      description: Coarse age bucket derived server-side from `birth_year` (current year minus birth year; may be off by one).
+    VulnerabilityFlag:
+      type: string
+      enum: [mobility, medical, elderly, child, oxygen, sensory, cognitive]
+      description: |
+        Coarse flags derived server-side, safe to show to every dashboard user. `mobility` = needs wheelchair / cannot_walk / walks_with_aid;
+        `medical` = any listed condition, medication or allergy; `oxygen` = oxygen_dependent; `sensory` = vision_impaired / hearing_impaired;
+        `cognitive` = cognitive need; `elderly` = age 65+; `child` = age 12 or younger.
+    ProfileConsent:
+      type: object
+      required: [accepted, version, accepted_at]
+      properties:
+        accepted: { type: boolean, description: "Must be `true`; otherwise the server answers 422 and stores nothing." }
+        version: { type: string, minLength: 1, maxLength: 40, example: "2026-11-v1", description: "Consent text version shown to the user; must equal `ServerInfo.profile_consent_version`." }
+        accepted_at: { type: string, format: date-time }
+    ProfileAppearance:
+      type: object
+      description: Free text helps responders recognise the person on scene.
+      properties:
+        height_cm: { type: integer, minimum: 30, maximum: 260 }
+        hair: { type: string, maxLength: 300 }
+        clothing: { type: string, maxLength: 300 }
+        distinguishing_marks: { type: string, maxLength: 300 }
+    ProfileMedical:
+      type: object
+      properties:
+        conditions: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 100 } }
+        medications: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 100 } }
+        allergies: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 100 } }
+        blood_type: { type: string, enum: [A+, A-, B+, B-, AB+, AB-, O+, O-, unknown] }
+    ProfileMobility:
+      type: object
+      properties:
+        needs:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { type: string, enum: [wheelchair, cannot_walk, walks_with_aid, vision_impaired, hearing_impaired, cognitive, oxygen_dependent, other] }
+        notes: { type: string, maxLength: 300 }
+    ProfileHousehold:
+      type: object
+      properties:
+        people_count: { type: integer, minimum: 1, maximum: 50, description: People living in the home including the user }
+        children: { type: integer, minimum: 0, maximum: 50 }
+        elderly: { type: integer, minimum: 0, maximum: 50 }
+        pets:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            required: [kind]
+            properties:
+              kind: { type: string, minLength: 1, maxLength: 40, example: dog }
+              count: { type: integer, minimum: 1, maximum: 99 }
+    ProfileEmergencyContact:
+      type: object
+      required: [name, phone, relationship]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        phone: { type: string, pattern: '^\+?[0-9][0-9 ()\-.]{4,24}[0-9]$', maxLength: 32, description: "E.164-ish: optional +, digits, spaces, dashes, dots, parentheses" }
+        relationship: { type: string, minLength: 1, maxLength: 60 }
+    ProfileInput:
+      type: object
+      description: |
+        What the phone sends. Only `full_name` and `consent` are required. Full replace on every `PUT`.
+        Sensitive fields (everything except `full_name`, `preferred_name`, `birth_year`, `consent`) are encrypted at rest; `full_name` and
+        `birth_year` stay queryable in clear text columns by design (name display and age buckets).
+      required: [full_name, consent]
+      properties:
+        full_name: { type: string, minLength: 1, maxLength: 120, description: "Visible to every dashboard user." }
+        preferred_name: { type: string, minLength: 1, maxLength: 60 }
+        birth_year: { type: integer, minimum: 1900, maximum: 2100, description: "Server also rejects years after the current year (422)." }
+        languages: { type: array, maxItems: 8, items: { type: string, minLength: 2, maxLength: 35 }, description: "BCP-47 tags (`es`, `en-US`) or plain names (`Spanish`)" }
+        phone: { type: string, pattern: '^\+?[0-9][0-9 ()\-.]{4,24}[0-9]$', maxLength: 32 }
+        appearance: { $ref: "#/components/schemas/ProfileAppearance" }
+        medical: { $ref: "#/components/schemas/ProfileMedical" }
+        mobility: { $ref: "#/components/schemas/ProfileMobility" }
+        household: { $ref: "#/components/schemas/ProfileHousehold" }
+        home_address: { type: string, maxLength: 300 }
+        emergency_contact: { $ref: "#/components/schemas/ProfileEmergencyContact" }
+        notes: { type: string, maxLength: 1000 }
+        consent: { $ref: "#/components/schemas/ProfileConsent" }
+    Profile:
+      description: The stored profile = the input plus server fields.
+      allOf:
+        - $ref: "#/components/schemas/ProfileInput"
+        - type: object
+          required: [device_id, profile_version, created_at, updated_at]
+          properties:
+            device_id: { type: string, format: uuid }
+            profile_version: { type: integer, minimum: 1, description: "Incremented by the server on every write; use as `If-Match`." }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    ProfileFull:
+      description: Everything stored plus derived fields. Returned only to the owning device, admins and the ACTIVE assignee.
+      allOf:
+        - $ref: "#/components/schemas/Profile"
+        - type: object
+          required: [view, vulnerability_flags]
+          properties:
+            view: { type: string, enum: [full] }
+            age_range: { $ref: "#/components/schemas/AgeRange" }
+            vulnerability_flags:
+              type: array
+              items: { $ref: "#/components/schemas/VulnerabilityFlag" }
+            synthetic: { type: boolean, description: "Demo data generated by /mesh/seed" }
+      example:
+        view: full
+        device_id: 0192a000-0000-7000-8000-0000000000d1
+        profile_version: 3
+        full_name: Maria Elena Gonzalez
+        preferred_name: Elena
+        birth_year: 1951
+        age_range: "65-79"
+        vulnerability_flags: [elderly, medical, mobility, oxygen]
+        languages: [es, en]
+        phone: "+19725550142"
+        medical: { conditions: [type 2 diabetes], medications: [insulin glargine], allergies: [penicillin], blood_type: "O+" }
+        mobility: { needs: [walks_with_aid, oxygen_dependent], notes: "portable oxygen concentrator" }
+        emergency_contact: { name: Daniel Gonzalez, phone: "+19725550177", relationship: son }
+        consent: { accepted: true, version: "2026-11-v1", accepted_at: "2026-11-07T15:58:00Z" }
+        created_at: "2026-11-07T15:58:00Z"
+        updated_at: "2026-11-07T16:30:00Z"
+    ProfilePublic:
+      description: |
+        The only profile view non-assigned dashboard users get. `Sos.profile` uses it for every case. Contains no sensitive field:
+        coarse flags and the age bucket instead of birth year, conditions or mobility details.
+      type: object
+      required: [view, full_name, has_profile, vulnerability_flags]
+      properties:
+        view: { type: string, enum: [public] }
+        full_name: { type: string }
+        preferred_name: { type: string }
+        age_range: { $ref: "#/components/schemas/AgeRange" }
+        vulnerability_flags:
+          type: array
+          items: { $ref: "#/components/schemas/VulnerabilityFlag" }
+        has_profile: { type: boolean, description: "`true` when a synced server profile exists; `false` when the data comes only from a mesh `profile_summary`." }
+        source: { type: string, enum: [synced, mesh_summary], description: "Where the data came from" }
+        profile_version: { type: integer, description: "Server profile version (synced) or the phone's version (mesh_summary)" }
+      example:
+        view: public
+        full_name: Maria Elena Gonzalez
+        preferred_name: Elena
+        age_range: "65-79"
+        vulnerability_flags: [elderly, medical, mobility, oxygen]
+        has_profile: true
+        source: synced
+        profile_version: 3
+    ProfileSummary:
+      type: object
+      description: |
+        Tiny identity hint inside the encrypted `MeshPayload` of an SOS created offline (keeps envelopes small: well under 400 bytes of JSON).
+        The full profile syncs separately once online. The phone derives `age_range` and flags with the same rules as `VulnerabilityFlag` / `AgeRange`.
+        Ignored (not an error) if invalid or if a synced profile already exists for the sender device.
+      required: [full_name, profile_version]
+      properties:
+        full_name: { type: string, minLength: 1, maxLength: 120 }
+        age_range: { $ref: "#/components/schemas/AgeRange" }
+        vulnerability_flags: { type: array, maxItems: 8, uniqueItems: true, items: { $ref: "#/components/schemas/VulnerabilityFlag" } }
+        profile_version: { type: integer, minimum: 0, description: "`profile_version` last acknowledged by the server for this device; 0 if never synced" }
+      example: { full_name: Maria Elena Gonzalez, age_range: "65-79", vulnerability_flags: [elderly, oxygen], profile_version: 0 }
 
     # ---- mesh envelope
     MeshEnvelope:
@@ -1983,6 +2297,7 @@ components:
         checkin_id: { type: string, format: uuid, description: For kind=checkin_reply }
         heartbeat: { $ref: "#/components/schemas/HeartbeatCreate", description: For kind=heartbeat }
         offer: { $ref: "#/components/schemas/OfferCreate", description: For kind=offer }
+        profile_summary: { $ref: "#/components/schemas/ProfileSummary", description: "Optional identity hint for kind=sos/safe (see `ProfileSummary`)" }
     DeliveredReceipt:
       type: object
       required: [id, delivered_at, max_hops, signature]
@@ -2098,6 +2413,11 @@ components:
           oneOf:
             - $ref: "#/components/schemas/AssignmentSummary"
             - type: "null"
+        profile:
+          oneOf:
+            - $ref: "#/components/schemas/ProfilePublic"
+            - type: "null"
+          description: "Who the caller is (name, age range, coarse vulnerability flags), visible to every dashboard user. `null` when neither a synced profile nor a mesh `profile_summary` exists. Full details are in `SosDetail.profile_full` (assignee/admin only)."
         synthetic: { type: boolean }
         version: { type: integer }
         created_at: { type: string, format: date-time }
@@ -2127,6 +2447,8 @@ components:
         merged_into: null
         duplicate_count: 0
         assignment: null
+        profile:
+          { view: public, full_name: Maria Elena Gonzalez, preferred_name: Elena, age_range: "65-79", vulnerability_flags: [elderly, oxygen], has_profile: false, source: mesh_summary, profile_version: 0 }
         synthetic: true
         version: 1
         created_at: "2026-11-07T16:12:00Z"
@@ -2137,6 +2459,9 @@ components:
         - $ref: "#/components/schemas/Sos"
         - type: object
           properties:
+            profile_full:
+              $ref: "#/components/schemas/ProfileFull"
+              description: Full profile of the device that filed the case. Present only when the viewer is an admin or the ACTIVE assignee of the case; absent for everyone else (and when no synced profile exists).
             triage: { $ref: "#/components/schemas/Triage" }
             checkins:
               type: array
@@ -2449,19 +2774,68 @@ components:
         expires_at: "2026-11-07T22:30:00Z"
         created_at: "2026-11-07T16:30:00Z"
         signature: MEUCIQDexample
+    EventRegion:
+      type: object
+      description: |
+        The area an event covers. The bounding box fields (`min_lat`, `min_lng`, `max_lat`, `max_lng`) are always
+        present and are what older clients read. When `geofence` is given the server validates it and **recomputes
+        the bounding box from it**, so the two can never disagree (a client-sent box is ignored in that case).
+        The server also uses the geofence: dead zones are only reported for grid cells whose centre lies inside it,
+        and the demo helpers (`/mesh/seed`, `/mesh/simulate`) place synthetic cases inside it. SOS messages and
+        heartbeats from outside the geofence are still accepted.
+      additionalProperties: true
+      properties:
+        min_lat: { type: number, minimum: -90, maximum: 90 }
+        min_lng: { type: number, minimum: -180, maximum: 180 }
+        max_lat: { type: number, minimum: -90, maximum: 90 }
+        max_lng: { type: number, minimum: -180, maximum: 180 }
+        geofence:
+          $ref: "#/components/schemas/Geofence"
+        circle:
+          type: object
+          description: Optional hint so an editor can restore a circle. The `geofence` polygon (64 segments) is the source of truth.
+          required: [lat, lng, radius_m]
+          properties:
+            lat: { type: number, minimum: -90, maximum: 90 }
+            lng: { type: number, minimum: -180, maximum: 180 }
+            radius_m: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+      example:
+        min_lat: 32.70
+        min_lng: -96.90
+        max_lat: 32.85
+        max_lng: -96.70
+        geofence:
+          type: Polygon
+          coordinates: [[[-96.90, 32.70], [-96.70, 32.70], [-96.70, 32.85], [-96.90, 32.85], [-96.90, 32.70]]]
+    Geofence:
+      type: object
+      description: |
+        GeoJSON Polygon with exactly one linear ring (no holes), positions as `[lng, lat]`. The ring must be closed
+        (first position equals last), have at least 3 distinct vertices and at most 500, stay within valid
+        coordinate ranges and must not cross itself. Violations answer 422. Circles are stored as a 64-segment polygon.
+      required: [type, coordinates]
+      properties:
+        type: { type: string, enum: [Polygon] }
+        coordinates:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: array
+            minItems: 4
+            maxItems: 501
+            items:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items: { type: number }
     EventCreate:
       type: object
       required: [name]
       properties:
         name: { type: string, example: "Hurricane Demo 2026" }
         region:
-          type: object
-          description: Bounding box the event covers
-          properties:
-            min_lat: { type: number }
-            min_lng: { type: number }
-            max_lat: { type: number }
-            max_lng: { type: number }
+          $ref: "#/components/schemas/EventRegion"
         retention_days: { type: integer, default: 7, minimum: 0 }
         heartbeat_interval_seconds: { type: integer, default: 300, minimum: 30 }
         silence_threshold_seconds: { type: integer, default: 1200, minimum: 60 }
@@ -2470,7 +2844,7 @@ components:
       type: object
       properties:
         name: { type: string }
-        region: { type: object, additionalProperties: true }
+        region: { $ref: "#/components/schemas/EventRegion" }
         retention_days: { type: integer, minimum: 0 }
         heartbeat_interval_seconds: { type: integer, minimum: 30 }
         silence_threshold_seconds: { type: integer, minimum: 60 }
@@ -2481,7 +2855,11 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         status: { type: string, enum: [active, closed, purged] }
-        region: { type: [object, "null"], additionalProperties: true }
+        region:
+          oneOf:
+            - $ref: "#/components/schemas/EventRegion"
+            - type: "null"
+          description: The area the event covers; null when none was set
         retention_days: { type: integer }
         heartbeat_interval_seconds: { type: integer }
         silence_threshold_seconds: { type: integer }
@@ -2550,7 +2928,7 @@ components:
       properties:
         event:
           type: string
-          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
+          enum: [sos.created, sos.updated, sos.merged, sos.silent, heartbeat.silent, heartbeat.resumed, profile.updated, checkin.sent, checkin.responded, assignment.created, assignment.updated, offer.created, offer.matched, deadzones.updated, mesh.stats, pong]
         ts: { type: string, format: date-time }
         data: {}
       discriminator:
@@ -2563,6 +2941,17 @@ components:
       description: "Payload for `sos.created`, `sos.updated`, `sos.silent` (data is a full `Sos`; location redacted per the receiving responder)"
       allOf:
         - $ref: "#/components/schemas/Sos"
+    WsEventProfile:
+      description: |
+        Payload for `profile.updated`: sent to responder sockets when a device that has open cases writes or erases its profile. Public fields only
+        (never medical, address, contact...). Refetch the affected cases (`sos_ids`) for updated flags and score; `sos.updated` follows for each.
+      allOf:
+        - $ref: "#/components/schemas/ProfilePublic"
+        - type: object
+          required: [device_id, sos_ids]
+          properties:
+            device_id: { type: string, format: uuid }
+            sos_ids: { type: array, items: { type: string, format: uuid }, description: Open cases of that device }
     WsEventSilentDevice:
       description: Payload for `heartbeat.silent` and `heartbeat.resumed` (`SilentDevice`; on resume `status` is omitted semantics = back to active)
       allOf:

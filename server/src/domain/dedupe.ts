@@ -10,12 +10,16 @@ export interface DedupeCandidate {
   category: string;
   sender_hash: string;
   created_at: Date;
+  /** normalised profile full name (synced profile or mesh summary), when known */
+  name_norm?: string | null;
 }
 
 export const DEDUPE = {
   radiusM: 150,
   windowMs: 30 * 60 * 1000,
   mergeThreshold: 0.65,
+  /** small bonus when two different devices report the same (normalised, at least two words) full name */
+  sameNameBonus: 0.15,
   separateBelow: 0.4,
 } as const;
 
@@ -49,7 +53,8 @@ export function scoreDuplicate(a: DedupeCandidate, b: DedupeCandidate): DedupeSc
   }
   // same device (sender_hash) within window and radius: always the same incident
   if (a.sender_hash === b.sender_hash) return { score: 1, decision: 'merge', distance_m, text_similarity: sim };
-  const score = 0.5 * (1 - distance_m / DEDUPE.radiusM) + 0.3 * sim + 0.2 * (a.category === b.category ? 1 : 0);
+  const sameName = !!a.name_norm && a.name_norm === b.name_norm && a.name_norm.includes(' ') && a.name_norm.length >= 5;
+  const score = Math.min(1, 0.5 * (1 - distance_m / DEDUPE.radiusM) + 0.3 * sim + 0.2 * (a.category === b.category ? 1 : 0) + (sameName ? DEDUPE.sameNameBonus : 0));
   const decision: DedupeDecision = score >= DEDUPE.mergeThreshold ? 'merge' : score < DEDUPE.separateBelow ? 'separate' : 'unsure';
   return { score, decision, distance_m, text_similarity: sim };
 }

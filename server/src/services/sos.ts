@@ -13,6 +13,9 @@ import { fullTriage, persistTriage } from './triage';
 import { HOP_TABLE } from '../domain/hops';
 import { matchesForSos } from './offers';
 import { queueStatusUpdate } from './outbox';
+import { canSeeFullProfile, toProfileView } from '../domain/privacy';
+import { decryptSensitive, getProfileRow, triageCtxFor } from './profileStore';
+import { dropOrphanedProfiles } from './profiles';
 
 export type SosCreate = components['schemas']['SosCreate'];
 export type SosUpdate = components['schemas']['SosUpdate'];
@@ -120,8 +123,16 @@ export async function getSosDetail(ctx: Ctx, id: string, viewer: Viewer): Promis
     ? await ctx.db.selectFrom('sos_reports').select(['id', 'sos_id']).distinctOn('sos_id').where('sos_id', 'in', merged.map((m) => m.id)).orderBy('sos_id').orderBy('received_at').execute()
     : [];
   const reportBySos = new Map(firstReports.map((r) => [r.sos_id, r.id]));
+  const assigneeOfCase = !!input.assignment && isActiveAssignment(input.assignment.status) && viewer.kind === 'responder' && viewer.id === input.assignment.responder_id;
+  let profile_full: components['schemas']['ProfileFull'] | undefined;
+  if (row.device_id && canSeeFullProfile(viewer, row.device_id, assigneeOfCase) && viewer.kind === 'responder') {
+    const prow = await getProfileRow(ctx, row.device_id);
+    const sensitive = prow ? decryptSensitive(ctx, prow) : null;
+    if (prow && sensitive) { const v = toProfileView({ row: prow, sensitive }, viewer, assigneeOfCase); if (v.view === 'full') profile_full = v; }
+  }
   return {
     ...base,
+    ...(profile_full ? { profile_full } : {}),
     triage: triage ? {
       score: triage.score, confidence: triage.confidence as 'low' | 'medium' | 'high', summary: triage.summary ?? undefined,
       reasons: triage.reasons as components['schemas']['TriageReason'][], extracted: triage.extracted as components['schemas']['Triage']['extracted'],
@@ -194,7 +205,7 @@ export async function updateSos(ctx: Ctx, id: string, b: SosUpdate & { score_ove
   if (changed.text !== undefined || changed.category !== undefined || changed.people_count !== undefined) {
     const fresh = await getRowOrThrow(ctx, id);
     const { rulesOutcome } = await import('./triage');
-    await persistTriage(ctx, id, rulesOutcome(fresh), { kind: 'responder', id: actor.id });
+    await persistTriage(ctx, id, rulesOutcome(fresh, await triageCtxFor(ctx, fresh)), { kind: 'responder', id: actor.id });
   }
   await broadcastSos(ctx, 'sos.updated', id);
   if (changed.status !== undefined) await queueStatusUpdate(ctx, id);
@@ -211,8 +222,9 @@ async function assertManualStatus(ctx: Ctx, row: SosRow, to: SosRow['status']) {
 
 export async function deleteSos(ctx: Ctx, id: string, actor: Responder) {
   if (actor.role !== 'admin') throw forbidden('Admin only');
-  const r = await ctx.db.deleteFrom('sos').where('id', '=', id).returning('id').executeTakeFirst();
+  const r = await ctx.db.deleteFrom('sos').where('id', '=', id).returning(['id', 'device_id']).executeTakeFirst();
   if (!r) throw notFound('Case not found');
+  if (r.device_id) await dropOrphanedProfiles(ctx, [r.device_id]); // erasure path: a profile with no case left is removed too
 }
 
 export async function retriage(ctx: Ctx, id: string, actor: Responder, viewer: Viewer): Promise<Sos> {

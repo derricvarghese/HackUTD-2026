@@ -75,6 +75,16 @@ fun DebugScreen(
             HapticsLab()
 
             ElevatedSection {
+                SectionTitle(stringResource(R.string.profile_title))
+                // sync bookkeeping only, never profile content
+                Text(
+                    stringResource(R.string.profile_dbg_line, mesh.profile.syncState.name.lowercase(), mesh.profile.profileVersion),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                mesh.profile.lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+
+            ElevatedSection {
                 SectionTitle(stringResource(R.string.debug_hopcap_title))
                 Text(
                     stringResource(R.string.debug_hopcap_body),

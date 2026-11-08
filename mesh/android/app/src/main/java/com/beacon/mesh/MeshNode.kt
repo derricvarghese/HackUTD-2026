@@ -25,6 +25,13 @@ import com.beacon.mesh.net.BeaconApi
 import com.beacon.mesh.net.RequestSigner
 import com.beacon.mesh.net.UrlConnectionHttp
 import com.beacon.mesh.protocol.Category
+import com.beacon.mesh.profile.Consent
+import com.beacon.mesh.profile.KeystoreProfileStorage
+import com.beacon.mesh.profile.ProfileRepository
+import com.beacon.mesh.profile.ProfileRules
+import com.beacon.mesh.profile.ProfileStatus
+import com.beacon.mesh.profile.UserProfile
+import com.beacon.mesh.gateway.ProfileSync
 import com.beacon.mesh.protocol.Iso
 import com.beacon.mesh.store.CheckinPrompt
 import com.beacon.mesh.store.SqliteMessageStore
@@ -91,6 +98,8 @@ data class MeshSnapshot(
     val heartbeat: HeartbeatUi = HeartbeatUi(),
     /** Check-ins the backend asked this phone to answer and that are still open. */
     val checkins: List<CheckinPrompt> = emptyList(),
+    /** Profile sync bookkeeping (no profile content). */
+    val profile: ProfileStatus = ProfileStatus(),
 )
 
 /**
@@ -112,6 +121,10 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         BuildConfig.BACKEND_URL, UrlConnectionHttp(), RequestSigner(signer), config,
         Base64.getEncoder().encodeToString(signer.publicKeyDer), BuildConfig.VERSION_NAME,
     )
+    /** The user's identity profile: encrypted at rest, synced by [profileSync]. */
+    val profiles = ProfileRepository(KeystoreProfileStorage(app))
+    private val profileSync = ProfileSync(api, profiles, config, log = { append(it) })
+    private var profileBusy = false
     private val transport = BleMeshTransport(app, main)
     private val uploader = GatewayUploader(app, main, router.relayId)
     private val locationManager = app.getSystemService(LocationManager::class.java)
@@ -155,6 +168,11 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         router.upload = { if (!it.uploaded) inFlight.add(it.id); uploader.upload(it) }
         router.onChange = { notifyChanged() }
         router.log = { append(it) }
+        router.profileSummary = {
+            val r = profiles.current
+            r.profile?.let { ProfileRules.summary(it, r.profileVersion) }
+        }
+        profiles.onChange = { main.post { notifyChanged() } }
         uploader.sync = GatewaySync(api, router, config, log = { append(it) })
         // Own SOS created while online go straight to POST /v1/sos once; failures fall back to the mesh batch.
         uploader.tryDirect = { it.isOwn && directAttempted.add(it.id) }
@@ -180,6 +198,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         uploader.start()
         transport.start()
         startLocation()
+        syncProfile()
         router.pruneExpired()
         main.postDelayed(object : Runnable {
             override fun run() {
@@ -201,6 +220,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         if (!uploader.isOnline) return
         val now = System.currentTimeMillis()
         if (now - config.lastInfoAtMs > INFO_REFRESH_MS) uploader.refreshServerInfo()
+        syncProfile()
         uploader.pollOutbox()
         uploader.pollCheckins()
         if (tickCount % 2 == 0) {
@@ -211,7 +231,7 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
     }
 
     private fun onBecameOnline() {
-        uploader.refreshServerInfo()
+        uploader.refreshServerInfo { syncProfile() }
         router.internetBecameAvailable()
         uploader.pollOutbox()
         uploader.pollCheckins()
@@ -256,6 +276,45 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
             if (r is ApiResult.Ok) router.markCheckinAnswered(prompt.checkinId, response) else viaMesh()
         }
     }
+
+    // ---- Profile ----
+
+    /**
+     * Uploads the profile (or its erasure) when online; the engine decides what is due (backoff, consent, verify).
+     * Reuses the gateway's connectivity detection and IO thread. [force] ignores the backoff (manual retry).
+     */
+    fun syncProfile(force: Boolean = false) {
+        val r = profiles.current
+        if (r.profile == null && !r.pendingErase) return
+        if (!uploader.isOnline || profileBusy) return
+        profileBusy = true
+        uploader.background({ profileSync.run(force) }) { profileBusy = false; notifyChanged() }
+    }
+
+    /** Saves the edited profile locally (encrypted) and queues it for upload. */
+    fun saveProfile(profile: UserProfile, consent: Consent) {
+        profiles.saveProfile(profile, consent, System.currentTimeMillis())
+        syncProfile(force = true)
+    }
+
+    /** Wipes the local copy now; the server copy is erased as soon as the phone is online. */
+    fun deleteProfile() {
+        profiles.eraseLocal()
+        syncProfile(force = true)
+    }
+
+    fun retryProfileSync() {
+        profiles.retryNow()
+        if (uploader.isOnline) uploader.refreshServerInfo { syncProfile(force = true) } else notifyChanged()
+    }
+
+    fun acceptProfileConsent(consent: Consent) {
+        profiles.acceptConsent(consent)
+        syncProfile(force = true)
+    }
+
+    /** Onboarding: fetch the latest `profile_required` / consent version if we can reach the server. */
+    fun refreshServerInfo() { if (uploader.isOnline) uploader.refreshServerInfo() }
 
     // ---- Heartbeats ----
 
@@ -338,6 +397,8 @@ class MeshNode private constructor(context: Context) : BleMeshTransport.Listener
         serverInfoAtMs = config.lastInfoAtMs,
         heartbeat = HeartbeatUi(config.eventActive, prefs.getLong("hbLast", 0), prefs.getBoolean("hbMesh", false), config.heartbeatIntervalSeconds),
         checkins = router.checkinPrompts.filter { it.response == null },
+        profile = ProfileStatus.of(profiles.current, config.profileRequired, config.profileConsentVersion)
+            .copy(bannerDismissed = profiles.bannerDismissedThisSession),
     )
 
     private fun hasValidatedInternet(): Boolean {

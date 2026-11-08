@@ -20,7 +20,7 @@ export interface Ctx {
   hub: Publisher;
   keys: BackendKeys;
   llm: TriageLlm;
-  limiters: { login: TokenBuckets; register: TokenBuckets; sender: TokenBuckets; heartbeat: TokenBuckets; ip: TokenBuckets };
+  limiters: { login: TokenBuckets; register: TokenBuckets; sender: TokenBuckets; heartbeat: TokenBuckets; profile: TokenBuckets; ip: TokenBuckets };
   /** small TTL cache (health ping, mesh stats) */
   cache: Map<string, { at: number; v: unknown }>;
   deviceCache: Map<string, DeviceAuth>;

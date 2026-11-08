@@ -85,6 +85,9 @@ import com.beacon.mesh.ui.screens.MessagesScreen
 import com.beacon.mesh.ui.screens.OnboardingScreen
 import com.beacon.mesh.ui.screens.SettingsScreen
 import com.beacon.mesh.ui.screens.SosSheet
+import com.beacon.mesh.ui.screens.ProfileOnboardingScreen
+import com.beacon.mesh.ui.screens.ProfileReconsentDialog
+import com.beacon.mesh.ui.screens.ProfileSettingsScreen
 import com.beacon.mesh.ui.theme.BeaconTheme
 import com.beacon.mesh.ui.theme.isDark
 
@@ -94,7 +97,10 @@ private object Routes {
     const val MESH = "mesh"
     const val SETTINGS = "settings"
     const val DEBUG = "settings/debug"
+    const val PROFILE = "settings/profile"
 }
+
+private enum class Stage { PERMISSIONS, PROFILE, MAIN }
 
 private data class TopLevel(val route: String, val label: Int, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
@@ -106,7 +112,7 @@ private val TopLevels = listOf(
 )
 
 @Composable
-fun BeaconApp(vm: MeshViewModel = viewModel()) {
+fun BeaconApp(vm: MeshViewModel = viewModel(), profileVm: ProfileViewModel = viewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val reduceMotion = remember {
@@ -135,20 +141,26 @@ fun BeaconApp(vm: MeshViewModel = viewModel()) {
             val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
             val fast = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
             val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+            val profileStatus by vm.mesh.collectAsStateWithLifecycle()
+            val stage = when {
+                !settings.onboardingDone -> Stage.PERMISSIONS
+                !profileStatus.profile.stepDone -> Stage.PROFILE
+                else -> Stage.MAIN
+            }
             AnimatedContent(
-                targetState = settings.onboardingDone,
+                targetState = stage,
                 transitionSpec = { (fadeIn(effects) + scaleIn(spatial, 0.96f)) togetherWith fadeOut(fast) },
                 label = "onboarding",
-            ) { done ->
-                if (!done) {
-                    OnboardingScreen(
+            ) { st ->
+                when (st) {
+                    Stage.PERMISSIONS -> OnboardingScreen(
                         holder = holder,
                         askedPermissions = settings.askedPermissions,
                         onAsked = vm::markPermissionsAsked,
                         onFinish = { vm.setOnboardingDone(true) },
                     )
-                } else {
-                    MainShell(vm, holder)
+                    Stage.PROFILE -> ProfileOnboardingScreen(profileVm)
+                    Stage.MAIN -> MainShell(vm, holder, profileVm)
                 }
             }
         }
@@ -157,7 +169,7 @@ fun BeaconApp(vm: MeshViewModel = viewModel()) {
 }
 
 @Composable
-private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
+private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder, profileVm: ProfileViewModel) {
     val mesh by vm.mesh.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val draft by vm.draft.collectAsStateWithLifecycle()
@@ -171,7 +183,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
     val backEntry by nav.currentBackStackEntryAsState()
     val hierarchy = backEntry?.destination?.hierarchy
     fun selected(route: String) = hierarchy?.any { it.route == route } == true ||
-        (route == Routes.SETTINGS && backEntry?.destination?.route == Routes.DEBUG)
+        (route == Routes.SETTINGS && (backEntry?.destination?.route == Routes.DEBUG || backEntry?.destination?.route == Routes.PROFILE))
 
     fun goTop(route: String) {
         nav.navigate(route) {
@@ -224,7 +236,7 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
     val imeVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
 
     val navHost: @Composable (Modifier) -> Unit = { modifier ->
-        ShellNavHost(nav, modifier, vm, mesh, items, system, settings, requestedMessage,
+        ShellNavHost(nav, modifier, vm, profileVm, mesh, items, system, settings, requestedMessage,
             onRequestConsumed = { requestedMessage = null },
             onOpenMessage = ::openMessage,
             onGoTop = ::goTop,
@@ -275,6 +287,11 @@ private fun MainShell(vm: MeshViewModel, holder: SystemStatusHolder) {
         }
     }
 
+    var reconsentLater by rememberSaveable { mutableStateOf(false) }
+    if (mesh.profile.syncState == com.beacon.mesh.profile.SyncState.NEEDS_CONSENT && mesh.profile.hasProfile && !reconsentLater) {
+        ProfileReconsentDialog(onAgree = profileVm::reconsent, onLater = { reconsentLater = true })
+    }
+
     draft?.let { d ->
         SosSheet(
             draft = d,
@@ -293,6 +310,7 @@ private fun ShellNavHost(
     nav: androidx.navigation.NavHostController,
     modifier: Modifier,
     vm: MeshViewModel,
+    profileVm: ProfileViewModel,
     mesh: com.beacon.mesh.MeshSnapshot,
     items: List<MessageItem>,
     system: SystemStatus,
@@ -335,6 +353,9 @@ private fun ShellNavHost(
                 onFixSetup = { vm.setOnboardingDone(false) },
                 onOpenMesh = { onGoTop(Routes.MESH) },
                 onCheckinReply = vm::answerCheckin,
+                onOpenProfile = { nav.navigate(Routes.PROFILE) { launchSingleTop = true } },
+                onRetryProfile = profileVm::retrySync,
+                onDismissProfileBanner = profileVm::dismissBanner,
             )
         }
         composable(Routes.MESSAGES) {
@@ -354,7 +375,18 @@ private fun ShellNavHost(
                 onDynamic = vm::setDynamicColor,
                 onHaptics = vm::setHapticsEnabled,
                 onOpenDebug = { nav.navigate(Routes.DEBUG) },
+                onOpenProfile = { nav.navigate(Routes.PROFILE) { launchSingleTop = true } },
+                onRetryProfile = profileVm::retrySync,
             )
+        }
+        composable(
+            Routes.PROFILE,
+            enterTransition = { slideInHorizontally(spatial) { it } + fadeIn(effects) },
+            exitTransition = { slideOutHorizontally(spatial) { -it / 4 } + fadeOut(fastEffects) },
+            popEnterTransition = { slideInHorizontally(spatial) { -it / 4 } + fadeIn(effects) },
+            popExitTransition = { slideOutHorizontally(spatial) { it } + fadeOut(fastEffects) },
+        ) {
+            ProfileSettingsScreen(profileVm, onBack = { nav.popBackStack() })
         }
         composable(
             Routes.DEBUG,

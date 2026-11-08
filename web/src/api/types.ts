@@ -151,6 +151,56 @@ export interface paths {
         patch: operations["updateDevice"];
         trace?: never;
     };
+    "/devices/{deviceId}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deviceId: components["parameters"]["DeviceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a device's profile (view depends on who asks)
+         * @description The response `view` field tells which shape you got.
+         *
+         *     | Caller | Result |
+         *     |---|---|
+         *     | The device itself | `ProfileFull` (`view=full`) |
+         *     | `admin` | `ProfileFull` |
+         *     | Responder who holds an ACTIVE assignment (`assigned`, `en_route`, `on_scene`) on a non-closed case of this device (or of a case merged with it) | `ProfileFull` |
+         *     | Any other responder / volunteer (including a responder whose assignment was released) | `ProfilePublic` (`view=public`): name, preferred name, age range, coarse flags only |
+         *     | Another device | `403` |
+         *
+         *     `404` when the device has no profile (a mesh `profile_summary` alone does not count). Response carries `ETag` (full view only).
+         */
+        get: operations["getProfile"];
+        /**
+         * Create or replace the calling device's identity profile (idempotent)
+         * @description Device signature auth; the calling device must equal `deviceId` (otherwise `403`). Full replace (PUT semantics): fields omitted from the body are
+         *     removed. Sending the same body twice yields the same stored profile (the second call still bumps `profile_version` and `updated_at`).
+         *
+         *     - `consent.accepted` must be `true` and `consent.version` must equal `ServerInfo.profile_consent_version`, otherwise `422` and nothing is stored.
+         *     - Optimistic concurrency: send `If-Match: <profile_version>` (bare integer or quoted, as returned in the body and the `ETag` header). A stale value
+         *       answers `409` with `details.profile_version` = the current version. `If-Match: 0` means "only create": `409` if a profile already exists.
+         *       Without `If-Match` the write is unconditional (last write wins).
+         *     - `profile_version` starts at 1 and is incremented by the server on every successful write.
+         *     - Rate limited per device (`429` + `Retry-After`).
+         *     - Changing the profile re-triages the device's open cases and emits `profile.updated` (public fields only).
+         *     - Never put profile content in logs or crash reports on the client either.
+         */
+        put: operations["putProfile"];
+        post?: never;
+        /**
+         * Erase the profile (device itself or admin)
+         * @description Right to erasure. Also drops any mesh `profile_summary` still attached to the device's cases and re-triages them without profile signals. Other responders get `403`.
+         */
+        delete: operations["deleteProfile"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sos": {
         parameters: {
             query?: never;
@@ -800,7 +850,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Purge personal data now (admin, closed events only) */
+        /**
+         * Purge personal data now (admin, closed events only)
+         * @description Nulls location/text/voice/device links of the event's cases (see design doc) and deletes the identity profiles (and mesh `profile_summary` hints) of devices that have no case left anywhere.
+         */
         post: operations["purgeEvent"];
         delete?: never;
         options?: never;
@@ -950,6 +1003,16 @@ export interface components {
             silence_threshold_seconds?: number;
             /** @example 500 */
             gateway_upload_max_batch?: number;
+            /**
+             * @description Onboarding must collect at least `full_name` + consent and `PUT /devices/{id}/profile` it (the user may skip explicitly; SOS is never blocked by a missing profile).
+             * @example true
+             */
+            profile_required?: boolean;
+            /**
+             * @description Version id of the profile consent text the app must show; echo it in `ProfileInput.consent.version`. A change means users must re-consent.
+             * @example 2026-11-v1
+             */
+            profile_consent_version?: string;
         };
         AuthTokens: {
             access_token: string;
@@ -997,8 +1060,221 @@ export interface components {
             last_heartbeat_at?: string | null;
             /** Format: date-time */
             last_seen_at?: string | null;
+            /** @description Server copy's `profile_version`, null when the server holds no profile for this device */
+            profile_version?: number | null;
             /** Format: date-time */
             created_at: string;
+        };
+        /**
+         * @description Coarse age bucket derived server-side from `birth_year` (current year minus birth year; may be off by one).
+         * @enum {string}
+         */
+        AgeRange: "0-12" | "13-17" | "18-34" | "35-49" | "50-64" | "65-79" | "80+";
+        /**
+         * @description Coarse flags derived server-side, safe to show to every dashboard user. `mobility` = needs wheelchair / cannot_walk / walks_with_aid;
+         *     `medical` = any listed condition, medication or allergy; `oxygen` = oxygen_dependent; `sensory` = vision_impaired / hearing_impaired;
+         *     `cognitive` = cognitive need; `elderly` = age 65+; `child` = age 12 or younger.
+         * @enum {string}
+         */
+        VulnerabilityFlag: "mobility" | "medical" | "elderly" | "child" | "oxygen" | "sensory" | "cognitive";
+        ProfileConsent: {
+            /** @description Must be `true`; otherwise the server answers 422 and stores nothing. */
+            accepted: boolean;
+            /**
+             * @description Consent text version shown to the user; must equal `ServerInfo.profile_consent_version`.
+             * @example 2026-11-v1
+             */
+            version: string;
+            /** Format: date-time */
+            accepted_at: string;
+        };
+        /** @description Free text helps responders recognise the person on scene. */
+        ProfileAppearance: {
+            height_cm?: number;
+            hair?: string;
+            clothing?: string;
+            distinguishing_marks?: string;
+        };
+        ProfileMedical: {
+            conditions?: string[];
+            medications?: string[];
+            allergies?: string[];
+            /** @enum {string} */
+            blood_type?: "A+" | "A-" | "B+" | "B-" | "AB+" | "AB-" | "O+" | "O-" | "unknown";
+        };
+        ProfileMobility: {
+            needs?: ("wheelchair" | "cannot_walk" | "walks_with_aid" | "vision_impaired" | "hearing_impaired" | "cognitive" | "oxygen_dependent" | "other")[];
+            notes?: string;
+        };
+        ProfileHousehold: {
+            /** @description People living in the home including the user */
+            people_count?: number;
+            children?: number;
+            elderly?: number;
+            pets?: {
+                /** @example dog */
+                kind: string;
+                count?: number;
+            }[];
+        };
+        ProfileEmergencyContact: {
+            name: string;
+            /** @description E.164-ish: optional +, digits, spaces, dashes, dots, parentheses */
+            phone: string;
+            relationship: string;
+        };
+        /**
+         * @description What the phone sends. Only `full_name` and `consent` are required. Full replace on every `PUT`.
+         *     Sensitive fields (everything except `full_name`, `preferred_name`, `birth_year`, `consent`) are encrypted at rest; `full_name` and
+         *     `birth_year` stay queryable in clear text columns by design (name display and age buckets).
+         */
+        ProfileInput: {
+            /** @description Visible to every dashboard user. */
+            full_name: string;
+            preferred_name?: string;
+            /** @description Server also rejects years after the current year (422). */
+            birth_year?: number;
+            /** @description BCP-47 tags (`es`, `en-US`) or plain names (`Spanish`) */
+            languages?: string[];
+            phone?: string;
+            appearance?: components["schemas"]["ProfileAppearance"];
+            medical?: components["schemas"]["ProfileMedical"];
+            mobility?: components["schemas"]["ProfileMobility"];
+            household?: components["schemas"]["ProfileHousehold"];
+            home_address?: string;
+            emergency_contact?: components["schemas"]["ProfileEmergencyContact"];
+            notes?: string;
+            consent: components["schemas"]["ProfileConsent"];
+        };
+        /** @description The stored profile = the input plus server fields. */
+        Profile: components["schemas"]["ProfileInput"] & {
+            /** Format: uuid */
+            device_id: string;
+            /** @description Incremented by the server on every write; use as `If-Match`. */
+            profile_version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description Everything stored plus derived fields. Returned only to the owning device, admins and the ACTIVE assignee.
+         * @example {
+         *       "view": "full",
+         *       "device_id": "0192a000-0000-7000-8000-0000000000d1",
+         *       "profile_version": 3,
+         *       "full_name": "Maria Elena Gonzalez",
+         *       "preferred_name": "Elena",
+         *       "birth_year": 1951,
+         *       "age_range": "65-79",
+         *       "vulnerability_flags": [
+         *         "elderly",
+         *         "medical",
+         *         "mobility",
+         *         "oxygen"
+         *       ],
+         *       "languages": [
+         *         "es",
+         *         "en"
+         *       ],
+         *       "phone": "+19725550142",
+         *       "medical": {
+         *         "conditions": [
+         *           "type 2 diabetes"
+         *         ],
+         *         "medications": [
+         *           "insulin glargine"
+         *         ],
+         *         "allergies": [
+         *           "penicillin"
+         *         ],
+         *         "blood_type": "O+"
+         *       },
+         *       "mobility": {
+         *         "needs": [
+         *           "walks_with_aid",
+         *           "oxygen_dependent"
+         *         ],
+         *         "notes": "portable oxygen concentrator"
+         *       },
+         *       "emergency_contact": {
+         *         "name": "Daniel Gonzalez",
+         *         "phone": "+19725550177",
+         *         "relationship": "son"
+         *       },
+         *       "consent": {
+         *         "accepted": true,
+         *         "version": "2026-11-v1",
+         *         "accepted_at": "2026-11-07T15:58:00Z"
+         *       },
+         *       "created_at": "2026-11-07T15:58:00Z",
+         *       "updated_at": "2026-11-07T16:30:00Z"
+         *     }
+         */
+        ProfileFull: components["schemas"]["Profile"] & {
+            /** @enum {string} */
+            view: "full";
+            age_range?: components["schemas"]["AgeRange"];
+            vulnerability_flags: components["schemas"]["VulnerabilityFlag"][];
+            /** @description Demo data generated by /mesh/seed */
+            synthetic?: boolean;
+        };
+        /**
+         * @description The only profile view non-assigned dashboard users get. `Sos.profile` uses it for every case. Contains no sensitive field:
+         *     coarse flags and the age bucket instead of birth year, conditions or mobility details.
+         * @example {
+         *       "view": "public",
+         *       "full_name": "Maria Elena Gonzalez",
+         *       "preferred_name": "Elena",
+         *       "age_range": "65-79",
+         *       "vulnerability_flags": [
+         *         "elderly",
+         *         "medical",
+         *         "mobility",
+         *         "oxygen"
+         *       ],
+         *       "has_profile": true,
+         *       "source": "synced",
+         *       "profile_version": 3
+         *     }
+         */
+        ProfilePublic: {
+            /** @enum {string} */
+            view: "public";
+            full_name: string;
+            preferred_name?: string;
+            age_range?: components["schemas"]["AgeRange"];
+            vulnerability_flags: components["schemas"]["VulnerabilityFlag"][];
+            /** @description `true` when a synced server profile exists; `false` when the data comes only from a mesh `profile_summary`. */
+            has_profile: boolean;
+            /**
+             * @description Where the data came from
+             * @enum {string}
+             */
+            source?: "synced" | "mesh_summary";
+            /** @description Server profile version (synced) or the phone's version (mesh_summary) */
+            profile_version?: number;
+        };
+        /**
+         * @description Tiny identity hint inside the encrypted `MeshPayload` of an SOS created offline (keeps envelopes small: well under 400 bytes of JSON).
+         *     The full profile syncs separately once online. The phone derives `age_range` and flags with the same rules as `VulnerabilityFlag` / `AgeRange`.
+         *     Ignored (not an error) if invalid or if a synced profile already exists for the sender device.
+         * @example {
+         *       "full_name": "Maria Elena Gonzalez",
+         *       "age_range": "65-79",
+         *       "vulnerability_flags": [
+         *         "elderly",
+         *         "oxygen"
+         *       ],
+         *       "profile_version": 0
+         *     }
+         */
+        ProfileSummary: {
+            full_name: string;
+            age_range?: components["schemas"]["AgeRange"];
+            vulnerability_flags?: components["schemas"]["VulnerabilityFlag"][];
+            /** @description `profile_version` last acknowledged by the server for this device; 0 if never synced */
+            profile_version: number;
         };
         /**
          * @description Wire format carried hand to hand and uploaded by gateways. `signature` covers the canonical JSON of
@@ -1083,6 +1359,8 @@ export interface components {
             heartbeat?: components["schemas"]["HeartbeatCreate"];
             /** @description For kind=offer */
             offer?: components["schemas"]["OfferCreate"];
+            /** @description Optional identity hint for kind=sos/safe (see `ProfileSummary`) */
+            profile_summary?: components["schemas"]["ProfileSummary"];
         };
         DeliveredReceipt: {
             /**
@@ -1222,6 +1500,19 @@ export interface components {
          *       "merged_into": null,
          *       "duplicate_count": 0,
          *       "assignment": null,
+         *       "profile": {
+         *         "view": "public",
+         *         "full_name": "Maria Elena Gonzalez",
+         *         "preferred_name": "Elena",
+         *         "age_range": "65-79",
+         *         "vulnerability_flags": [
+         *           "elderly",
+         *           "oxygen"
+         *         ],
+         *         "has_profile": false,
+         *         "source": "mesh_summary",
+         *         "profile_version": 0
+         *       },
          *       "synthetic": true,
          *       "version": 1,
          *       "created_at": "2026-11-07T16:12:00Z",
@@ -1259,6 +1550,8 @@ export interface components {
             /** @description Number of other reports merged into this case */
             duplicate_count?: number;
             assignment?: components["schemas"]["AssignmentSummary"] | null;
+            /** @description Who the caller is (name, age range, coarse vulnerability flags), visible to every dashboard user. `null` when neither a synced profile nor a mesh `profile_summary` exists. Full details are in `SosDetail.profile_full` (assignee/admin only). */
+            profile?: components["schemas"]["ProfilePublic"] | null;
             synthetic?: boolean;
             version?: number;
             /** Format: date-time */
@@ -1272,6 +1565,8 @@ export interface components {
             updated_at?: string;
         };
         SosDetail: components["schemas"]["Sos"] & {
+            /** @description Full profile of the device that filed the case. Present only when the viewer is an admin or the ACTIVE assignee of the case; absent for everyone else (and when no synced profile exists). */
+            profile_full?: components["schemas"]["ProfileFull"];
             triage?: components["schemas"]["Triage"];
             checkins?: components["schemas"]["Checkin"][];
             events?: components["schemas"]["SosEvent"][];
@@ -1607,16 +1902,76 @@ export interface components {
             created_at: string;
             signature: string;
         };
+        /**
+         * @description The area an event covers. The bounding box fields (`min_lat`, `min_lng`, `max_lat`, `max_lng`) are always
+         *     present and are what older clients read. When `geofence` is given the server validates it and **recomputes
+         *     the bounding box from it**, so the two can never disagree (a client-sent box is ignored in that case).
+         *     The server also uses the geofence: dead zones are only reported for grid cells whose centre lies inside it,
+         *     and the demo helpers (`/mesh/seed`, `/mesh/simulate`) place synthetic cases inside it. SOS messages and
+         *     heartbeats from outside the geofence are still accepted.
+         * @example {
+         *       "min_lat": 32.7,
+         *       "min_lng": -96.9,
+         *       "max_lat": 32.85,
+         *       "max_lng": -96.7,
+         *       "geofence": {
+         *         "type": "Polygon",
+         *         "coordinates": [
+         *           [
+         *             [
+         *               -96.9,
+         *               32.7
+         *             ],
+         *             [
+         *               -96.7,
+         *               32.7
+         *             ],
+         *             [
+         *               -96.7,
+         *               32.85
+         *             ],
+         *             [
+         *               -96.9,
+         *               32.85
+         *             ],
+         *             [
+         *               -96.9,
+         *               32.7
+         *             ]
+         *           ]
+         *         ]
+         *       }
+         *     }
+         */
+        EventRegion: {
+            min_lat?: number;
+            min_lng?: number;
+            max_lat?: number;
+            max_lng?: number;
+            geofence?: components["schemas"]["Geofence"];
+            /** @description Optional hint so an editor can restore a circle. The `geofence` polygon (64 segments) is the source of truth. */
+            circle?: {
+                lat: number;
+                lng: number;
+                radius_m: number;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description GeoJSON Polygon with exactly one linear ring (no holes), positions as `[lng, lat]`. The ring must be closed
+         *     (first position equals last), have at least 3 distinct vertices and at most 500, stay within valid
+         *     coordinate ranges and must not cross itself. Violations answer 422. Circles are stored as a 64-segment polygon.
+         */
+        Geofence: {
+            /** @enum {string} */
+            type: "Polygon";
+            coordinates: number[][][];
+        };
         EventCreate: {
             /** @example Hurricane Demo 2026 */
             name: string;
-            /** @description Bounding box the event covers */
-            region?: {
-                min_lat?: number;
-                min_lng?: number;
-                max_lat?: number;
-                max_lng?: number;
-            };
+            region?: components["schemas"]["EventRegion"];
             /** @default 7 */
             retention_days?: number;
             /** @default 300 */
@@ -1628,9 +1983,7 @@ export interface components {
         };
         EventUpdate: {
             name?: string;
-            region?: {
-                [key: string]: unknown;
-            };
+            region?: components["schemas"]["EventRegion"];
             retention_days?: number;
             heartbeat_interval_seconds?: number;
             silence_threshold_seconds?: number;
@@ -1641,9 +1994,8 @@ export interface components {
             name: string;
             /** @enum {string} */
             status: "active" | "closed" | "purged";
-            region?: {
-                [key: string]: unknown;
-            } | null;
+            /** @description The area the event covers; null when none was set */
+            region?: components["schemas"]["EventRegion"] | null;
             retention_days?: number;
             heartbeat_interval_seconds?: number;
             silence_threshold_seconds?: number;
@@ -1721,13 +2073,23 @@ export interface components {
          */
         WsFrame: {
             /** @enum {string} */
-            event: "sos.created" | "sos.updated" | "sos.merged" | "sos.silent" | "heartbeat.silent" | "heartbeat.resumed" | "checkin.sent" | "checkin.responded" | "assignment.created" | "assignment.updated" | "offer.created" | "offer.matched" | "deadzones.updated" | "mesh.stats" | "pong";
+            event: "sos.created" | "sos.updated" | "sos.merged" | "sos.silent" | "heartbeat.silent" | "heartbeat.resumed" | "profile.updated" | "checkin.sent" | "checkin.responded" | "assignment.created" | "assignment.updated" | "offer.created" | "offer.matched" | "deadzones.updated" | "mesh.stats" | "pong";
             /** Format: date-time */
             ts: string;
             data: unknown;
         };
         /** @description Payload for `sos.created`, `sos.updated`, `sos.silent` (data is a full `Sos`; location redacted per the receiving responder) */
         WsEventSos: components["schemas"]["Sos"];
+        /**
+         * @description Payload for `profile.updated`: sent to responder sockets when a device that has open cases writes or erases its profile. Public fields only
+         *     (never medical, address, contact...). Refetch the affected cases (`sos_ids`) for updated flags and score; `sos.updated` follows for each.
+         */
+        WsEventProfile: components["schemas"]["ProfilePublic"] & {
+            /** Format: uuid */
+            device_id: string;
+            /** @description Open cases of that device */
+            sos_ids: string[];
+        };
         /** @description Payload for `heartbeat.silent` and `heartbeat.resumed` (`SilentDevice`; on resume `status` is omitted semantics = back to active) */
         WsEventSilentDevice: components["schemas"]["SilentDevice"];
         /** @description Payload for `sos.merged` */
@@ -2120,6 +2482,168 @@ export interface operations {
                     "application/json": components["schemas"]["Device"];
                 };
             };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    getProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deviceId: components["parameters"]["DeviceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profile */
+            200: {
+                headers: {
+                    /** @description Quoted `profile_version` (full view only) */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFull"] | components["schemas"]["ProfilePublic"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    putProfile: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Expected current `profile_version` (integer, optionally quoted); `0` = must not exist yet. */
+                "If-Match"?: string;
+            };
+            path: {
+                deviceId: components["parameters"]["DeviceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "full_name": "Maria Elena Gonzalez",
+                 *       "preferred_name": "Elena",
+                 *       "birth_year": 1951,
+                 *       "languages": [
+                 *         "es",
+                 *         "en"
+                 *       ],
+                 *       "phone": "+19725550142",
+                 *       "appearance": {
+                 *         "height_cm": 160,
+                 *         "hair": "short grey",
+                 *         "clothing": "blue cardigan",
+                 *         "distinguishing_marks": "scar on left wrist"
+                 *       },
+                 *       "medical": {
+                 *         "conditions": [
+                 *           "type 2 diabetes",
+                 *           "hypertension"
+                 *         ],
+                 *         "medications": [
+                 *           "insulin glargine",
+                 *           "lisinopril"
+                 *         ],
+                 *         "allergies": [
+                 *           "penicillin"
+                 *         ],
+                 *         "blood_type": "O+"
+                 *       },
+                 *       "mobility": {
+                 *         "needs": [
+                 *           "walks_with_aid",
+                 *           "oxygen_dependent"
+                 *         ],
+                 *         "notes": "uses a cane; portable oxygen concentrator, 6 h battery"
+                 *       },
+                 *       "household": {
+                 *         "people_count": 3,
+                 *         "children": 1,
+                 *         "elderly": 1,
+                 *         "pets": [
+                 *           {
+                 *             "kind": "dog",
+                 *             "count": 1
+                 *           }
+                 *         ]
+                 *       },
+                 *       "home_address": "412 Cedar Ln, Richardson, TX 75080",
+                 *       "emergency_contact": {
+                 *         "name": "Daniel Gonzalez",
+                 *         "phone": "+19725550177",
+                 *         "relationship": "son"
+                 *       },
+                 *       "notes": "Second floor apartment, key under the green pot.",
+                 *       "consent": {
+                 *         "accepted": true,
+                 *         "version": "2026-11-v1",
+                 *         "accepted_at": "2026-11-07T15:58:00Z"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ProfileInput"];
+            };
+        };
+        responses: {
+            /** @description Profile replaced (`profile_version` incremented) */
+            200: {
+                headers: {
+                    /** @description Quoted `profile_version` */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFull"];
+                };
+            };
+            /** @description Profile created (`profile_version` = 1) */
+            201: {
+                headers: {
+                    /** @description Quoted `profile_version` */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFull"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deviceId: components["parameters"]["DeviceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
@@ -3752,6 +4276,8 @@ export interface operations {
                     "application/json": {
                         purged_cases?: number;
                         purged_voice_notes?: number;
+                        /** @description Identity profiles deleted because their device has no case left (see Profiles lifecycle) */
+                        purged_profiles?: number;
                         /** Format: date-time */
                         purged_at?: string;
                     };

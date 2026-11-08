@@ -7,7 +7,7 @@ export type Channel = 'sos' | 'assignments' | 'mesh' | 'deadzones' | 'offers';
 const ALL: Channel[] = ['sos', 'assignments', 'mesh', 'deadzones', 'offers'];
 export const CHANNEL_OF: Record<string, Channel> = {
   'sos.created': 'sos', 'sos.updated': 'sos', 'sos.merged': 'sos', 'sos.silent': 'sos',
-  'checkin.sent': 'sos', 'checkin.responded': 'sos', 'heartbeat.silent': 'sos', 'heartbeat.resumed': 'sos',
+  'profile.updated': 'sos', 'checkin.sent': 'sos', 'checkin.responded': 'sos', 'heartbeat.silent': 'sos', 'heartbeat.resumed': 'sos',
   'assignment.created': 'assignments', 'assignment.updated': 'assignments',
   'offer.created': 'offers', 'offer.matched': 'offers',
   'deadzones.updated': 'deadzones', 'mesh.stats': 'mesh',

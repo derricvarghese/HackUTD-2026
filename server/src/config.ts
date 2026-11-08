@@ -45,6 +45,12 @@ const schema = z.object({
   DEADZONE_MIN_ACTIVE_NEIGHBORS: z.coerce.number().int().default(5),
   NEIGHBOR_K: z.coerce.number().int().default(3),
   CHECKIN_MAX_ATTEMPTS: z.coerce.number().int().default(10),
+  /** Optional key material for profile encryption at rest (HKDF input). Falls back to JWT_SECRET so existing deployments keep working. */
+  PROFILE_ENC_KEY: z.string().optional().default(''),
+  PROFILE_RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
+  PROFILE_REQUIRED: bool(true),
+  PROFILE_CONSENT_VERSION: z.string().min(1).max(40).default('2026-11-v1'),
+  PROFILE_WRITE_RATE_PER_MIN: z.coerce.number().int().default(10),
   PUBLIC_DIR: z.string().optional().default(''),
   OPENAPI_PATH: z.string().optional().default(''),
 });

@@ -4,7 +4,9 @@ import type { Ctx } from '../ctx';
 import type { Config } from '../config';
 import type { EventRow } from '../db/types';
 import { decodeCursor, encodeCursor, keysetWhere, orderSql, type SortKey } from '../db/cursor';
-import { conflict, notFound } from '../errors';
+import { conflict, invalid, notFound } from '../errors';
+import { dropOrphanedProfiles } from './profiles';
+import { bboxOfRing, validateCircleHint, validateGeofence, type Polygon } from '../domain/geofence';
 
 export type EventDto = components['schemas']['Event'];
 type Create = components['schemas']['EventCreate'];
@@ -43,6 +45,29 @@ export async function toEvent(ctx: Ctx, e: EventRow): Promise<EventDto> {
   };
 }
 
+/**
+ * Validates `region.geofence` (422 when invalid) and recomputes the bounding box from it, so the stored box can never
+ * disagree with the polygon. Regions without a geofence are stored as sent (legacy bbox-only behaviour).
+ */
+export function normalizeRegion(region: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!region) return null;
+  if (region.geofence === undefined || region.geofence === null) {
+    const { geofence: _g, circle: _c, ...rest } = region;
+    return rest;
+  }
+  const errs = validateGeofence(region.geofence);
+  if (errs.length) throw invalid(`Invalid geofence: ${errs[0]}`, { 'region.geofence': errs.join('; ') });
+  if (region.circle !== undefined && region.circle !== null) {
+    const ce = validateCircleHint(region.circle);
+    if (ce.length) throw invalid(`Invalid circle: ${ce[0]}`, { 'region.circle': ce.join('; ') });
+  }
+  const g = region.geofence as Polygon;
+  const { min_lat, min_lng, max_lat, max_lng } = bboxOfRing(g.coordinates[0]);
+  const out: Record<string, unknown> = { ...region, min_lat, min_lng, max_lat, max_lng, geofence: { type: 'Polygon', coordinates: g.coordinates } };
+  if (region.circle == null) delete out.circle;
+  return out;
+}
+
 const KEYS: SortKey[] = [{ expr: 'created_at', dir: 'desc', cast: 'timestamptz' }, { expr: 'id', dir: 'desc', cast: 'uuid' }];
 
 export async function listEvents(ctx: Ctx, q: { limit: number; cursor?: string; status?: EventRow['status'] }) {
@@ -69,7 +94,7 @@ export async function createEvent(ctx: Ctx, b: Create): Promise<EventDto> {
   if (await activeEventRow(ctx)) throw conflict('Another event is already active; close it first');
   try {
     const e = await ctx.db.insertInto('events').values({
-      name: b.name, region: b.region ? JSON.stringify(b.region) as unknown as object : null, retention_days: b.retention_days ?? ctx.cfg.RETENTION_DEFAULT_DAYS,
+      name: b.name, region: b.region ? JSON.stringify(normalizeRegion(b.region as Record<string, unknown>)) as unknown as object : null, retention_days: b.retention_days ?? ctx.cfg.RETENTION_DEFAULT_DAYS,
       heartbeat_interval_s: b.heartbeat_interval_seconds ?? ctx.cfg.HEARTBEAT_INTERVAL_S, silence_threshold_s: b.silence_threshold_seconds ?? ctx.cfg.SILENCE_THRESHOLD_S,
       synthetic: b.synthetic ?? false,
     }).returningAll().executeTakeFirstOrThrow();
@@ -84,7 +109,10 @@ export async function updateEvent(ctx: Ctx, id: string, b: Update): Promise<Even
   const cur = await getRow(ctx, id);
   const patch: Partial<EventRow> = { updated_at: new Date() };
   if (b.name !== undefined) patch.name = b.name;
-  if (b.region !== undefined) patch.region = JSON.stringify(b.region) as unknown as object;
+  if (b.region !== undefined) {
+    if (cur.status !== 'active') throw conflict('Only an active event can change its region');
+    patch.region = JSON.stringify(normalizeRegion(b.region as Record<string, unknown>)) as unknown as object;
+  }
   if (b.retention_days !== undefined) {
     patch.retention_days = b.retention_days;
     if (cur.closed_at && cur.status === 'closed') patch.purge_at = new Date(cur.closed_at.getTime() + b.retention_days * 86400_000);
@@ -121,9 +149,10 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
   if (cur.status === 'purged') throw conflict('Event was already purged');
   return ctx.db.transaction().execute(async (trx) => {
     const sosIds = trx.selectFrom('sos').select('id').where('event_id', '=', id);
+    const devs = await trx.selectFrom('sos').select('device_id').distinct().where('event_id', '=', id).where('device_id', 'is not', null).execute();
     const voice = await trx.deleteFrom('voice_notes').where('sos_id', 'in', sosIds).returning('id').execute();
     const cases = await trx.updateTable('sos').set(() => ({
-      lat: null, lng: null, geohash7: null, text: null, device_id: null, gateway_device_id: null, sender_hash: 'purged', hop_path: [], has_voice_note: false,
+      lat: null, lng: null, geohash7: null, text: null, device_id: null, gateway_device_id: null, sender_hash: 'purged', profile_summary: null, hop_path: [], has_voice_note: false,
       accuracy_m: null, approx_lat: sql<number>`round(approx_lat::numeric, 1)::double precision`, approx_lng: sql<number>`round(approx_lng::numeric, 1)::double precision`, updated_at: now,
     })).where('event_id', '=', id).returning('id').execute();
     await trx.updateTable('sos_reports').set({ envelope: null, text: null, hop_path: [], gateway_device_id: null }).where('sos_id', 'in', sosIds).execute();
@@ -135,8 +164,10 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
     await trx.deleteFrom('offers').where('event_id', '=', id).execute();
     await trx.deleteFrom('heartbeats').where('event_id', '=', id).execute();
     await trx.deleteFrom('silent_devices').where('event_id', '=', id).execute();
+    // personal identity data goes with the cases it describes: profiles of devices that have no case left anywhere are deleted
+    const profiles = await dropOrphanedProfiles({ db: trx }, devs.map((d) => d.device_id!));
     await trx.updateTable('events').set({ status: 'purged', purged_at: now, updated_at: now }).where('id', '=', id).execute();
-    return { purged_cases: cases.length, purged_voice_notes: voice.length, purged_at: now.toISOString() };
+    return { purged_profiles: profiles, purged_cases: cases.length, purged_voice_notes: voice.length, purged_at: now.toISOString() };
   });
 }
 
@@ -144,10 +175,12 @@ export async function purgeEvent(ctx: Ctx, id: string, now = new Date()) {
 export async function deleteEvent(ctx: Ctx, id: string) {
   await getRow(ctx, id);
   await ctx.db.transaction().execute(async (trx) => {
+    const devs = await trx.selectFrom('sos').select('device_id').distinct().where('event_id', '=', id).where('device_id', 'is not', null).execute();
     await trx.deleteFrom('offers').where('event_id', '=', id).execute();
     await trx.deleteFrom('heartbeats').where('event_id', '=', id).execute();
     await trx.deleteFrom('silent_devices').where('event_id', '=', id).execute();
     await trx.deleteFrom('sos').where('event_id', '=', id).execute();
+    await dropOrphanedProfiles({ db: trx }, devs.map((d) => d.device_id!));
     await trx.deleteFrom('events').where('id', '=', id).execute();
   });
 }

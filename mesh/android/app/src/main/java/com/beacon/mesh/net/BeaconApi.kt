@@ -16,7 +16,11 @@ import java.net.URL
 sealed class ApiResult<out T> {
     data class Ok<T>(val value: T, val code: Int) : ApiResult<T>()
     /** [code] null = network failure. [errorCode] is the contract `Error.code` when the server sent one. */
-    data class Failure(val code: Int?, val errorCode: String?, val message: String, val retryAfterSeconds: Int? = null) : ApiResult<Nothing>() {
+    data class Failure(
+        val code: Int?, val errorCode: String?, val message: String, val retryAfterSeconds: Int? = null,
+        /** `Error.details` when the server sent one (e.g. `profile_version` on a 409, field names on a 422). */
+        val details: JSONObject? = null,
+    ) : ApiResult<Nothing>() {
         val isRateLimited get() = code == 429
         val isNetwork get() = code == null
     }
@@ -24,6 +28,9 @@ sealed class ApiResult<out T> {
 
 data class BatchItem(val id: String, val status: String, val reason: String?, val sosId: String?)
 data class BatchResponse(val results: List<BatchItem>, val receipts: List<DeliveredReceipt>, val messages: List<BackendMessage>)
+/** Server copy of the profile as far as the sync engine cares: version plus the full body (device's own view). */
+data class ServerProfile(val profileVersion: Int, val profile: JSONObject, val created: Boolean)
+
 data class HeartbeatAck(val eventActive: Boolean, val nextInSeconds: Int?)
 
 /**
@@ -109,9 +116,46 @@ class BeaconApi(
         HeartbeatAck(o.optBoolean("event_active", true), if (o.has("next_heartbeat_in_seconds")) o.optInt("next_heartbeat_in_seconds") else null)
     }
 
+    // ---- profile (personal data: never log bodies) ----
+
+    /** PUT /v1/devices/{id}/profile. [ifMatch] = last known server version (0 = create only), null = unconditional. */
+    fun putProfile(input: JSONObject, ifMatch: Int?): ApiResult<ServerProfile> {
+        val id = when (val r = ensureRegistered()) { is ApiResult.Ok -> r.value; is ApiResult.Failure -> return r }
+        val extra = ifMatch?.let { mapOf("If-Match" to it.toString()) } ?: emptyMap()
+        return when (val r = signedCall("PUT", "/v1/devices/$id/profile", input.toString(), extraHeaders = extra) { parseProfile(it) }) {
+            is ApiResult.Ok -> ApiResult.Ok(r.value.copy(created = r.code == 201), r.code)
+            is ApiResult.Failure -> r
+        }
+    }
+
+    fun getProfile(): ApiResult<ServerProfile> {
+        val id = when (val r = ensureRegistered()) { is ApiResult.Ok -> r.value; is ApiResult.Failure -> return r }
+        return signedCall("GET", "/v1/devices/$id/profile", null) { parseProfile(it) }
+    }
+
+    /** DELETE /v1/devices/{id}/profile (right to erasure). 204 and 404 both mean "gone". */
+    fun deleteProfile(): ApiResult<Unit> {
+        val id = when (val r = ensureRegistered()) { is ApiResult.Ok -> r.value; is ApiResult.Failure -> return r }
+        return signedCall("DELETE", "/v1/devices/$id/profile", null) { }
+    }
+
+    /** GET /v1/devices/{id}: only `profile_version` (null = the server holds no profile). */
+    fun deviceProfileVersion(): ApiResult<Int?> {
+        val id = when (val r = ensureRegistered()) { is ApiResult.Ok -> r.value; is ApiResult.Failure -> return r }
+        return signedCall("GET", "/v1/devices/$id", null) { b ->
+            JSONObject(b).let { if (it.has("profile_version") && !it.isNull("profile_version")) it.getInt("profile_version") else null }
+        }
+    }
+
+    private fun parseProfile(body: String): ServerProfile =
+        JSONObject(body).let { ServerProfile(it.getInt("profile_version"), it, false) }
+
     // ---- plumbing ----
 
-    private fun <T> signedCall(method: String, path: String, body: String?, query: String = "", parse: (String) -> T): ApiResult<T> {
+    private fun <T> signedCall(
+        method: String, path: String, body: String?, query: String = "",
+        extraHeaders: Map<String, String> = emptyMap(), parse: (String) -> T,
+    ): ApiResult<T> {
         var attempt = 0
         while (true) {
             val id = when (val r = ensureRegistered()) {
@@ -121,7 +165,7 @@ class BeaconApi(
             val bytes = body?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
             val signedPath = basePath + path // the query string is not signed
             val headers = signer.headers(id, method, signedPath, bytes)
-            val res = call(method, path + query, body, signed = true, extraHeaders = headers, parse = parse)
+            val res = call(method, path + query, body, signed = true, extraHeaders = headers + extraHeaders, parse = parse)
             // The server forgot this device (e.g. database reset): register again once and retry.
             if (res is ApiResult.Failure && res.code == 401 && res.errorCode == "unauthorized" && attempt == 0) {
                 config.deviceId = null
@@ -155,6 +199,7 @@ class BeaconApi(
         return ApiResult.Failure(
             res.code, err?.optString("code")?.ifBlank { null }, err?.optString("message")?.ifBlank { null } ?: "HTTP ${res.code}",
             res.headers["retry-after"]?.trim()?.toIntOrNull(),
+            err?.optJSONObject("details"),
         )
     }
 
